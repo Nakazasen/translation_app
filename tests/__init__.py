@@ -1,0 +1,2 @@
+"""Tests for translation application"""
+

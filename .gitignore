@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Cấu hình cá nhân (AI Settings chứa API keys)
+data/ai_settings.json
+
+# Build/Dist
+build/
+dist/
+*.spec
+
+# Virtual Environment
+venv/
+.venv/
+env/
