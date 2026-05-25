@@ -78,6 +78,25 @@ class TranslationService:
         if not text.strip():
             return text
 
+        # Check Translation Memory Cache
+        from translation_app.core.translation_memory import get_tm_manager
+        ai_service = get_ai_service()
+        use_tm = ai_service.config_manager.use_translation_memory
+        min_len = ai_service.config_manager.min_segment_length_to_cache
+        
+        if use_tm and len(text.strip()) >= min_len:
+            tm = get_tm_manager()
+            cached_translation = tm.lookup_segment(src_lang, dest_lang, text)
+            if cached_translation is not None:
+                return cached_translation
+
+        def save_to_tm(translated: str, provider: str, model: str):
+            if use_tm and len(text.strip()) >= min_len and translated and translated.strip():
+                try:
+                    get_tm_manager().save_segment(src_lang, dest_lang, text, translated, provider=provider, model=model)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to save translation to TM: {e}")
+
         # NEW STRATEGY: AI -> GOOGLE (ai_waterfall)
         if self.strategy == "ai_waterfall":
             logger.info("⚡ Mode: AI -> GOOGLE - Attempting Gemini first...")
@@ -86,6 +105,7 @@ class TranslationService:
                 if ai_service.is_available():
                     result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                     if result.get("status") == "success":
+                        save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
                         return result["text"]
                 logger.warning("⚠️ Gemini fails in AI->GOOGLE mode, falling back to Google Translate")
             except Exception as e:
@@ -98,6 +118,7 @@ class TranslationService:
             if ai_service.is_available():
                 result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                 if result.get("status") == "success":
+                    save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
                     return result["text"]
                 else:
                     error_msg = result.get("error_message") or result.get("text") or "AI Translation failed"
@@ -160,6 +181,7 @@ class TranslationService:
                         translated_chunks.append(chunk)
             
             translated_text = ''.join(translated_chunks)
+            save_to_tm(translated_text, provider="google", model="google-translate")
             return translated_text
         
         except Exception as e:
@@ -171,6 +193,7 @@ class TranslationService:
                     result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                     if result.get("status") == "success":
                         logger.info(f"✅ AI Waterfall success using: {result.get('model_used')}")
+                        save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
                         return result["text"]
                 
                 # If AI fallback also failed or not available

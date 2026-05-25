@@ -240,7 +240,9 @@ class AIConfigManager:
             "api_key": os.getenv("GEMINI_API_KEY", ""),
             "api_keys": [],
             "current_key_index": 0,
-            "waterfall_strategy": DEFAULT_MODELS.copy()
+            "waterfall_strategy": DEFAULT_MODELS.copy(),
+            "use_translation_memory": True,
+            "min_segment_length_to_cache": 2
         }
     
     # =========================================================================
@@ -281,6 +283,27 @@ class AIConfigManager:
         self._config["current_key_index"] = 0
         if value:
             self._config["api_key"] = value[0]
+            
+    @property
+    def use_translation_memory(self) -> bool:
+        """Check if Translation Memory is enabled."""
+        return self._config.get("use_translation_memory", True)
+        
+    @use_translation_memory.setter
+    def use_translation_memory(self, value: bool):
+        """Set Translation Memory enabled state."""
+        self._config["use_translation_memory"] = value
+        
+    @property
+    def min_segment_length_to_cache(self) -> int:
+        """Get the minimum segment length to cache in TM."""
+        return self._config.get("min_segment_length_to_cache", 2)
+        
+    @min_segment_length_to_cache.setter
+    def min_segment_length_to_cache(self, value: int):
+        """Set the minimum segment length to cache in TM."""
+        self._config["min_segment_length_to_cache"] = value
+
     
     def rotate_api_key(self) -> bool:
         """
