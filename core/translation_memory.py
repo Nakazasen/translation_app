@@ -12,7 +12,7 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +197,269 @@ class TranslationMemoryManager:
             logger.error(f"❌ TM Save failed: {e}")
             
         return False
+
+    # =========================================================================
+    # GLOSSARY MANAGEMENT APIs
+    # =========================================================================
+    
+    def add_glossary_term(self, source_term: str, target_term: str, source_lang: str, target_lang: str, domain: str = "", note: str = "", is_active: bool = True) -> Optional[int]:
+        """
+        Add a new term to the glossary.
+        Returns the inserted term_id.
+        """
+        if not source_term or not source_term.strip() or not target_term or not target_term.strip():
+            return None
+            
+        src = (source_lang or "").strip().lower()
+        tgt = (target_lang or "").strip().lower()
+        active_val = 1 if is_active else 0
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO glossary (source_term, target_term, source_lang, target_lang, domain, note, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (source_term.strip(), target_term.strip(), src, tgt, (domain or "").strip(), (note or "").strip(), active_val)
+                )
+                conn.commit()
+                term_id = cursor.lastrowid
+                logger.info(
+                    f"📋 Glossary Added: id={term_id}, {src}->{tgt}, "
+                    f"source_len={len(source_term.strip())}, target_len={len(target_term.strip())}"
+                )
+                return term_id
+        except Exception as e:
+            logger.error(f"❌ Failed to add glossary term: {e}")
+        return None
+
+    def remove_glossary_term(self, term_id: int) -> bool:
+        """Remove a term from the glossary by ID."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM glossary WHERE id = ?", (term_id,))
+                conn.commit()
+                changes = conn.total_changes
+                if changes > 0:
+                    logger.info(f"📋 Glossary Removed: id={term_id}")
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to remove glossary term: {e}")
+        return False
+
+    def update_glossary_term(self, term_id: int, source_term: Optional[str] = None, target_term: Optional[str] = None, source_lang: Optional[str] = None, target_lang: Optional[str] = None, domain: Optional[str] = None, note: Optional[str] = None, is_active: Optional[bool] = None) -> bool:
+        """Update fields of an existing glossary term."""
+        updates = []
+        params = []
+        
+        if source_term is not None:
+            updates.append("source_term = ?")
+            params.append(source_term.strip())
+        if target_term is not None:
+            updates.append("target_term = ?")
+            params.append(target_term.strip())
+        if source_lang is not None:
+            updates.append("source_lang = ?")
+            params.append(source_lang.strip().lower())
+        if target_lang is not None:
+            updates.append("target_lang = ?")
+            params.append(target_lang.strip().lower())
+        if domain is not None:
+            updates.append("domain = ?")
+            params.append(domain.strip())
+        if note is not None:
+            updates.append("note = ?")
+            params.append(note.strip())
+        if is_active is not None:
+            updates.append("is_active = ?")
+            params.append(1 if is_active else 0)
+            
+        if not updates:
+            return False
+            
+        params.append(term_id)
+        query = f"UPDATE glossary SET {', '.join(updates)} WHERE id = ?"
+        
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"📋 Glossary Updated: id={term_id}")
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to update glossary term: {e}")
+        return False
+
+    def list_glossary_terms(self, source_lang: Optional[str] = None, target_lang: Optional[str] = None, domain: Optional[str] = None, active_only: bool = True) -> list[dict]:
+        """
+        List all glossary terms with filtering options.
+        Sorted by source_term length descending to prioritize longer matches.
+        """
+        query = "SELECT id, source_term, target_term, source_lang, target_lang, domain, note, is_active FROM glossary WHERE 1=1"
+        params = []
+        
+        if active_only:
+            query += " AND is_active = 1"
+        if source_lang and source_lang.lower() != 'auto':
+            query += " AND source_lang = ?"
+            params.append(source_lang.strip().lower())
+        if target_lang:
+            query += " AND target_lang = ?"
+            params.append(target_lang.strip().lower())
+        if domain:
+            query += " AND domain = ?"
+            params.append(domain.strip())
+            
+        query += " ORDER BY length(source_term) DESC"
+        
+        results = []
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                for r in rows:
+                    results.append({
+                        "id": r[0],
+                        "source_term": r[1],
+                        "target_term": r[2],
+                        "source_lang": r[3],
+                        "target_lang": r[4],
+                        "domain": r[5],
+                        "note": r[6],
+                        "is_active": bool(r[7])
+                    })
+        except Exception as e:
+            logger.error(f"❌ Failed to list glossary terms: {e}")
+            
+        return results
+
+    def find_relevant_terms(self, text: str, source_lang: str, target_lang: str, max_terms: int = 20) -> list[dict]:
+        """
+        Find active glossary terms that appear in the normalized text.
+        Does not log raw text to maintain privacy.
+        """
+        if not text or not text.strip():
+            return []
+            
+        normalized_text = normalize_text(text)
+        text_lower = normalized_text.lower()
+        
+        # If source_lang is auto, we list matching target_lang terms for all source languages
+        terms = self.list_glossary_terms(
+            source_lang=source_lang if source_lang.lower() != 'auto' else None,
+            target_lang=target_lang,
+            active_only=True
+        )
+        
+        relevant = []
+        for term in terms:
+            term_src = term["source_term"]
+            if not term_src or not term_src.strip():
+                continue
+                
+            # Perform case-insensitive substring match
+            if term_src.lower() in text_lower:
+                relevant.append(term)
+                if len(relevant) >= max_terms:
+                    break
+                    
+        # Log matching metrics for privacy, no raw strings
+        if relevant:
+            logger.info(f"📋 Glossary Matched: {len(relevant)} terms found in segment (len={len(text)} chars)")
+            
+        return relevant
+
+    # =========================================================================
+    # CSV IMPORT / EXPORT APIs
+    # =========================================================================
+
+    def import_glossary_csv(self, csv_path: str) -> Tuple[int, int]:
+        """
+        Import glossary terms from a CSV file.
+        Returns: (success_count, fail_count)
+        """
+        import csv
+        success_count = 0
+        fail_count = 0
+        
+        if not os.path.exists(csv_path):
+            logger.error(f"❌ CSV file not found: {csv_path}")
+            return 0, 0
+            
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                headers = {h.strip().lower(): h for h in reader.fieldnames or []}
+                
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    for row in reader:
+                        try:
+                            # Map columns case-insensitively with defaults
+                            source_term = row.get(headers.get('source_term', 'source_term'), '').strip()
+                            target_term = row.get(headers.get('target_term', 'target_term'), '').strip()
+                            source_lang = row.get(headers.get('source_lang', 'source_lang'), '').strip().lower()
+                            target_lang = row.get(headers.get('target_lang', 'target_lang'), '').strip().lower()
+                            domain = row.get(headers.get('domain', 'domain'), '').strip()
+                            note = row.get(headers.get('note', 'note'), '').strip()
+                            
+                            is_active_val = row.get(headers.get('is_active', 'is_active'), '1').strip().lower()
+                            is_active = 0 if is_active_val in ('0', 'false', 'no', 'f') else 1
+                            
+                            if not source_term or not target_term or not source_lang or not target_lang:
+                                fail_count += 1
+                                continue
+                                
+                            cursor.execute(
+                                """
+                                INSERT INTO glossary (source_term, target_term, source_lang, target_lang, domain, note, is_active)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (source_term, target_term, source_lang, target_lang, domain, note, is_active)
+                            )
+                            success_count += 1
+                        except Exception as row_err:
+                            logger.error(f"Error importing row {row}: {row_err}")
+                            fail_count += 1
+                    conn.commit()
+            logger.info(f"📋 Glossary Import complete: {success_count} success, {fail_count} failed")
+        except Exception as e:
+            logger.error(f"❌ Failed to import glossary CSV: {e}")
+            
+        return success_count, fail_count
+
+    def export_glossary_csv(self, csv_path: str) -> bool:
+        """
+        Export glossary terms from database to a CSV file.
+        """
+        import csv
+        try:
+            terms = self.list_glossary_terms(active_only=False)
+            with open(csv_path, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.writer(f)
+                # Write header
+                writer.writerow(['source_term', 'target_term', 'source_lang', 'target_lang', 'domain', 'note', 'is_active'])
+                for term in terms:
+                    writer.writerow([
+                        term['source_term'],
+                        term['target_term'],
+                        term['source_lang'],
+                        term['target_lang'],
+                        term['domain'],
+                        term['note'],
+                        1 if term['is_active'] else 0
+                    ])
+            logger.info(f"📋 Glossary Export complete: saved {len(terms)} terms to {csv_path}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to export glossary CSV: {e}")
+            return False
 
 
 # Global TranslationMemoryManager instance

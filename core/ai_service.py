@@ -242,7 +242,10 @@ class AIConfigManager:
             "current_key_index": 0,
             "waterfall_strategy": DEFAULT_MODELS.copy(),
             "use_translation_memory": True,
-            "min_segment_length_to_cache": 2
+            "min_segment_length_to_cache": 2,
+            "use_glossary": True,
+            "max_glossary_terms_per_segment": 20,
+            "glossary_enforcement_level": "prompt"
         }
     
     # =========================================================================
@@ -303,6 +306,55 @@ class AIConfigManager:
     def min_segment_length_to_cache(self, value: int):
         """Set the minimum segment length to cache in TM."""
         self._config["min_segment_length_to_cache"] = value
+        
+    @property
+    def use_glossary(self) -> bool:
+        """Check if Glossary enforcement is enabled."""
+        return self._config.get("use_glossary", True)
+        
+    @use_glossary.setter
+    def use_glossary(self, value: bool):
+        """Set Glossary enforcement enabled state."""
+        self._config["use_glossary"] = value
+        
+    @property
+    def max_glossary_terms_per_segment(self) -> int:
+        """Get the maximum glossary terms per segment."""
+        return self._config.get("max_glossary_terms_per_segment", 20)
+        
+    @max_glossary_terms_per_segment.setter
+    def max_glossary_terms_per_segment(self, value: int):
+        """Set the maximum glossary terms per segment."""
+        self._config["max_glossary_terms_per_segment"] = value
+        
+    @property
+    def glossary_enforcement_level(self) -> str:
+        """
+        Get the glossary enforcement level.
+
+        Supported values:
+        - off: glossary is ignored during translation prompt construction
+        - prompt: sanitized glossary terms are injected into the prompt
+        - validate: reserved for future QA validation, currently does not enforce anything at translation time
+        """
+        value = str(self._config.get("glossary_enforcement_level", "prompt")).strip().lower()
+        if value in {"off", "prompt", "validate"}:
+            return value
+        return "prompt"
+        
+    @glossary_enforcement_level.setter
+    def glossary_enforcement_level(self, value: str):
+        """
+        Set the glossary enforcement level.
+
+        "validate" is accepted as reserved configuration for future QA validation,
+        but it does not inject or enforce glossary terms during translation yet.
+        """
+        normalized = str(value).strip().lower()
+        self._config["glossary_enforcement_level"] = (
+            normalized if normalized in {"off", "prompt", "validate"} else "prompt"
+        )
+
 
     
     def rotate_api_key(self) -> bool:
@@ -605,6 +657,55 @@ class WaterfallGeminiService:
                 "model_used": "NONE",
                 "status": "error"
             }
+
+    @staticmethod
+    def _sanitize_glossary_value(value: Any) -> str:
+        """Flatten glossary values to a single prompt-safe line."""
+        if value is None:
+            return ""
+        normalized = str(value).replace("\r", "\n")
+        sanitized = " ".join(part.strip() for part in normalized.splitlines() if part.strip())
+        return sanitized.strip()
+
+    def _build_glossary_prompt_part(self, text: str, source_lang: str, target_lang: str) -> str:
+        """
+        Build the glossary prompt section for prompt-level enforcement only.
+
+        "validate" is reserved for future QA validation and intentionally does
+        not inject glossary terms yet.
+        """
+        if not self.config_manager.use_glossary:
+            return ""
+
+        enforce_level = self.config_manager.glossary_enforcement_level
+        if enforce_level != "prompt":
+            return ""
+
+        try:
+            from translation_app.core.translation_memory import get_tm_manager
+
+            tm = get_tm_manager()
+            relevant_terms = tm.find_relevant_terms(
+                text,
+                source_lang,
+                target_lang,
+                max_terms=self.config_manager.max_glossary_terms_per_segment,
+            )
+        except Exception as ge:
+            logger.error(f"Failed to fetch glossary terms for prompt injection: {ge}")
+            return ""
+
+        glossary_lines = []
+        for term in relevant_terms:
+            source_term = self._sanitize_glossary_value(term.get("source_term"))
+            target_term = self._sanitize_glossary_value(term.get("target_term"))
+            if source_term and target_term:
+                glossary_lines.append(f"{source_term} => {target_term}")
+
+        if not glossary_lines:
+            return ""
+
+        return "\nUse this glossary strictly:\n" + "\n".join(glossary_lines) + "\n"
     
     # =========================================================================
     # TRANSLATION SPECIFIC METHODS
@@ -612,9 +713,11 @@ class WaterfallGeminiService:
     
     def translate(self, text: str, source_lang: str, target_lang: str, allow_google_fallback: bool = True) -> dict:
         """Translate text using Waterfall strategy with optional Google fallback."""
+        glossary_part = self._build_glossary_prompt_part(text, source_lang, target_lang)
+
         prompt = f"""Translate the following text from {source_lang} to {target_lang}.
 Provide ONLY the translation, without any explanations or notes.
-
+{glossary_part}
 TEXT: {text}
 
 TRANSLATION:"""
