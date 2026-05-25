@@ -18,6 +18,7 @@ import sys
 import json
 import time
 import logging
+import concurrent.futures
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -41,26 +42,54 @@ def get_config_path() -> Path:
 DEFAULT_CONFIG_PATH = get_config_path()
 
 # =============================================================================
-# DEFAULT MODELS - Ported from leetcode_mastery (giữ nguyên, không tự bịa)
+# MODEL ALLOWLIST & CATEGORIZATION
 # =============================================================================
-DEFAULT_MODELS = [
-    {"model_id": "gemini-3-pro-preview", "is_active": True, "timeout": 10},
-    {"model_id": "gemini-3-flash-preview", "is_active": True, "timeout": 10},
-    {"model_id": "gemini-2.5-pro", "is_active": True, "timeout": 10},
-    {"model_id": "gemini-2.5-flash", "is_active": True, "timeout": 12},
-    {"model_id": "gemini-robotics-er-1.5-preview", "is_active": True, "timeout": 28},
-    {"model_id": "gemma-3-27b-it", "is_active": True, "timeout": 17},
-    {"model_id": "gemma-3-12b-it", "is_active": True, "timeout": 18},
-    {"model_id": "gemma-3-4b-it", "is_active": True, "timeout": 10},
-    {"model_id": "gemma-3n-e2b-it", "is_active": True, "timeout": 9},
-    {"model_id": "gemini-2.5-flash-lite", "is_active": True, "timeout": 7},
-    {"model_id": "gemini-2.5-computer-use-preview-10-2025", "is_active": True, "timeout": 10},
-    {"model_id": "gemini-2.5-flash-native-audio-latest", "is_active": True, "timeout": 10},
-    {"model_id": "gemini-2.5-flash-preview-tts", "is_active": True, "timeout": 10},
-    {"model_id": "gemma-3-1b-it", "is_active": True, "timeout": 10},
-    {"model_id": "imagen-4.0-ultra-generate-001", "is_active": True, "timeout": 10},
-    {"model_id": "veo-3.1-generate-preview", "is_active": True, "timeout": 10},
+LIVE_TEXT_TRANSLATION_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemma-4-31b-it",
+    "gemma-4-26b-a4b-it"
 ]
+
+VISION_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview"
+]
+
+DEFAULT_MODELS = [
+    {"model_id": "gemini-3.5-flash", "is_active": True, "timeout": 10},
+    {"model_id": "gemini-3.1-flash-lite", "is_active": True, "timeout": 10},
+    {"model_id": "gemini-2.5-flash", "is_active": True, "timeout": 12},
+    {"model_id": "gemini-2.5-flash-lite", "is_active": True, "timeout": 7},
+    {"model_id": "gemini-3-flash-preview", "is_active": True, "timeout": 10},
+    {"model_id": "gemma-4-31b-it", "is_active": True, "timeout": 15},
+    {"model_id": "gemma-4-26b-a4b-it", "is_active": True, "timeout": 15},
+]
+
+def validate_model_for_profile(model_id: str, profile: str) -> bool:
+    """
+    Validate if a model is suitable for a given profile.
+    Profiles: 'text' (general text translation), 'vision' (multimodal OCR/translation)
+    """
+    model_lower = model_id.lower()
+    
+    # Exclude multimedia, generation, audio, robotics and computer use models
+    invalid_keywords = ["imagen", "veo", "tts", "native-audio", "audio", "robotics", "computer-use"]
+    if any(kw in model_lower for kw in invalid_keywords):
+        return False
+        
+    if profile == "text":
+        return model_id in LIVE_TEXT_TRANSLATION_MODELS
+    elif profile == "vision":
+        # Vision models must be in VISION_MODELS
+        return model_id in VISION_MODELS
+        
+    return True
 
 
 class AIConfigManager:
@@ -73,35 +102,136 @@ class AIConfigManager:
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._config = None
+        self._current_key_index = 0
         self.load_config()
     
+    def _merge_with_defaults(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge loaded config with defaults so that missing fields are filled instead of resetting everything."""
+        defaults = self._get_default_config()
+        if not isinstance(config_data, dict):
+            return defaults
+            
+        merged = defaults.copy()
+        
+        # Merge top-level fields
+        for key, default_val in defaults.items():
+            if key in config_data:
+                if key == "waterfall_strategy" and isinstance(config_data[key], list):
+                    merged_strategy = []
+                    
+                    # Merge loaded models if they are valid live text models
+                    for model in config_data[key]:
+                        if isinstance(model, dict) and "model_id" in model:
+                            model_id = model["model_id"]
+                            if model_id in LIVE_TEXT_TRANSLATION_MODELS:
+                                default_model = next((m for m in DEFAULT_MODELS if m["model_id"] == model_id), None)
+                                default_timeout = default_model["timeout"] if default_model else 10
+                                
+                                m_copy = {
+                                    "model_id": model_id,
+                                    "is_active": model.get("is_active", True),
+                                    "timeout": model.get("timeout", default_timeout)
+                                }
+                                merged_strategy.append(m_copy)
+                            else:
+                                logger.info(f"🚫 Migrated out invalid text translation model: {model_id}")
+                                
+                    # If some default live models are completely missing, append them
+                    merged_model_ids = [m["model_id"] for m in merged_strategy]
+                    for def_model in DEFAULT_MODELS:
+                        if def_model["model_id"] not in merged_model_ids:
+                            merged_strategy.append(def_model.copy())
+                            
+                    merged[key] = merged_strategy
+                else:
+                    merged[key] = config_data[key]
+                    
+        return merged
+
     def load_config(self) -> Dict[str, Any]:
-        """Load configuration from JSON file."""
+        """Load configuration from JSON file with backup support and corruption protection."""
+        config_loaded = False
+        loaded_data = None
+        
+        # Try loading main config
         try:
             if self.config_path.exists():
                 with open(self.config_path, 'r', encoding='utf-8') as f:
-                    self._config = json.load(f)
+                    loaded_data = json.load(f)
+                config_loaded = True
                 logger.info(f"✅ Loaded AI config from: {self.config_path}")
+        except Exception as e:
+            logger.error(f"❌ Failed to load main config: {e}. Trying backup...")
+            
+        # Try loading backup config if main failed
+        if not config_loaded:
+            bak_path = self.config_path.with_suffix(self.config_path.suffix + '.bak')
+            try:
+                if bak_path.exists():
+                    with open(bak_path, 'r', encoding='utf-8') as f:
+                        loaded_data = json.load(f)
+                    config_loaded = True
+                    logger.info(f"✅ Loaded AI config from backup: {bak_path}")
+            except Exception as e_bak:
+                logger.error(f"❌ Failed to load backup config: {e_bak}")
+                
+        if config_loaded and loaded_data is not None:
+            # Detect changes to the api_keys pool
+            old_keys = self._config.get("api_keys", []) if self._config else []
+            new_keys = loaded_data.get("api_keys", [])
+            
+            self._config = self._merge_with_defaults(loaded_data)
+            
+            # If api_keys changed, reset index. Otherwise, retain in-memory index.
+            if old_keys != new_keys:
+                self._current_key_index = self._config.get("current_key_index", 0)
+        else:
+            if self.config_path.exists() or self.config_path.with_suffix(self.config_path.suffix + '.bak').exists():
+                # Both files are corrupted. Do NOT overwrite. Load default in RAM.
+                logger.error("❌ Both main and backup configs are corrupted. Using defaults in-memory. DO NOT OVERWRITE.")
+                if self._config is None:
+                    self._config = self._get_default_config()
+                    self._current_key_index = 0
             else:
+                # First startup
                 logger.warning(f"⚠️ Config not found, using defaults: {self.config_path}")
                 self._config = self._get_default_config()
+                self._current_key_index = 0
                 self.save_config()  # Create default config file
-        except Exception as e:
-            logger.error(f"❌ Failed to load config: {e}")
-            self._config = self._get_default_config()
-        
+                
         return self._config
     
     def save_config(self) -> bool:
-        """Save current configuration to JSON file."""
+        """Save current configuration to JSON file using atomic write."""
+        temp_path = self.config_path.with_suffix(self.config_path.suffix + '.tmp')
+        bak_path = self.config_path.with_suffix(self.config_path.suffix + '.bak')
         try:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            
+            # 1. Atomic write to temp file
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(self._config, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+                
+            # 2. Backup existing config
+            if self.config_path.exists():
+                try:
+                    os.replace(self.config_path, bak_path)
+                except Exception as bak_err:
+                    logger.warning(f"⚠️ Failed to backup config: {bak_err}")
+            
+            # 3. Rename temp to config
+            os.replace(temp_path, self.config_path)
             logger.info(f"✅ Saved AI config to: {self.config_path}")
             return True
         except Exception as e:
             logger.error(f"❌ Failed to save config: {e}")
+            if temp_path.exists():
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
             return False
     
     def _get_default_config(self) -> Dict[str, Any]:
@@ -109,11 +239,12 @@ class AIConfigManager:
         return {
             "api_key": os.getenv("GEMINI_API_KEY", ""),
             "api_keys": [],
+            "current_key_index": 0,
             "waterfall_strategy": DEFAULT_MODELS.copy()
         }
     
     # =========================================================================
-    # API KEY MANAGEMENT - with Rotation Support
+    # API KEY MANAGEMENT - with In-Memory Rotation
     # =========================================================================
     
     @property
@@ -123,7 +254,11 @@ class AIConfigManager:
         """
         keys = self._config.get("api_keys", [])
         if keys and isinstance(keys, list) and len(keys) > 0:
-            return keys[0]
+            idx = self._current_key_index
+            if idx >= len(keys) or idx < 0:
+                idx = 0
+                self._current_key_index = 0
+            return keys[idx]
         
         key = self._config.get("api_key", "")
         return key if key else os.getenv("GEMINI_API_KEY", "")
@@ -142,30 +277,24 @@ class AIConfigManager:
     def api_keys(self, value: List[str]):
         """Set the pool of API keys."""
         self._config["api_keys"] = value
+        self._current_key_index = 0
+        self._config["current_key_index"] = 0
         if value:
             self._config["api_key"] = value[0]
     
     def rotate_api_key(self) -> bool:
         """
         Cycle to the next API key in the pool.
-        Moves the current key to the end of the 'api_keys' list.
-        This is called automatically when quota/rate limit errors occur.
+        This updates our in-memory pointer without mutating the config or reordering keys on disk.
         """
         keys = self._config.get("api_keys", [])
         if not keys or not isinstance(keys, list) or len(keys) < 2:
             logger.warning("⚠️ Cannot rotate: Need at least 2 API keys")
             return False
             
-        # Rotate: move first to last
-        current_key = keys.pop(0)
-        keys.append(current_key)
-        self._config["api_keys"] = keys
-        
-        # Update the single api_key field for backward compatibility
-        self._config["api_key"] = keys[0]
-        
-        self.save_config()
-        logger.info(f"🔄 Rotated to next API key: {keys[0][:8]}...")
+        self._current_key_index = (self._current_key_index + 1) % len(keys)
+        self._config["current_key_index"] = self._current_key_index
+        logger.info(f"🔄 Rotated to next API key at index {self._current_key_index}")
         return True
     
     # =========================================================================
@@ -257,6 +386,7 @@ class WaterfallGeminiService:
         self._client = None
         self._configured = False
         self._is_new_sdk = False
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
         
         if not self.api_key:
             logger.warning("⚠️ GEMINI_API_KEY not found! Will use web fallback.")
@@ -293,7 +423,7 @@ class WaterfallGeminiService:
         # Attempt 1: New SDK (google-genai)
         try:
             from google import genai
-            logger.info(f"🔧 Configuring Gemini with new SDK, key: {self.api_key[:8]}...")
+            logger.info("🔧 Configuring Gemini with new SDK...")
             self._client = genai.Client(api_key=self.api_key)
             self._is_new_sdk = True
             self._configured = True
@@ -303,7 +433,7 @@ class WaterfallGeminiService:
             # Attempt 2: Legacy SDK (google.generativeai)
             try:
                 import google.generativeai as genai_legacy
-                logger.info(f"🔧 Configuring Gemini with legacy SDK, key: {self.api_key[:8]}...")
+                logger.info("🔧 Configuring Gemini with legacy SDK...")
                 genai_legacy.configure(api_key=self.api_key)
                 self._client = genai_legacy
                 self._is_new_sdk = False
@@ -320,6 +450,29 @@ class WaterfallGeminiService:
         self.reload_config()
         return self._configured and bool(self.api_key)
     
+    def _generate_with_timeout(self, model_name: str, prompt: str, timeout: float) -> str:
+        """Call Gemini model with strict execution timeout using a ThreadPoolExecutor."""
+        def call_gemini():
+            if self._is_new_sdk:
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                return response.text
+            else:
+                model = self._client.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                return response.text
+
+        future = self._executor.submit(call_gemini)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as te:
+            future.cancel()
+            chunk_preview = prompt[:50].replace('\n', ' ') + "..."
+            logger.error(f"⏱️ Model {model_name} timed out after {timeout}s | Key: [configured] | Chunk preview: {chunk_preview}")
+            raise TimeoutError(f"Model {model_name} timed out after {timeout} seconds") from te
+
     def generate_response(self, prompt: str) -> dict:
         """
         Execute Waterfall strategy to generate AI response.
@@ -345,23 +498,20 @@ class WaterfallGeminiService:
         
         last_error = None
         
-        for model_name in self.models_priority:
+        # Filter priority models for text profile validation
+        active_models = [
+            m for m in self.models_priority 
+            if validate_model_for_profile(m, "text")
+        ]
+        
+        for model_name in active_models:
+            # Find timeout in config
+            model_config = next((m for m in self.config_manager.waterfall_strategy if m["model_id"] == model_name), None)
+            timeout = model_config.get("timeout", 10) if model_config else 10
+            
             try:
-                logger.info(f"🔄 Attempting model: {model_name}...")
-                
-                if self._is_new_sdk:
-                    # New SDK syntax
-                    response = self._client.models.generate_content(
-                        model=model_name,
-                        contents=prompt
-                    )
-                    text_result = response.text
-                else:
-                    # Legacy SDK syntax
-                    model = self._client.GenerativeModel(model_name)
-                    response = model.generate_content(prompt)
-                    text_result = response.text
-                
+                logger.info(f"🔄 Attempting model: {model_name} (timeout={timeout}s)...")
+                text_result = self._generate_with_timeout(model_name, prompt, timeout)
                 logger.info(f"✅ Success with: {model_name}")
                 return {
                     "text": text_result,
@@ -386,17 +536,7 @@ class WaterfallGeminiService:
                             self._configure_genai(force=True)
                             # Retry same model with new key
                             try:
-                                if self._is_new_sdk:
-                                    response = self._client.models.generate_content(
-                                        model=model_name,
-                                        contents=prompt
-                                    )
-                                    text_result = response.text
-                                else:
-                                    model = self._client.GenerativeModel(model_name)
-                                    response = model.generate_content(prompt)
-                                    text_result = response.text
-
+                                text_result = self._generate_with_timeout(model_name, prompt, timeout)
                                 logger.info(f"✅ Retry success with new key: {model_name}")
                                 return {
                                     "text": text_result,
@@ -447,8 +587,8 @@ class WaterfallGeminiService:
     # TRANSLATION SPECIFIC METHODS
     # =========================================================================
     
-    def translate(self, text: str, source_lang: str, target_lang: str) -> dict:
-        """Translate text using Waterfall strategy with Google fallback."""
+    def translate(self, text: str, source_lang: str, target_lang: str, allow_google_fallback: bool = True) -> dict:
+        """Translate text using Waterfall strategy with optional Google fallback."""
         prompt = f"""Translate the following text from {source_lang} to {target_lang}.
 Provide ONLY the translation, without any explanations or notes.
 
@@ -457,9 +597,17 @@ TEXT: {text}
 TRANSLATION:"""
         result = self.generate_response(prompt)
         
-        # If AI failed, use Google Translate fallback
+        # If AI failed, use Google Translate fallback if allowed
         if result.get("status") == "fallback":
-            return self._google_translate_fallback(text, source_lang, target_lang)
+            if allow_google_fallback:
+                return self._google_translate_fallback(text, source_lang, target_lang)
+            else:
+                return {
+                    "text": result.get("text", "AI Translation failed"),
+                    "model_used": result.get("model_used", "AI_EXHAUSTED"),
+                    "status": "error",
+                    "error_message": "AI translation failed and Google fallback is disabled."
+                }
             
         return result
     
@@ -490,6 +638,47 @@ TRẢ LỜI BẰNG TIẾNG VIỆT:"""
             
         return result
     
+    def _generate_vision_with_timeout(self, model_name: str, prompt: str, image_bytes: bytes, timeout: float) -> str:
+        """Call Gemini vision model with strict execution timeout using a ThreadPoolExecutor."""
+        def call_vision():
+            if self._is_new_sdk:
+                from google.genai import types
+                response = self._client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        types.Content(
+                            parts=[
+                                types.Part(text=prompt),
+                                types.Part(
+                                    inline_data=types.Blob(
+                                        mime_type="image/png",
+                                        data=image_bytes
+                                    )
+                                )
+                            ]
+                        )
+                    ]
+                )
+                return response.text
+            else:
+                import base64
+                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+                model = self._client.GenerativeModel(model_name)
+                image_part = {
+                    "mime_type": "image/png",
+                    "data": image_b64
+                }
+                response = model.generate_content([prompt, image_part])
+                return response.text
+
+        future = self._executor.submit(call_vision)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as te:
+            future.cancel()
+            logger.error(f"⏱️ Vision model {model_name} timed out after {timeout}s | Key: [configured]")
+            raise TimeoutError(f"Vision model {model_name} timed out after {timeout} seconds") from te
+
     def translate_image_with_vision(self, image_bytes: bytes, source_lang: str, target_lang: str, 
                                      preserve_format: bool = True, custom_hint: str = "") -> dict:
         """
@@ -511,8 +700,6 @@ TRẢ LỜI BẰNG TIẾNG VIỆT:"""
         Returns:
             dict with 'text', 'model_used', 'status'
         """
-        import base64
-        
         if not self.api_key:
             return {
                 "text": "",
@@ -527,9 +714,6 @@ TRẢ LỜI BẰNG TIẾNG VIỆT:"""
                     "model_used": "CONFIG_FAILED", 
                     "status": "error"
                 }
-        
-        # Convert image to base64
-        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
         
         # Add custom hint to prompt if provided
         layout_info = f"\n\n📌 GỢI Ý LAYOUT: {custom_hint}" if custom_hint else ""
@@ -552,55 +736,24 @@ CHỈ TRẢ VỀ VĂN BẢN ĐÃ DỊCH, KHÔNG GIẢI THÍCH."""
             prompt = f"""Đọc và dịch tất cả văn bản trong hình ảnh từ {source_lang} sang {target_lang}.{layout_info}
 Chỉ trả về bản dịch, không giải thích."""
 
-        
         last_error = None
         
-        # Try vision-capable models first
+        # Filter active priority models for vision profile validation
         vision_models = [
-            "gemini-2.5-flash",
-            "gemini-2.5-pro", 
-            "gemini-3-flash-preview",
-            "gemini-3-pro-preview",
+            m for m in self.models_priority 
+            if validate_model_for_profile(m, "vision")
         ]
+        # Fallback to default vision models if priority list yields none
+        if not vision_models:
+            vision_models = VISION_MODELS.copy()
         
         for model_name in vision_models:
+            model_config = next((m for m in self.config_manager.waterfall_strategy if m["model_id"] == model_name), None)
+            timeout = model_config.get("timeout", 15) if model_config else 15
+            
             try:
-                logger.info(f"🖼️ Vision OCR+Translate with: {model_name}...")
-                
-                if self._is_new_sdk:
-                    # New SDK with vision
-                    from google.genai import types
-                    
-                    response = self._client.models.generate_content(
-                        model=model_name,
-                        contents=[
-                            types.Content(
-                                parts=[
-                                    types.Part(text=prompt),
-                                    types.Part(
-                                        inline_data=types.Blob(
-                                            mime_type="image/png",
-                                            data=image_bytes
-                                        )
-                                    )
-                                ]
-                            )
-                        ]
-                    )
-                    text_result = response.text
-                else:
-                    # Legacy SDK with vision
-                    model = self._client.GenerativeModel(model_name)
-                    
-                    # Create image part
-                    image_part = {
-                        "mime_type": "image/png",
-                        "data": image_b64
-                    }
-                    
-                    response = model.generate_content([prompt, image_part])
-                    text_result = response.text
-                
+                logger.info(f"🖼️ Vision OCR+Translate with: {model_name} (timeout={timeout}s)...")
+                text_result = self._generate_vision_with_timeout(model_name, prompt, image_bytes, timeout)
                 logger.info(f"✅ Vision translation success with: {model_name}")
                 return {
                     "text": text_result,
@@ -657,7 +810,7 @@ def test_single_model_connection(api_key: str, model_name: str, test_prompt: str
         return {
             "success": True,
             "latency": f"{latency}ms",
-            "reply": response.text[:200]  # Truncate for display
+            "reply": "[REDACTED]"
         }
     except ImportError:
         # Try legacy SDK
@@ -673,7 +826,7 @@ def test_single_model_connection(api_key: str, model_name: str, test_prompt: str
             return {
                 "success": True,
                 "latency": f"{latency}ms",
-                "reply": response.text[:200]
+                "reply": "[REDACTED]"
             }
         except Exception as e:
             return {
