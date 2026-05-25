@@ -84,7 +84,7 @@ class TranslationService:
             try:
                 ai_service = get_ai_service()
                 if ai_service.is_available():
-                    result = ai_service.translate(text, src_lang, dest_lang)
+                    result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                     if result.get("status") == "success":
                         return result["text"]
                 logger.warning("⚠️ Gemini fails in AI->GOOGLE mode, falling back to Google Translate")
@@ -96,10 +96,13 @@ class TranslationService:
             logger.info("⚡ Mode: AI ONLY - Using Gemini for translation...")
             ai_service = get_ai_service()
             if ai_service.is_available():
-                result = ai_service.translate(text, src_lang, dest_lang)
+                result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                 if result.get("status") == "success":
                     return result["text"]
-            raise Exception("Gemini AI translation failed or not configured.")
+                else:
+                    error_msg = result.get("error_message") or result.get("text") or "AI Translation failed"
+                    raise TranslationServiceError(f"Gemini AI translation failed: {error_msg}")
+            raise TranslationServiceError("Gemini AI translation failed or not configured.")
         
         # STRATEGY: GOOGLE or WATERFALL
         try:
@@ -165,7 +168,7 @@ class TranslationService:
             try:
                 ai_service = get_ai_service()
                 if ai_service.is_available():
-                    result = ai_service.translate(text, src_lang, dest_lang)
+                    result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                     if result.get("status") == "success":
                         logger.info(f"✅ AI Waterfall success using: {result.get('model_used')}")
                         return result["text"]
@@ -317,4 +320,3 @@ def set_translation_service(service: TranslationService):
     """Set global translation service instance"""
     global _translation_service
     _translation_service = service
-
