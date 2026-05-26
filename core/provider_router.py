@@ -9,10 +9,36 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
 
+AUTH_HINTS = (
+    "401",
+    "403",
+    "unauthorized",
+    "authentication",
+    "auth failure",
+    "invalid api key",
+    "incorrect api key",
+    "permission denied",
+    "forbidden",
+    "api key",
+    "invalid key",
+)
 QUOTA_HINTS = ("429", "quota", "rate limit", "rate_limit", "resource exhausted", "too many requests")
 TIMEOUT_HINTS = ("timeout", "timed out")
+TRANSPORT_HINTS = (
+    "connection aborted",
+    "connection refused",
+    "connection reset",
+    "connection error",
+    "remote end closed connection",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "no address associated with hostname",
+    "network is unreachable",
+    "failed to establish a new connection",
+)
 MODEL_UNAVAILABLE_HINTS = ("404", "410", "not found", "model unavailable")
 TOKEN_LIMIT_HINTS = ("token limit", "token_limit", "prompt token", "context length")
+PROVIDER_5XX_HINTS = ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")
 
 
 @dataclass
@@ -178,6 +204,7 @@ class ProviderRouter:
             "quota_rate_limit",
             "token_limit",
             "timeout",
+            "transport_error",
             "model_unavailable",
             "provider_5xx",
             "unknown_transport_error",
@@ -229,16 +256,18 @@ def classify_error(error: Any) -> str:
     else:
         detail = str(error or "").lower()
 
+    if any(token in detail for token in AUTH_HINTS):
+        return "auth_failure"
     if any(token in detail for token in QUOTA_HINTS):
         return "quota_rate_limit"
     if any(token in detail for token in TOKEN_LIMIT_HINTS):
         return "token_limit"
     if any(token in detail for token in TIMEOUT_HINTS):
         return "timeout"
+    if any(token in detail for token in TRANSPORT_HINTS):
+        return "transport_error"
     if any(token in detail for token in MODEL_UNAVAILABLE_HINTS):
         return "model_unavailable"
-    if "401" in detail or "auth" in detail or "api key" in detail or "invalid key" in detail:
-        return "auth_failure"
-    if "503" in detail or "502" in detail or "500" in detail or "server error" in detail:
+    if any(token in detail for token in PROVIDER_5XX_HINTS):
         return "provider_5xx"
     return "unknown_transport_error"

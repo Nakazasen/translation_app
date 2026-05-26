@@ -336,6 +336,98 @@ def test_openai_compatible_provider_classifies_quota_http_error():
     assert secret not in result.error_message
 
 
+def test_openai_compatible_provider_classifies_403_as_auth_failure():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.dumps({"error": "forbidden"}).encode("utf-8")
+            self.send_response(403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        provider = OpenAICompatibleProvider(
+            enabled=True,
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="sk-test-403",
+            model="gpt-mock",
+            provider_name="mock-openai",
+            timeout=5,
+        )
+        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.status == "error"
+    assert result.error_type == "auth_failure"
+
+
+def test_openai_compatible_provider_classifies_429_as_quota():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            payload = json.dumps({"error": "too many requests"}).encode("utf-8")
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        provider = OpenAICompatibleProvider(
+            enabled=True,
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="sk-test-429",
+            model="gpt-mock",
+            provider_name="mock-openai",
+            timeout=5,
+        )
+        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.status == "error"
+    assert result.error_type == "quota_rate_limit"
+
+
+def test_openai_compatible_provider_classifies_timeout(monkeypatch):
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:1/v1",
+        api_key="sk-timeout-test",
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
+
+    def raise_timeout(*args, **kwargs):
+        raise TimeoutError("operation timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_timeout)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+
+    assert result.status == "error"
+    assert result.error_type == "timeout"
+
+
 def test_router_disabled_preserves_legacy_translation_path(monkeypatch):
     service = TranslationService()
     ai_service = get_ai_service()
