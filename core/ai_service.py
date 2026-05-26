@@ -23,6 +23,8 @@ from copy import deepcopy
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
+from translation_app.core.providers.profiles import get_default_provider_profiles
+
 logger = logging.getLogger(__name__)
 
 def get_config_path() -> Path:
@@ -237,6 +239,21 @@ class AIConfigManager:
     
     def _get_default_config(self) -> Dict[str, Any]:
         """Return default configuration."""
+        provider_router_defaults = {
+            "enabled": False,
+            "policy": "ai_waterfall",
+            "max_retries": 2,
+            "cooldown_seconds": 300,
+            "provider_order": [
+                "gemini",
+                "chatanywhere",
+                "deepseek",
+                "nvidia_nim",
+                "openai_compatible",
+                "google",
+            ],
+        }
+        provider_defaults = get_default_provider_profiles()
         return {
             "api_key": os.getenv("GEMINI_API_KEY", ""),
             "api_keys": [],
@@ -251,7 +268,7 @@ class AIConfigManager:
             "provider_router_policy": "ai_first",
             "provider_router_max_retries": 2,
             "provider_cooldown_seconds": 300,
-            "provider_order": ["gemini", "openai_compatible", "google"],
+            "provider_order": provider_router_defaults["provider_order"].copy(),
             "openai_compatible": {
                 "enabled": False,
                 "base_url": "",
@@ -261,60 +278,143 @@ class AIConfigManager:
                 "timeout": 15,
                 "allow_no_key_local": False,
             },
+            "provider_router": deepcopy(provider_router_defaults),
+            "providers": deepcopy(provider_defaults),
         }
 
     @property
+    def provider_router_config(self) -> Dict[str, Any]:
+        defaults = self._get_default_config()["provider_router"]
+        value = self._config.get("provider_router", {})
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            merged.update(value)
+        return merged
+
+    @provider_router_config.setter
+    def provider_router_config(self, value: Dict[str, Any]):
+        defaults = self._get_default_config()["provider_router"]
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            merged.update(value)
+        self._config["provider_router"] = merged
+
+    @property
+    def providers_config(self) -> Dict[str, Any]:
+        defaults = self._get_default_config()["providers"]
+        value = self._config.get("providers", {})
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            for provider_name, provider_defaults in defaults.items():
+                provider_merged = deepcopy(provider_defaults)
+                configured = value.get(provider_name, {})
+                if isinstance(configured, dict):
+                    provider_merged.update(configured)
+                merged[provider_name] = provider_merged
+
+        # Backward compatibility bridge for the single openai-compatible config block.
+        legacy_openai = self._config.get("openai_compatible", {})
+        if isinstance(legacy_openai, dict):
+            merged["openai_compatible"]["enabled"] = bool(legacy_openai.get("enabled", merged["openai_compatible"]["enabled"]))
+            merged["openai_compatible"]["base_url"] = legacy_openai.get("base_url", merged["openai_compatible"]["base_url"])
+            legacy_api_key = str(legacy_openai.get("api_key", "") or "").strip()
+            merged["openai_compatible"]["api_keys"] = [legacy_api_key] if legacy_api_key else merged["openai_compatible"]["api_keys"]
+            legacy_model = str(legacy_openai.get("model", "") or "").strip()
+            merged["openai_compatible"]["models"] = [legacy_model] if legacy_model else merged["openai_compatible"]["models"]
+            merged["openai_compatible"]["timeout"] = int(legacy_openai.get("timeout", merged["openai_compatible"]["timeout"]) or merged["openai_compatible"]["timeout"])
+            merged["openai_compatible"]["allow_no_key_local"] = bool(legacy_openai.get("allow_no_key_local", merged["openai_compatible"]["allow_no_key_local"]))
+
+        return merged
+
+    @providers_config.setter
+    def providers_config(self, value: Dict[str, Any]):
+        defaults = self._get_default_config()["providers"]
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            for provider_name, provider_defaults in defaults.items():
+                provider_merged = deepcopy(provider_defaults)
+                configured = value.get(provider_name, {})
+                if isinstance(configured, dict):
+                    provider_merged.update(configured)
+                merged[provider_name] = provider_merged
+        self._config["providers"] = merged
+
+    @property
     def use_provider_router(self) -> bool:
-        return bool(self._config.get("use_provider_router", False))
+        return bool(self.provider_router_config.get("enabled", self._config.get("use_provider_router", False)))
 
     @use_provider_router.setter
     def use_provider_router(self, value: bool):
         self._config["use_provider_router"] = bool(value)
+        router_config = self.provider_router_config
+        router_config["enabled"] = bool(value)
+        self._config["provider_router"] = router_config
 
     @property
     def provider_router_policy(self) -> str:
-        value = str(self._config.get("provider_router_policy", "ai_first")).strip().lower()
-        return value or "ai_first"
+        value = str(self.provider_router_config.get("policy", self._config.get("provider_router_policy", "ai_waterfall"))).strip().lower()
+        return value or "ai_waterfall"
 
     @provider_router_policy.setter
     def provider_router_policy(self, value: str):
-        normalized = str(value or "ai_first").strip().lower()
-        self._config["provider_router_policy"] = normalized or "ai_first"
+        normalized = str(value or "ai_waterfall").strip().lower()
+        self._config["provider_router_policy"] = normalized or "ai_waterfall"
+        router_config = self.provider_router_config
+        router_config["policy"] = normalized or "ai_waterfall"
+        self._config["provider_router"] = router_config
 
     @property
     def provider_router_max_retries(self) -> int:
-        return max(0, int(self._config.get("provider_router_max_retries", 2)))
+        return max(0, int(self.provider_router_config.get("max_retries", self._config.get("provider_router_max_retries", 2))))
 
     @provider_router_max_retries.setter
     def provider_router_max_retries(self, value: int):
         self._config["provider_router_max_retries"] = max(0, int(value))
+        router_config = self.provider_router_config
+        router_config["max_retries"] = max(0, int(value))
+        self._config["provider_router"] = router_config
 
     @property
     def provider_cooldown_seconds(self) -> int:
-        return max(1, int(self._config.get("provider_cooldown_seconds", 300)))
+        return max(1, int(self.provider_router_config.get("cooldown_seconds", self._config.get("provider_cooldown_seconds", 300))))
 
     @provider_cooldown_seconds.setter
     def provider_cooldown_seconds(self, value: int):
         self._config["provider_cooldown_seconds"] = max(1, int(value))
+        router_config = self.provider_router_config
+        router_config["cooldown_seconds"] = max(1, int(value))
+        self._config["provider_router"] = router_config
 
     @property
     def provider_order(self) -> List[str]:
-        value = self._config.get("provider_order", ["gemini", "openai_compatible", "google"])
+        value = self.provider_router_config.get("provider_order", self._config.get("provider_order", []))
         if not isinstance(value, list):
-            return ["gemini", "openai_compatible", "google"]
+            return self._get_default_config()["provider_router"]["provider_order"].copy()
         return [str(item).strip().lower() for item in value if str(item).strip()]
 
     @provider_order.setter
     def provider_order(self, value: List[str]):
-        self._config["provider_order"] = [str(item).strip().lower() for item in (value or []) if str(item).strip()]
+        normalized = [str(item).strip().lower() for item in (value or []) if str(item).strip()]
+        self._config["provider_order"] = normalized
+        router_config = self.provider_router_config
+        router_config["provider_order"] = normalized
+        self._config["provider_router"] = router_config
 
     @property
     def openai_compatible_config(self) -> Dict[str, Any]:
-        value = self._config.get("openai_compatible", {})
         defaults = self._get_default_config()["openai_compatible"]
         merged = deepcopy(defaults)
-        if isinstance(value, dict):
-            merged.update(value)
+        merged.update(self._config.get("openai_compatible", {}))
+        provider_cfg = self.providers_config.get("openai_compatible", {})
+        merged["enabled"] = bool(provider_cfg.get("enabled", merged["enabled"]))
+        merged["base_url"] = str(provider_cfg.get("base_url", merged["base_url"]) or "").strip()
+        api_keys = provider_cfg.get("api_keys", [])
+        merged["api_key"] = str(api_keys[0] if isinstance(api_keys, list) and api_keys else merged["api_key"] or "").strip()
+        models = provider_cfg.get("models", [])
+        merged["model"] = str(models[0] if isinstance(models, list) and models else merged["model"] or "").strip()
+        merged["timeout"] = int(provider_cfg.get("timeout", merged["timeout"]) or merged["timeout"])
+        merged["provider_name"] = "openai_compatible"
+        merged["allow_no_key_local"] = bool(provider_cfg.get("allow_no_key_local", merged["allow_no_key_local"]))
         return merged
 
     @openai_compatible_config.setter
@@ -324,6 +424,16 @@ class AIConfigManager:
         if isinstance(value, dict):
             merged.update(value)
         self._config["openai_compatible"] = merged
+        providers_config = self.providers_config
+        provider_entry = deepcopy(providers_config.get("openai_compatible", {}))
+        provider_entry["enabled"] = bool(merged.get("enabled", provider_entry.get("enabled", False)))
+        provider_entry["base_url"] = str(merged.get("base_url", provider_entry.get("base_url", "")) or "").strip()
+        provider_entry["api_keys"] = [str(merged.get("api_key", "") or "").strip()] if str(merged.get("api_key", "") or "").strip() else provider_entry.get("api_keys", [])
+        provider_entry["models"] = [str(merged.get("model", "") or "").strip()] if str(merged.get("model", "") or "").strip() else provider_entry.get("models", [])
+        provider_entry["timeout"] = int(merged.get("timeout", provider_entry.get("timeout", 15)) or 15)
+        provider_entry["allow_no_key_local"] = bool(merged.get("allow_no_key_local", provider_entry.get("allow_no_key_local", False)))
+        providers_config["openai_compatible"] = provider_entry
+        self._config["providers"] = providers_config
     
     # =========================================================================
     # API KEY MANAGEMENT - with In-Memory Rotation
