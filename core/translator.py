@@ -2,6 +2,7 @@
 Translation service using Google Translate
 """
 import concurrent.futures
+import threading
 from typing import Optional
 from deep_translator import GoogleTranslator
 
@@ -28,6 +29,8 @@ class TranslationService:
         self.timeout = timeout or config.translation_timeout
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.strategy = "waterfall"  # options: "google", "ai", "waterfall"
+        self._observer_lock = threading.RLock()
+        self._runtime_observer = None
         logger.info(f"TranslationService initialized with {self.max_workers} workers. Strategy: {self.strategy}")
     
     def set_strategy(self, strategy: str):
@@ -55,6 +58,26 @@ class TranslationService:
         """Shutdown the thread pool executor"""
         self.executor.shutdown(wait=wait)
         logger.info("TranslationService executor shut down")
+
+    def set_runtime_observer(self, observer):
+        """Register an optional runtime observer for translation events."""
+        with self._observer_lock:
+            self._runtime_observer = observer
+
+    def clear_runtime_observer(self):
+        """Clear the runtime translation observer."""
+        with self._observer_lock:
+            self._runtime_observer = None
+
+    def _emit_runtime_event(self, event: str, **metadata) -> None:
+        with self._observer_lock:
+            observer = self._runtime_observer
+        if observer is None:
+            return
+        try:
+            observer(event, metadata)
+        except Exception as exc:
+            logger.debug(f"Runtime observer error for event '{event}': {exc}")
     
     def translate_text(self, text: str, src_lang: str, dest_lang: str) -> str:
         """
@@ -88,6 +111,7 @@ class TranslationService:
             tm = get_tm_manager()
             cached_translation = tm.lookup_segment(src_lang, dest_lang, text)
             if cached_translation is not None:
+                self._emit_runtime_event("tm_hit", source_lang=src_lang, target_lang=dest_lang)
                 return cached_translation
 
         def save_to_tm(translated: str, provider: str, model: str):
@@ -97,12 +121,22 @@ class TranslationService:
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to save translation to TM: {e}")
 
+        provider_call_recorded = False
+
+        def mark_provider_call(provider: str):
+            nonlocal provider_call_recorded
+            if provider_call_recorded:
+                return
+            provider_call_recorded = True
+            self._emit_runtime_event("provider_call", provider=provider, source_lang=src_lang, target_lang=dest_lang)
+
         # NEW STRATEGY: AI -> GOOGLE (ai_waterfall)
         if self.strategy == "ai_waterfall":
             logger.info("⚡ Mode: AI -> GOOGLE - Attempting Gemini first...")
             try:
                 ai_service = get_ai_service()
                 if ai_service.is_available():
+                    mark_provider_call("gemini")
                     result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                     if result.get("status") == "success":
                         save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
@@ -116,6 +150,7 @@ class TranslationService:
             logger.info("⚡ Mode: AI ONLY - Using Gemini for translation...")
             ai_service = get_ai_service()
             if ai_service.is_available():
+                mark_provider_call("gemini")
                 result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                 if result.get("status") == "success":
                     save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
@@ -136,6 +171,7 @@ class TranslationService:
             
             normalized_dest = config.normalize_language_code(dest_lang)
             translator = GoogleTranslator(source=normalized_src, target=normalized_dest)
+            mark_provider_call("google")
             max_length = config.max_text_length
             text_chunks = []
             
@@ -190,6 +226,7 @@ class TranslationService:
             try:
                 ai_service = get_ai_service()
                 if ai_service.is_available():
+                    mark_provider_call("gemini")
                     result = ai_service.translate(text, src_lang, dest_lang, allow_google_fallback=False)
                     if result.get("status") == "success":
                         logger.info(f"✅ AI Waterfall success using: {result.get('model_used')}")

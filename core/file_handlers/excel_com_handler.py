@@ -11,6 +11,7 @@ import platform
 
 from translation_app.core.translator import TranslationService
 from translation_app.core.ocr_handler import get_ocr_handler
+from translation_app.core.translation_memory import get_segment_hash
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
 
@@ -30,7 +31,7 @@ else:
 class ExcelComHandler:
     """Handler for Excel file translation using COM automation"""
     
-    def __init__(self, translation_service: TranslationService):
+    def __init__(self, translation_service: TranslationService, job_manager=None, job_id: Optional[str] = None):
         """
         Initialize Excel COM handler
         
@@ -39,12 +40,18 @@ class ExcelComHandler:
         """
         self.translation_service = translation_service
         self.ocr_handler = get_ocr_handler()
+        self.job_manager = job_manager
+        self.job_id = job_id
+        self._job_total_segments = 0
         
         if not COM_AVAILABLE:
             raise FileProcessingError(
                 "Excel COM automation is not available. "
                 "This handler requires Windows and pywin32 package."
             )
+
+    def _make_segment_id(self, sheet_name: str, row: int, col: int) -> str:
+        return f"{sheet_name}!R{row}C{col}"
     
     def translate(self, input_file: str, output_file: str, src_lang: str, dest_lang: str) -> None:
         """
@@ -68,6 +75,7 @@ class ExcelComHandler:
         
         excel_app = None
         workbook = None
+        self._current_input_file = input_file
         
         try:
             logger.info(f"Starting Excel COM translation: {input_file}")
@@ -206,9 +214,13 @@ class ExcelComHandler:
                 
                 workbook.SaveAs(os.path.abspath(output_file), FileFormat=51)  # xlOpenXMLWorkbook (.xlsx)
                 logger.info(f"Excel COM translation completed: {output_file}")
+                if self.job_manager and self.job_id:
+                    self.job_manager.mark_completed(self.job_id)
             except Exception as save_error:
                 error_msg = f"Failed to save translated workbook: {save_error}"
                 logger.error(error_msg)
+                if self.job_manager and self.job_id:
+                    self.job_manager.mark_failed(self.job_id, error_msg)
                 raise FileProcessingError(error_msg, original_error=save_error) from save_error
         
         except FileProcessingError:
@@ -217,6 +229,8 @@ class ExcelComHandler:
         except Exception as e:
             error_msg = f"Error translating Excel file with COM: {e}"
             logger.error(error_msg, exc_info=True)
+            if self.job_manager and self.job_id:
+                self.job_manager.mark_failed(self.job_id, error_msg)
             raise FileProcessingError(error_msg, original_error=e) from e
         
         finally:
@@ -386,25 +400,54 @@ class ExcelComHandler:
             
             logger.info(f"Found {len(cells_data)} cells to translate in sheet '{sheet_name}'")
             
-            # OPTIMIZATION: Batch translate all texts in parallel
-            original_texts = [text for _, _, text in cells_data]
-            try:
-                translated_texts = self.translation_service.translate_batch(original_texts, src_lang, dest_lang)
-            except Exception as e:
-                logger.warning(f"Batch translation failed for sheet '{sheet_name}': {e}. Falling back to individual translation.")
-                translated_texts = original_texts  # Keep original on error
-            
+            if self.job_manager and self.job_id:
+                self._job_total_segments += len(cells_data)
+                self.job_manager.update_progress(
+                    self.job_id,
+                    total_segments=self._job_total_segments,
+                    current_file=self._current_input_file,
+                    current_sheet=sheet_name,
+                )
+
+            translation_tasks = []
+            for row, col, original_text in cells_data:
+                segment_id = self._make_segment_id(sheet_name, row, col)
+                if self.job_manager and self.job_id:
+                    self.job_manager.record_checkpoint(
+                        self.job_id,
+                        "segment_started",
+                        file=self._current_input_file,
+                        sheet=sheet_name,
+                        cell=f"R{row}C{col}",
+                        segment_id=segment_id,
+                        status="running",
+                    )
+                    self.job_manager.update_progress(
+                        self.job_id,
+                        current_file=self._current_input_file,
+                        current_sheet=sheet_name,
+                        current_segment_id=segment_id,
+                    )
+
+                future = self.translation_service.executor.submit(
+                    self.translation_service.translate_long_text,
+                    original_text,
+                    src_lang,
+                    dest_lang,
+                )
+                translation_tasks.append((row, col, original_text, segment_id, future))
+
             # Update cells in batch (minimize COM calls)
             translated_count = 0
             batch_size = 100  # Update cells in batches to avoid overwhelming Excel
             
-            for batch_start in range(0, len(cells_data), batch_size):
-                batch_end = min(batch_start + batch_size, len(cells_data))
-                batch = cells_data[batch_start:batch_end]
+            for batch_start in range(0, len(translation_tasks), batch_size):
+                batch_end = min(batch_start + batch_size, len(translation_tasks))
+                batch = translation_tasks[batch_start:batch_end]
                 
-                for idx, (row, col, original_text) in enumerate(batch):
+                for row, col, original_text, segment_id, future in batch:
                     try:
-                        translated_text = translated_texts[batch_start + idx]
+                        translated_text = future.result(timeout=self.translation_service.timeout)
                         
                         # Get cell and update (minimal COM calls)
                         cell = used_range.Cells(row, col)
@@ -412,22 +455,120 @@ class ExcelComHandler:
                         cell.Font.Name = "Times New Roman"
                         
                         translated_count += 1
+                        if self.job_manager and self.job_id:
+                            self.job_manager.record_checkpoint(
+                                self.job_id,
+                                "segment_completed",
+                                file=self._current_input_file,
+                                sheet=sheet_name,
+                                cell=f"R{row}C{col}",
+                                segment_id=segment_id,
+                                status="completed",
+                            )
+                            self.job_manager.update_progress(self.job_id, completed_delta=1)
                         
                     except pythoncom.com_error as e:
                         if e.args[0] == -2147417846:  # Application is busy
                             # Wait and retry once
                             time.sleep(0.5)
                             try:
+                                translated_text = future.result(timeout=self.translation_service.timeout)
                                 cell = used_range.Cells(row, col)
-                                cell.Value = translated_texts[batch_start + idx]
+                                cell.Value = translated_text
                                 cell.Font.Name = "Times New Roman"
                                 translated_count += 1
+                                if self.job_manager and self.job_id:
+                                    self.job_manager.record_checkpoint(
+                                        self.job_id,
+                                        "segment_completed",
+                                        file=self._current_input_file,
+                                        sheet=sheet_name,
+                                        cell=f"R{row}C{col}",
+                                        segment_id=segment_id,
+                                        status="completed",
+                                    )
+                                    self.job_manager.update_progress(self.job_id, completed_delta=1)
                             except Exception:
                                 logger.debug(f"Failed to update cell ({row}, {col}) after retry")
+                                if self.job_manager and self.job_id:
+                                    self.job_manager.record_failed_item(
+                                        self.job_id,
+                                        file=self._current_input_file,
+                                        sheet=sheet_name,
+                                        cell=f"R{row}C{col}",
+                                        segment_id=segment_id,
+                                        source_lang=src_lang,
+                                        target_lang=dest_lang,
+                                        error_type=type(e).__name__,
+                                        error_message=str(e),
+                                        retry_count=0,
+                                        source_hash=get_segment_hash(src_lang, dest_lang, original_text),
+                                        source_length=len(original_text),
+                                    )
+                                    self.job_manager.record_checkpoint(
+                                        self.job_id,
+                                        "segment_failed",
+                                        file=self._current_input_file,
+                                        sheet=sheet_name,
+                                        cell=f"R{row}C{col}",
+                                        segment_id=segment_id,
+                                        status="failed",
+                                    )
+                                    self.job_manager.update_progress(self.job_id, failed_delta=1)
                         else:
                             logger.debug(f"Error updating cell ({row}, {col}): {e}")
+                            if self.job_manager and self.job_id:
+                                self.job_manager.record_failed_item(
+                                    self.job_id,
+                                    file=self._current_input_file,
+                                    sheet=sheet_name,
+                                    cell=f"R{row}C{col}",
+                                    segment_id=segment_id,
+                                    source_lang=src_lang,
+                                    target_lang=dest_lang,
+                                    error_type=type(e).__name__,
+                                    error_message=str(e),
+                                    retry_count=0,
+                                    source_hash=get_segment_hash(src_lang, dest_lang, original_text),
+                                    source_length=len(original_text),
+                                )
+                                self.job_manager.record_checkpoint(
+                                    self.job_id,
+                                    "segment_failed",
+                                    file=self._current_input_file,
+                                    sheet=sheet_name,
+                                    cell=f"R{row}C{col}",
+                                    segment_id=segment_id,
+                                    status="failed",
+                                )
+                                self.job_manager.update_progress(self.job_id, failed_delta=1)
                     except Exception as e:
                         logger.debug(f"Error updating cell ({row}, {col}): {e}")
+                        if self.job_manager and self.job_id:
+                            self.job_manager.record_failed_item(
+                                self.job_id,
+                                file=self._current_input_file,
+                                sheet=sheet_name,
+                                cell=f"R{row}C{col}",
+                                segment_id=segment_id,
+                                source_lang=src_lang,
+                                target_lang=dest_lang,
+                                error_type=type(e).__name__,
+                                error_message=str(e),
+                                retry_count=0,
+                                source_hash=get_segment_hash(src_lang, dest_lang, original_text),
+                                source_length=len(original_text),
+                            )
+                            self.job_manager.record_checkpoint(
+                                self.job_id,
+                                "segment_failed",
+                                file=self._current_input_file,
+                                sheet=sheet_name,
+                                cell=f"R{row}C{col}",
+                                segment_id=segment_id,
+                                status="failed",
+                            )
+                            self.job_manager.update_progress(self.job_id, failed_delta=1)
                 
                 # Small delay between batches to let Excel process
                 if batch_end < len(cells_data):

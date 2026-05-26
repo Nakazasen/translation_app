@@ -15,6 +15,8 @@ from typing import Optional, List, Dict, Any
 
 from translation_app.core.translator import TranslationService
 from translation_app.core.ocr_handler import get_ocr_handler
+from translation_app.core.translation_job import get_translation_job_manager
+from translation_app.core.translation_memory import get_segment_hash
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
 
@@ -32,6 +34,97 @@ class ExcelHandler:
         self.translation_service = translation_service
         self.ocr_handler = get_ocr_handler()
         self.font = Font(name='Times New Roman')
+
+    def _make_segment_id(self, sheet_name: str, cell_coordinate: str) -> str:
+        return f"{sheet_name}!{cell_coordinate}"
+
+    def _create_job_observer(self, job_manager, job_id: str):
+        def observer(event: str, metadata: Dict[str, Any]) -> None:
+            if event == "tm_hit":
+                job_manager.update_progress(job_id, tm_hit_delta=1)
+            elif event == "provider_call":
+                job_manager.update_progress(job_id, provider_call_delta=1)
+
+        return observer
+
+    def _translate_sheet_with_job(self, sheet, input_file: str, src_lang: str, dest_lang: str, job_manager, job_id: str) -> None:
+        logger.info(f"Processing sheet: {sheet.title}")
+
+        if sheet.title in self._images_backup:
+            self._restore_sheet_images_from_backup(sheet, self._images_backup[sheet.title])
+
+        cells_to_translate = [cell for row in sheet.iter_rows() for cell in row if cell.value]
+        if not cells_to_translate:
+            return
+
+        cell_tasks = {}
+        for cell in cells_to_translate:
+            segment_id = self._make_segment_id(sheet.title, cell.coordinate)
+            job_manager.record_checkpoint(
+                job_id,
+                "segment_started",
+                file=input_file,
+                sheet=sheet.title,
+                cell=cell.coordinate,
+                segment_id=segment_id,
+                status="running",
+            )
+            job_manager.update_progress(
+                job_id,
+                current_file=input_file,
+                current_sheet=sheet.title,
+                current_segment_id=segment_id,
+            )
+            task = self.translation_service.executor.submit(
+                self.translation_service.translate_long_text,
+                str(cell.value),
+                src_lang,
+                dest_lang,
+            )
+            cell_tasks[task] = (cell, segment_id, str(cell.value))
+
+        for task, (cell, segment_id, original_text) in cell_tasks.items():
+            try:
+                translated_text = task.result(timeout=self.translation_service.timeout)
+                cell.value = translated_text
+                cell.font = self.font
+                job_manager.record_checkpoint(
+                    job_id,
+                    "segment_completed",
+                    file=input_file,
+                    sheet=sheet.title,
+                    cell=cell.coordinate,
+                    segment_id=segment_id,
+                    status="completed",
+                )
+                job_manager.update_progress(job_id, completed_delta=1)
+            except Exception as exc:
+                logger.warning(f"Error translating cell {cell.coordinate}: {exc}, keeping original")
+                cell.font = self.font
+                job_manager.record_failed_item(
+                    job_id,
+                    file=input_file,
+                    sheet=sheet.title,
+                    cell=cell.coordinate,
+                    segment_id=segment_id,
+                    source_lang=src_lang,
+                    target_lang=dest_lang,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    retry_count=0,
+                    source_hash=get_segment_hash(src_lang, dest_lang, original_text),
+                    source_length=len(original_text),
+                )
+                job_manager.record_checkpoint(
+                    job_id,
+                    "segment_failed",
+                    file=input_file,
+                    sheet=sheet.title,
+                    cell=cell.coordinate,
+                    segment_id=segment_id,
+                    status="failed",
+                )
+                job_manager.update_progress(job_id, failed_delta=1)
     
     def translate(self, input_file: str, output_file: str, src_lang: str, dest_lang: str) -> None:
         """
@@ -50,6 +143,21 @@ class ExcelHandler:
         Raises:
             FileProcessingError: If processing fails
         """
+        job_manager = get_translation_job_manager()
+        job = job_manager.create_job(
+            input_files=[input_file],
+            output_dir=os.path.dirname(os.path.abspath(output_file)),
+            source_lang=src_lang,
+            target_lang=dest_lang,
+            strategy=self.translation_service.strategy,
+            job_type="excel",
+            notes="Excel translation job",
+        )
+        job_id = job["job_id"]
+        job_manager.update_job_status(job_id, "running")
+        self._images_backup = {}
+        self.translation_service.set_runtime_observer(self._create_job_observer(job_manager, job_id))
+
         try:
             logger.info(f"Starting Excel translation: {input_file}")
             
@@ -65,7 +173,7 @@ class ExcelHandler:
                         # Fall through to openpyxl handler
                     else:
                         try:
-                            com_handler = ExcelComHandler(self.translation_service)
+                            com_handler = ExcelComHandler(self.translation_service, job_manager=job_manager, job_id=job_id)
                             com_handler.translate(input_file, output_file, src_lang, dest_lang)
                             return
                         except FileProcessingError as com_error:
@@ -147,38 +255,13 @@ class ExcelHandler:
             total_images_before = sum(len(imgs) for imgs in images_backup.values())
             logger.info(f"Found {total_images_before} images in workbook before processing")
             
+            self._images_backup = images_backup
+            total_segments = sum(1 for sheet in wb.worksheets for row in sheet.iter_rows() for cell in row if cell.value)
+            job_manager.update_progress(job_id, total_segments=total_segments, current_file=input_file)
+
             # Process all sheets
             for sheet in wb.worksheets:
-                logger.info(f"Processing sheet: {sheet.title}")
-                
-                # Ensure images are present from backup
-                if sheet.title in images_backup:
-                    self._restore_sheet_images_from_backup(sheet, images_backup[sheet.title])
-                
-                # Collect all translation tasks
-                cell_tasks = {}
-                for row in sheet.iter_rows():
-                    for cell in row:
-                        if cell.value:
-                            task = self.translation_service.executor.submit(
-                                self.translation_service.translate_long_text,
-                                str(cell.value),
-                                src_lang,
-                                dest_lang
-                            )
-                            cell_tasks[task] = cell
-                
-                # Process results with timeout
-                for task in cell_tasks:
-                    cell = cell_tasks[task]
-                    try:
-                        translated_text = task.result(timeout=self.translation_service.timeout)
-                        cell.value = translated_text
-                        cell.font = self.font
-                    except Exception as exc:
-                        logger.warning(f"Error translating cell {cell.coordinate}: {exc}, keeping original")
-                        # Keep original value on error
-                        cell.font = self.font
+                self._translate_sheet_with_job(sheet, input_file, src_lang, dest_lang, job_manager, job_id)
                 
                 # OCR and translate images in sheet (this doesn't remove images, just adds text)
                 if self.ocr_handler.is_installed():
@@ -210,6 +293,7 @@ class ExcelHandler:
             
             logger.info(f"Excel translation completed: {output_file}")
             logger.info(f"Images preserved: {total_images_before} -> {total_images_saved}")
+            job_manager.mark_completed(job_id)
             
             if total_images_saved < total_images_before:
                 logger.warning(f"Warning: Some images may not have been preserved correctly ({total_images_before} -> {total_images_saved})")
@@ -217,7 +301,10 @@ class ExcelHandler:
         except Exception as e:
             error_msg = f"Error translating Excel file: {e}"
             logger.error(error_msg, exc_info=True)
+            job_manager.mark_failed(job_id, error_msg)
             raise FileProcessingError(error_msg, original_error=e) from e
+        finally:
+            self.translation_service.clear_runtime_observer()
     
     def _process_images_in_sheet(self, sheet, src_lang: str, dest_lang: str) -> None:
         """
@@ -558,4 +645,3 @@ class ExcelHandler:
         except Exception as e:
             logger.warning(f"Error checking for drawings/external links: {e}. Assuming no drawings.")
             return False
-
