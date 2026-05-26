@@ -19,6 +19,7 @@ import json
 import time
 import logging
 import concurrent.futures
+from copy import deepcopy
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -245,8 +246,84 @@ class AIConfigManager:
             "min_segment_length_to_cache": 2,
             "use_glossary": True,
             "max_glossary_terms_per_segment": 20,
-            "glossary_enforcement_level": "prompt"
+            "glossary_enforcement_level": "prompt",
+            "use_provider_router": False,
+            "provider_router_policy": "ai_first",
+            "provider_router_max_retries": 2,
+            "provider_cooldown_seconds": 300,
+            "provider_order": ["gemini", "openai_compatible", "google"],
+            "openai_compatible": {
+                "enabled": False,
+                "base_url": "",
+                "api_key": "",
+                "model": "",
+                "provider_name": "openai_compatible",
+                "timeout": 15,
+                "allow_no_key_local": False,
+            },
         }
+
+    @property
+    def use_provider_router(self) -> bool:
+        return bool(self._config.get("use_provider_router", False))
+
+    @use_provider_router.setter
+    def use_provider_router(self, value: bool):
+        self._config["use_provider_router"] = bool(value)
+
+    @property
+    def provider_router_policy(self) -> str:
+        value = str(self._config.get("provider_router_policy", "ai_first")).strip().lower()
+        return value or "ai_first"
+
+    @provider_router_policy.setter
+    def provider_router_policy(self, value: str):
+        normalized = str(value or "ai_first").strip().lower()
+        self._config["provider_router_policy"] = normalized or "ai_first"
+
+    @property
+    def provider_router_max_retries(self) -> int:
+        return max(0, int(self._config.get("provider_router_max_retries", 2)))
+
+    @provider_router_max_retries.setter
+    def provider_router_max_retries(self, value: int):
+        self._config["provider_router_max_retries"] = max(0, int(value))
+
+    @property
+    def provider_cooldown_seconds(self) -> int:
+        return max(1, int(self._config.get("provider_cooldown_seconds", 300)))
+
+    @provider_cooldown_seconds.setter
+    def provider_cooldown_seconds(self, value: int):
+        self._config["provider_cooldown_seconds"] = max(1, int(value))
+
+    @property
+    def provider_order(self) -> List[str]:
+        value = self._config.get("provider_order", ["gemini", "openai_compatible", "google"])
+        if not isinstance(value, list):
+            return ["gemini", "openai_compatible", "google"]
+        return [str(item).strip().lower() for item in value if str(item).strip()]
+
+    @provider_order.setter
+    def provider_order(self, value: List[str]):
+        self._config["provider_order"] = [str(item).strip().lower() for item in (value or []) if str(item).strip()]
+
+    @property
+    def openai_compatible_config(self) -> Dict[str, Any]:
+        value = self._config.get("openai_compatible", {})
+        defaults = self._get_default_config()["openai_compatible"]
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            merged.update(value)
+        return merged
+
+    @openai_compatible_config.setter
+    def openai_compatible_config(self, value: Dict[str, Any]):
+        defaults = self._get_default_config()["openai_compatible"]
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            merged.update(value)
+        self._config["openai_compatible"] = merged
     
     # =========================================================================
     # API KEY MANAGEMENT - with In-Memory Rotation
@@ -667,7 +744,22 @@ class WaterfallGeminiService:
         sanitized = " ".join(part.strip() for part in normalized.splitlines() if part.strip())
         return sanitized.strip()
 
-    def _build_glossary_prompt_part(self, text: str, source_lang: str, target_lang: str) -> str:
+    def _build_glossary_prompt_lines(self, relevant_terms: List[Dict[str, Any]]) -> List[str]:
+        glossary_lines = []
+        for term in relevant_terms:
+            source_term = self._sanitize_glossary_value(term.get("source_term"))
+            target_term = self._sanitize_glossary_value(term.get("target_term"))
+            if source_term and target_term:
+                glossary_lines.append(f"{source_term} => {target_term}")
+        return glossary_lines
+
+    def _build_glossary_prompt_part(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        glossary_terms: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         """
         Build the glossary prompt section for prompt-level enforcement only.
 
@@ -681,31 +773,47 @@ class WaterfallGeminiService:
         if enforce_level != "prompt":
             return ""
 
-        try:
-            from translation_app.core.translation_memory import get_tm_manager
+        if glossary_terms is None:
+            try:
+                from translation_app.core.translation_memory import get_tm_manager
 
-            tm = get_tm_manager()
-            relevant_terms = tm.find_relevant_terms(
-                text,
-                source_lang,
-                target_lang,
-                max_terms=self.config_manager.max_glossary_terms_per_segment,
-            )
-        except Exception as ge:
-            logger.error(f"Failed to fetch glossary terms for prompt injection: {ge}")
-            return ""
+                tm = get_tm_manager()
+                glossary_terms = tm.find_relevant_terms(
+                    text,
+                    source_lang,
+                    target_lang,
+                    max_terms=self.config_manager.max_glossary_terms_per_segment,
+                )
+            except Exception as ge:
+                logger.error(f"Failed to fetch glossary terms for prompt injection: {ge}")
+                return ""
 
-        glossary_lines = []
-        for term in relevant_terms:
-            source_term = self._sanitize_glossary_value(term.get("source_term"))
-            target_term = self._sanitize_glossary_value(term.get("target_term"))
-            if source_term and target_term:
-                glossary_lines.append(f"{source_term} => {target_term}")
+        glossary_lines = self._build_glossary_prompt_lines(glossary_terms or [])
 
         if not glossary_lines:
             return ""
 
         return "\nUse this glossary strictly:\n" + "\n".join(glossary_lines) + "\n"
+
+    def build_translation_prompt(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        glossary_terms: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        glossary_part = self._build_glossary_prompt_part(
+            text,
+            source_lang,
+            target_lang,
+            glossary_terms=glossary_terms,
+        )
+        return f"""Translate the following text from {source_lang} to {target_lang}.
+Provide ONLY the translation, without any explanations or notes.
+{glossary_part}
+TEXT: {text}
+
+TRANSLATION:"""
     
     # =========================================================================
     # TRANSLATION SPECIFIC METHODS
@@ -713,14 +821,29 @@ class WaterfallGeminiService:
     
     def translate(self, text: str, source_lang: str, target_lang: str, allow_google_fallback: bool = True) -> dict:
         """Translate text using Waterfall strategy with optional Google fallback."""
-        glossary_part = self._build_glossary_prompt_part(text, source_lang, target_lang)
+        return self.translate_with_glossary_terms(
+            text,
+            source_lang,
+            target_lang,
+            glossary_terms=None,
+            allow_google_fallback=allow_google_fallback,
+        )
 
-        prompt = f"""Translate the following text from {source_lang} to {target_lang}.
-Provide ONLY the translation, without any explanations or notes.
-{glossary_part}
-TEXT: {text}
-
-TRANSLATION:"""
+    def translate_with_glossary_terms(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        glossary_terms: Optional[List[Dict[str, Any]]] = None,
+        allow_google_fallback: bool = True,
+    ) -> dict:
+        """Translate text using explicit glossary terms when provided."""
+        prompt = self.build_translation_prompt(
+            text,
+            source_lang,
+            target_lang,
+            glossary_terms=glossary_terms,
+        )
         result = self.generate_response(prompt)
         
         # If AI failed, use Google Translate fallback if allowed
