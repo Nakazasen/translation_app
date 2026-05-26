@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -10,7 +11,8 @@ from deep_translator import GoogleTranslator
 
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.provider_router import ProviderRouter, TranslationRequest, TranslationResult
-from translation_app.core.providers.base import BaseTranslationProvider
+from translation_app.core.providers import build_provider_profiles
+from translation_app.core.providers.base import BaseTranslationProvider, ProviderCandidate
 from translation_app.core.providers.openai_compatible_provider import OpenAICompatibleProvider
 from translation_app.core.translation_memory import get_tm_manager
 from translation_app.core.translator import TranslationService
@@ -58,7 +60,7 @@ class DummyProvider(BaseTranslationProvider):
     def is_available(self) -> bool:
         return self._available
 
-    def translate(self, request: TranslationRequest) -> TranslationResult:
+    def translate(self, request: TranslationRequest, candidate: ProviderCandidate | None = None) -> TranslationResult:
         self.calls += 1
         self.requests.append(request)
         response = self._responses[min(self.calls - 1, len(self._responses) - 1)]
@@ -69,10 +71,82 @@ class DummyProvider(BaseTranslationProvider):
             text=response.get("text", ""),
             provider=self.name,
             model=response.get("model", self.default_model),
+            key_id=response.get("key_id", candidate.key_id if candidate else ""),
+            key_index=response.get("key_index", candidate.key_index if candidate else -1),
             error_type=response.get("error_type", ""),
             error_message=response.get("error_message", ""),
             latency_ms=response.get("latency_ms", 0),
         )
+
+
+@contextmanager
+def serve_json_response(status_code, payload, capture=None):
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            if capture is not None:
+                capture.append(
+                    {
+                        "path": self.path,
+                        "auth": self.headers.get("Authorization", ""),
+                        "body": json.loads(body),
+                    }
+                )
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_provider_profiles_default_disabled_except_safe_defaults():
+    profiles = build_provider_profiles(get_ai_service().config_manager)
+
+    assert profiles["gemini"].enabled is True
+    assert profiles["google"].enabled is True
+    assert profiles["chatanywhere"].enabled is False
+    assert profiles["deepseek"].enabled is False
+    assert profiles["nvidia_nim"].enabled is False
+    assert profiles["openai_compatible"].enabled is False
+
+
+def test_chatanywhere_profile_uses_openai_compatible_endpoint():
+    profiles = build_provider_profiles(get_ai_service().config_manager)
+    profile = profiles["chatanywhere"]
+
+    assert profile.provider_type == "openai_compatible"
+    assert profile.base_url == "https://api.chatanywhere.tech/v1"
+
+
+def test_deepseek_profile_uses_openai_compatible_endpoint():
+    profiles = build_provider_profiles(get_ai_service().config_manager)
+    profile = profiles["deepseek"]
+
+    assert profile.provider_type == "openai_compatible"
+    assert profile.base_url == "https://api.deepseek.com/v1"
+
+
+def test_nvidia_nim_profile_uses_openai_compatible_endpoint():
+    profiles = build_provider_profiles(get_ai_service().config_manager)
+    profile = profiles["nvidia_nim"]
+
+    assert profile.provider_type == "openai_compatible"
+    assert profile.base_url == "https://integrate.api.nvidia.com/v1"
 
 
 def test_router_uses_first_available_provider():
@@ -151,6 +225,18 @@ def test_strict_ai_policy_never_uses_google():
     assert google.calls == 0
 
 
+def test_strict_ai_policy_uses_ai_providers_without_google():
+    service = TranslationService()
+    ai_service = get_ai_service()
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "ai"
+
+    policy = service._build_router_policy(ai_service.config_manager)
+
+    assert policy["allowed_providers"] == ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"]
+    assert "google" not in policy["allowed_providers"]
+
+
 def test_ai_waterfall_can_fallback_to_google():
     router = ProviderRouter(cooldown_seconds=60, max_retries=2)
     gemini = DummyProvider("gemini", [{"status": "error", "error_message": "timeout"}])
@@ -169,6 +255,24 @@ def test_ai_waterfall_can_fallback_to_google():
     assert result.text == "google-ok"
     assert [attempt["provider"] for attempt in result.attempts if attempt["status"] != "skipped"] == [
         "gemini",
+        "openai_compatible",
+        "google",
+    ]
+
+
+def test_ai_waterfall_provider_order_before_google():
+    service = TranslationService()
+    ai_service = get_ai_service()
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "ai_waterfall"
+
+    policy = service._build_router_policy(ai_service.config_manager)
+
+    assert policy["provider_order"] == [
+        "gemini",
+        "chatanywhere",
+        "deepseek",
+        "nvidia_nim",
         "openai_compatible",
         "google",
     ]
@@ -257,6 +361,44 @@ def test_openai_compatible_provider_builds_request_without_network_real_call():
     assert "Use this glossary strictly:" in requests_seen[0]["body"]["messages"][0]["content"]
 
 
+def test_provider_key_rotation_is_runtime_only():
+    provider = OpenAICompatibleProvider(
+        profile=build_provider_profiles(get_ai_service().config_manager)["openai_compatible"].normalized()
+    )
+    provider.enabled = True
+    provider.base_url = "http://127.0.0.1:8080/v1"
+    provider.model_pool = ["gpt-a"]
+    provider.api_key_pool = ["sk-key-1", "sk-key-2"]
+    original_keys = list(provider.api_key_pool)
+
+    first = provider.iter_candidates()
+    provider.mark_failure(first[0], "quota_rate_limit")
+    second = provider.iter_candidates()
+
+    assert original_keys == ["sk-key-1", "sk-key-2"]
+    assert first[0].key_index == 0
+    assert second[0].key_index == 1
+
+
+def test_provider_model_fallback_runtime_only():
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_keys=["sk-test-model"],
+        models=["model-a", "model-b"],
+        provider_name="deepseek",
+    )
+    original_models = list(provider.model_pool)
+
+    first = provider.iter_candidates()
+    provider.mark_failure(first[0], "model_error")
+    second = provider.iter_candidates()
+
+    assert original_models == ["model-a", "model-b"]
+    assert first[0].model == "model-a"
+    assert second[0].model == "model-b"
+
+
 def test_openai_compatible_provider_redacts_key_and_classifies_auth_http_error():
     secret = "sk-auth-secret-123"
 
@@ -297,6 +439,23 @@ def test_openai_compatible_provider_redacts_key_and_classifies_auth_http_error()
     assert "[REDACTED_API_KEY]" in result.error_message
 
 
+def test_provider_specific_auth_error_classification():
+    with serve_json_response(401, {"error": {"message": "authentication failed", "code": "invalid_api_key"}}) as server:
+        result = OpenAICompatibleProvider(
+            enabled=True,
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="sk-provider-auth",
+            model="deepseek-v4-flash",
+            provider_name="deepseek",
+        ).translate(
+            TranslationRequest(text="Hello", source_lang="en", target_lang="vi"),
+            ProviderCandidate("deepseek", "deepseek-v4-flash", 0, "****auth"),
+        )
+
+    assert result.status == "error"
+    assert result.error_type == "auth_failure"
+
+
 def test_openai_compatible_provider_classifies_quota_http_error():
     secret = "sk-quota-secret-456"
 
@@ -334,6 +493,20 @@ def test_openai_compatible_provider_classifies_quota_http_error():
     assert result.status == "error"
     assert result.error_type == "quota_rate_limit"
     assert secret not in result.error_message
+
+
+def test_provider_specific_quota_error_classification():
+    with serve_json_response(429, {"error": {"message": "resource exhausted", "type": "rate_limit"}}) as server:
+        result = OpenAICompatibleProvider(
+            enabled=True,
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="sk-provider-quota",
+            model="meta/llama-3.1-405b-instruct",
+            provider_name="nvidia_nim",
+        ).translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+
+    assert result.status == "error"
+    assert result.error_type == "quota_rate_limit"
 
 
 def test_openai_compatible_provider_classifies_403_as_auth_failure():
@@ -426,6 +599,88 @@ def test_openai_compatible_provider_classifies_timeout(monkeypatch):
 
     assert result.status == "error"
     assert result.error_type == "timeout"
+
+
+def test_openai_compatible_provider_handles_nvidia_nim_mock():
+    requests_seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            requests_seen.append(json.loads(body))
+            payload = {"choices": [{"message": {"content": "nim-ok"}}]}
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        provider = OpenAICompatibleProvider(
+            enabled=True,
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="sk-nvidia-mock",
+            model="meta/llama-3.1-405b-instruct",
+            provider_name="nvidia_nim",
+        )
+        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.status == "success"
+    assert result.text == "nim-ok"
+    assert requests_seen[0]["model"] == "meta/llama-3.1-405b-instruct"
+
+
+def test_openai_compatible_provider_handles_deepseek_mock():
+    requests_seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length).decode("utf-8")
+            requests_seen.append(json.loads(body))
+            payload = {"choices": [{"message": {"content": "deepseek-ok"}}]}
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        provider = OpenAICompatibleProvider(
+            enabled=True,
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key="sk-deepseek-mock",
+            model="deepseek-v4-flash",
+            provider_name="deepseek",
+        )
+        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.status == "success"
+    assert result.text == "deepseek-ok"
+    assert requests_seen[0]["model"] == "deepseek-v4-flash"
 
 
 def test_router_disabled_preserves_legacy_translation_path(monkeypatch):
@@ -533,7 +788,13 @@ def test_glossary_terms_passed_to_ai_provider_request(temp_db_path, monkeypatch)
     assert result == "Táo"
     assert captured["glossary_terms"]
     assert captured["glossary_terms"][0]["source_term"] == "Apple"
-    assert captured["policy"]["allowed_providers"] == ["gemini", "openai_compatible"]
+    assert captured["policy"]["allowed_providers"] == [
+        "gemini",
+        "chatanywhere",
+        "deepseek",
+        "nvidia_nim",
+        "openai_compatible",
+    ]
 
 
 def test_provider_health_snapshot_has_no_raw_keys():
@@ -622,3 +883,78 @@ def test_router_skips_quota_cooled_provider_on_next_route():
     assert second_result.attempts[0]["provider"] == "gemini"
     assert second_result.attempts[0]["reason"] == "cooldown"
     assert gemini.calls == 1
+
+
+def test_disabled_provider_is_skipped():
+    router = ProviderRouter(cooldown_seconds=60, max_retries=3)
+    disabled = DummyProvider("chatanywhere", [{"status": "success", "text": "wrong"}], available=False)
+    fallback = DummyProvider("google", [{"status": "success", "text": "google-ok"}])
+    router.register_provider(disabled)
+    router.register_provider(fallback)
+
+    result = router.route(
+        TranslationRequest(text="hello", source_lang="en", target_lang="vi"),
+        {"allowed_providers": ["chatanywhere", "google"], "provider_order": ["chatanywhere", "google"]},
+    )
+
+    assert result.status == "success"
+    assert result.text == "google-ok"
+    assert disabled.calls == 0
+    assert result.attempts[0]["provider"] == "chatanywhere"
+    assert result.attempts[0]["reason"] == "unavailable"
+
+
+def test_health_snapshot_redacts_all_provider_keys():
+    profiles = build_provider_profiles(get_ai_service().config_manager)
+    profiles["chatanywhere"].enabled = True
+    profiles["chatanywhere"].api_key_pool = ["sk-chat-1111", "sk-chat-2222"]
+    profiles["chatanywhere"].model_pool = ["gpt-4o-mini"]
+
+    provider = OpenAICompatibleProvider(profile=profiles["chatanywhere"])
+    router = ProviderRouter(cooldown_seconds=60, max_retries=2)
+    router.register_provider(provider)
+    for candidate in provider.iter_candidates():
+        router.mark_failure(
+            provider.name,
+            candidate.model,
+            "429 quota exceeded",
+            key_index=candidate.key_index,
+            key_id=candidate.key_id,
+        )
+
+    snapshot_json = json.dumps(router.get_health_snapshot())
+
+    assert "sk-chat-1111" not in snapshot_json
+    assert "sk-chat-2222" not in snapshot_json
+    assert "****1111" in snapshot_json
+    assert "****2222" in snapshot_json
+
+
+def test_router_does_not_mutate_provider_config_on_cooldown():
+    ai_service = get_ai_service()
+    config_manager = ai_service.config_manager
+    original = config_manager.providers_config
+    updated = json.loads(json.dumps(original))
+    updated["deepseek"]["enabled"] = True
+    updated["deepseek"]["api_keys"] = ["sk-deepseek-1234", "sk-deepseek-5678"]
+    updated["deepseek"]["models"] = ["deepseek-v4-flash", "deepseek-v4-pro"]
+    config_manager.providers_config = updated
+
+    try:
+        profile_before = json.loads(json.dumps(config_manager.providers_config["deepseek"]))
+        provider = OpenAICompatibleProvider(profile=build_provider_profiles(config_manager)["deepseek"])
+        router = ProviderRouter(cooldown_seconds=60, max_retries=2)
+        router.register_provider(provider)
+        first_candidate = provider.iter_candidates()[0]
+        router.mark_failure(
+            provider.name,
+            first_candidate.model,
+            "429 quota exceeded",
+            key_index=first_candidate.key_index,
+            key_id=first_candidate.key_id,
+        )
+        provider.mark_failure(first_candidate, "quota_rate_limit")
+
+        assert config_manager.providers_config["deepseek"] == profile_before
+    finally:
+        config_manager.providers_config = original
