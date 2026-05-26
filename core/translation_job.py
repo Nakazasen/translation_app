@@ -33,6 +33,8 @@ CHECKPOINT_EVENTS = {
     "segment_completed",
     "segment_completed_after_retry",
     "segment_failed",
+    "provider_success",
+    "provider_fail",
     "job_paused",
     "job_completed",
     "job_failed",
@@ -237,6 +239,10 @@ class TranslationJobManager:
             "sheet": redact_sensitive(str(metadata.get("sheet", "") or "")),
             "cell": redact_sensitive(str(metadata.get("cell", "") or "")),
             "segment_id": redact_sensitive(str(metadata.get("segment_id", "") or "")),
+            "provider": redact_sensitive(str(metadata.get("provider", "") or "")),
+            "model": redact_sensitive(str(metadata.get("model", "") or "")),
+            "error_type": redact_sensitive(str(metadata.get("error_type", "") or "")),
+            "error_message": self._sanitize_error_message(metadata.get("error_message", "")),
             "status": redact_sensitive(str(metadata.get("status", "") or "")),
         }
         self._append_jsonl_safe(self._get_job_dir(job_id) / "checkpoints.jsonl", payload)

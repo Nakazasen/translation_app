@@ -44,6 +44,24 @@ class ExcelHandler:
                 job_manager.update_progress(job_id, tm_hit_delta=1)
             elif event == "provider_call":
                 job_manager.update_progress(job_id, provider_call_delta=1)
+            elif event == "provider_success":
+                job_manager.record_checkpoint(
+                    job_id,
+                    "provider_success",
+                    provider=metadata.get("provider", ""),
+                    model=metadata.get("model", ""),
+                    status="success",
+                )
+            elif event == "provider_fail":
+                job_manager.record_checkpoint(
+                    job_id,
+                    "provider_fail",
+                    provider=metadata.get("provider", ""),
+                    model=metadata.get("model", ""),
+                    error_type=metadata.get("error_type", ""),
+                    error_message=metadata.get("error_message", ""),
+                    status="failed",
+                )
 
         return observer
 
