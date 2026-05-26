@@ -37,6 +37,7 @@ TRANSPORT_HINTS = (
     "failed to establish a new connection",
 )
 MODEL_UNAVAILABLE_HINTS = ("404", "410", "not found", "model unavailable")
+MODEL_ERROR_HINTS = ("invalid model", "model not found", "unknown model", "unsupported model")
 TOKEN_LIMIT_HINTS = ("token limit", "token_limit", "prompt token", "context length")
 PROVIDER_5XX_HINTS = ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")
 
@@ -58,6 +59,8 @@ class TranslationResult:
     text: str = ""
     provider: str = ""
     model: str = ""
+    key_id: str = ""
+    key_index: int = -1
     error_type: str = ""
     error_message: str = ""
     latency_ms: int = 0
@@ -68,6 +71,7 @@ class TranslationResult:
 @dataclass
 class ProviderState:
     provider_name: str
+    display_name: str = ""
     model: str = ""
     key_id: Optional[str] = None
     key_index: Optional[int] = None
@@ -91,14 +95,19 @@ class ProviderRouter:
 
     def register_provider(self, provider: Any) -> None:
         self._providers[provider.name] = provider
-        self._ensure_state(provider.name, getattr(provider, "default_model", ""))
+        self._ensure_state(
+            provider.name,
+            getattr(provider, "default_model", ""),
+            display_name=getattr(provider, "display_name", provider.name),
+        )
 
     def route(self, request: TranslationRequest, policy: Optional[dict[str, Any]] = None) -> TranslationResult:
         policy = policy or {}
         allowed = policy.get("allowed_providers")
         ordered_names = self._resolve_order(policy.get("provider_order"), allowed)
-        max_attempts = min(len(ordered_names), self.max_retries + 1) if ordered_names else 0
+        max_attempts = self.max_retries + 1 if ordered_names else 0
         attempts: list[dict[str, Any]] = []
+        total_attempts = 0
 
         if max_attempts <= 0:
             return TranslationResult(
@@ -108,19 +117,24 @@ class ProviderRouter:
                 attempts=attempts,
             )
 
-        for provider_name in ordered_names[:max_attempts]:
+        for provider_name in ordered_names:
             provider = self._providers.get(provider_name)
             if provider is None:
                 continue
 
-            model_name = getattr(provider, "default_model", "")
-            state = self._ensure_state(provider.name, model_name)
             if not provider.is_available():
+                model_name = getattr(provider, "default_model", "")
+                state = self._ensure_state(
+                    provider.name,
+                    model_name,
+                    display_name=getattr(provider, "display_name", provider.name),
+                )
                 state.is_available = False
                 state.last_error_type = "unavailable"
                 attempts.append(
                     {
                         "provider": provider.name,
+                        "display_name": getattr(provider, "display_name", provider.name),
                         "model": model_name,
                         "status": "skipped",
                         "reason": "unavailable",
@@ -128,46 +142,102 @@ class ProviderRouter:
                 )
                 continue
 
-            if self._is_on_cooldown(state):
+            candidates = list(provider.iter_candidates()) or []
+            if not candidates:
                 attempts.append(
                     {
                         "provider": provider.name,
-                        "model": model_name,
+                        "display_name": getattr(provider, "display_name", provider.name),
+                        "model": getattr(provider, "default_model", ""),
                         "status": "skipped",
-                        "reason": "cooldown",
+                        "reason": "unavailable",
                     }
                 )
                 continue
 
-            result = provider.translate(request)
-            result.provider = result.provider or provider.name
-            result.model = result.model or model_name
+            for candidate in candidates:
+                if total_attempts >= max_attempts:
+                    break
 
-            if result.status == "success":
-                self.mark_success(result.provider, result.model, result.latency_ms)
+                state = self._ensure_state(
+                    provider.name,
+                    candidate.model or getattr(provider, "default_model", ""),
+                    key_index=candidate.key_index,
+                    key_id=candidate.key_id,
+                    display_name=getattr(provider, "display_name", provider.name),
+                )
+                if self._is_on_cooldown(state):
+                    attempts.append(
+                        {
+                            "provider": provider.name,
+                            "display_name": getattr(provider, "display_name", provider.name),
+                            "model": candidate.model,
+                            "key_index": candidate.key_index,
+                            "key_id": candidate.key_id,
+                            "status": "skipped",
+                            "reason": "cooldown",
+                        }
+                    )
+                    continue
+
+                total_attempts += 1
+                result = provider.translate(request, candidate)
+                result.provider = result.provider or provider.name
+                result.model = result.model or candidate.model or getattr(provider, "default_model", "")
+                result.key_index = candidate.key_index
+                result.key_id = candidate.key_id
+
+                if result.status == "success":
+                    self.mark_success(
+                        result.provider,
+                        result.model,
+                        result.latency_ms,
+                        key_index=candidate.key_index,
+                        key_id=candidate.key_id,
+                        display_name=getattr(provider, "display_name", provider.name),
+                    )
+                    provider.mark_success(candidate)
+                    attempts.append(
+                        {
+                            "provider": result.provider,
+                            "display_name": getattr(provider, "display_name", provider.name),
+                            "model": result.model,
+                            "key_index": candidate.key_index,
+                            "key_id": candidate.key_id,
+                            "status": "success",
+                            "latency_ms": result.latency_ms,
+                        }
+                    )
+                    result.attempts = attempts
+                    return result
+
+                error_detail = result.error_type or result.error_message or "provider_error"
+                self.mark_failure(
+                    result.provider or provider.name,
+                    result.model or candidate.model or getattr(provider, "default_model", ""),
+                    error_detail,
+                    result.latency_ms,
+                    key_index=candidate.key_index,
+                    key_id=candidate.key_id,
+                    display_name=getattr(provider, "display_name", provider.name),
+                )
+                provider.mark_failure(candidate, result.error_type or "error")
                 attempts.append(
                     {
-                        "provider": result.provider,
-                        "model": result.model,
-                        "status": "success",
+                        "provider": result.provider or provider.name,
+                        "display_name": getattr(provider, "display_name", provider.name),
+                        "model": result.model or candidate.model or getattr(provider, "default_model", ""),
+                        "key_index": candidate.key_index,
+                        "key_id": candidate.key_id,
+                        "status": "failed",
+                        "reason": result.error_type or "error",
+                        "message": result.error_message,
                         "latency_ms": result.latency_ms,
                     }
                 )
-                result.attempts = attempts
-                return result
 
-            error_detail = result.error_type or result.error_message or "provider_error"
-            self.mark_failure(result.provider or provider.name, result.model or model_name, error_detail, result.latency_ms)
-            attempts.append(
-                {
-                    "provider": result.provider or provider.name,
-                    "model": result.model or model_name,
-                    "status": "failed",
-                    "reason": result.error_type or "error",
-                    "message": result.error_message,
-                    "latency_ms": result.latency_ms,
-                }
-            )
+            if total_attempts >= max_attempts:
+                break
 
         final_attempt = attempts[-1] if attempts else {}
         return TranslationResult(
@@ -180,8 +250,17 @@ class ProviderRouter:
             attempts=attempts,
         )
 
-    def mark_success(self, provider: str, model: str, latency_ms: int = 0) -> None:
-        state = self._ensure_state(provider, model)
+    def mark_success(
+        self,
+        provider: str,
+        model: str,
+        latency_ms: int = 0,
+        *,
+        key_index: int | None = None,
+        key_id: str | None = None,
+        display_name: str = "",
+    ) -> None:
+        state = self._ensure_state(provider, model, key_index=key_index, key_id=key_id, display_name=display_name)
         state.model = model or state.model
         state.is_available = True
         state.cooldown_until = 0.0
@@ -190,8 +269,18 @@ class ProviderRouter:
         state.last_latency_ms = max(0, int(latency_ms or 0))
         state.success_count += 1
 
-    def mark_failure(self, provider: str, model: str, error: Any, latency_ms: int = 0) -> None:
-        state = self._ensure_state(provider, model)
+    def mark_failure(
+        self,
+        provider: str,
+        model: str,
+        error: Any,
+        latency_ms: int = 0,
+        *,
+        key_index: int | None = None,
+        key_id: str | None = None,
+        display_name: str = "",
+    ) -> None:
+        state = self._ensure_state(provider, model, key_index=key_index, key_id=key_id, display_name=display_name)
         error_type = classify_error(error)
         state.model = model or state.model
         state.is_available = error_type != "auth_failure"
@@ -206,6 +295,7 @@ class ProviderRouter:
             "timeout",
             "transport_error",
             "model_unavailable",
+            "model_error",
             "provider_5xx",
             "unknown_transport_error",
         }:
@@ -237,10 +327,24 @@ class ProviderRouter:
                 order.append(name)
         return order
 
-    def _ensure_state(self, provider: str, model: str = "") -> ProviderState:
-        key = f"{provider}::{model}"
+    def _ensure_state(
+        self,
+        provider: str,
+        model: str = "",
+        *,
+        key_index: int | None = None,
+        key_id: str | None = None,
+        display_name: str = "",
+    ) -> ProviderState:
+        key = f"{provider}::{model}::{key_index if key_index is not None else -1}"
         if key not in self._provider_states:
-            self._provider_states[key] = ProviderState(provider_name=provider, model=model)
+            self._provider_states[key] = ProviderState(
+                provider_name=provider,
+                display_name=display_name or provider,
+                model=model,
+                key_id=key_id or None,
+                key_index=key_index,
+            )
         return self._provider_states[key]
 
     def _is_on_cooldown(self, state: ProviderState, now: Optional[float] = None) -> bool:
@@ -253,6 +357,8 @@ class ProviderRouter:
 def classify_error(error: Any) -> str:
     if isinstance(error, str):
         detail = error.lower()
+    elif isinstance(error, dict):
+        detail = " ".join(str(value) for value in error.values()).lower()
     else:
         detail = str(error or "").lower()
 
@@ -260,12 +366,16 @@ def classify_error(error: Any) -> str:
         return "auth_failure"
     if any(token in detail for token in QUOTA_HINTS):
         return "quota_rate_limit"
+    if "400" in detail and any(token in detail for token in MODEL_ERROR_HINTS):
+        return "model_error"
     if any(token in detail for token in TOKEN_LIMIT_HINTS):
         return "token_limit"
     if any(token in detail for token in TIMEOUT_HINTS):
         return "timeout"
     if any(token in detail for token in TRANSPORT_HINTS):
         return "transport_error"
+    if any(token in detail for token in MODEL_ERROR_HINTS):
+        return "model_error"
     if any(token in detail for token in MODEL_UNAVAILABLE_HINTS):
         return "model_unavailable"
     if any(token in detail for token in PROVIDER_5XX_HINTS):

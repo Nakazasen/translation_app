@@ -6,11 +6,12 @@ import time
 
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.provider_router import TranslationRequest, TranslationResult, classify_error
-from translation_app.core.providers.base import BaseTranslationProvider
+from translation_app.core.providers.base import BaseTranslationProvider, ProviderCandidate
 
 
 class GeminiProvider(BaseTranslationProvider):
     name = "gemini"
+    display_name = "Gemini"
     supports_glossary = True
     supports_ai_prompt = True
     default_model = "gemini"
@@ -18,7 +19,7 @@ class GeminiProvider(BaseTranslationProvider):
     def is_available(self) -> bool:
         return get_ai_service().is_available()
 
-    def translate(self, request: TranslationRequest) -> TranslationResult:
+    def translate(self, request: TranslationRequest, candidate: ProviderCandidate | None = None) -> TranslationResult:
         service = get_ai_service()
         started = time.time()
         try:

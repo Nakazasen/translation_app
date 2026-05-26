@@ -11,7 +11,7 @@ from deep_translator import GoogleTranslator
 from translation_app.config import config
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.provider_router import ProviderRouter, TranslationRequest
-from translation_app.core.providers import GeminiProvider, GoogleTranslateProvider, OpenAICompatibleProvider
+from translation_app.core.providers import GeminiProvider, GoogleTranslateProvider, OpenAICompatibleProvider, build_provider_profiles
 from translation_app.utils.error_handler import TranslationServiceError, handle_translation_error
 from translation_app.utils.logger import logger
 
@@ -73,19 +73,13 @@ class TranslationService:
             logger.debug(f"Runtime observer error for event '{event}': {exc}")
 
     def _build_provider_router_signature(self, config_manager) -> tuple:
-        openai_config = config_manager.openai_compatible_config
+        providers_config = config_manager.providers_config
         return (
             bool(config_manager.use_provider_router),
             config_manager.provider_cooldown_seconds,
             config_manager.provider_router_max_retries,
             tuple(config_manager.provider_order),
-            bool(openai_config.get("enabled", False)),
-            str(openai_config.get("base_url", "")),
-            str(openai_config.get("api_key", "")),
-            str(openai_config.get("model", "")),
-            str(openai_config.get("provider_name", "openai_compatible")),
-            int(openai_config.get("timeout", 15) or 15),
-            bool(openai_config.get("allow_no_key_local", False)),
+            repr(providers_config),
         )
 
     def _get_provider_router(self, ai_service):
@@ -98,25 +92,28 @@ class TranslationService:
             cooldown_seconds=config_manager.provider_cooldown_seconds,
             max_retries=config_manager.provider_router_max_retries,
         )
+        profiles = build_provider_profiles(config_manager)
         router.register_provider(GeminiProvider())
-        router.register_provider(OpenAICompatibleProvider(**config_manager.openai_compatible_config))
+        for provider_name in ("chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"):
+            router.register_provider(OpenAICompatibleProvider(profile=profiles[provider_name]))
         router.register_provider(GoogleTranslateProvider())
         self._provider_router = router
         self._provider_router_signature = signature
         return router
 
     def _build_router_policy(self, config_manager) -> dict:
-        order = list(config_manager.provider_order) or ["gemini", "openai_compatible", "google"]
+        order = list(config_manager.provider_order) or ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible", "google"]
+        ai_provider_order = ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"]
         if self.strategy == "ai":
-            allowed = ["gemini", "openai_compatible"]
+            allowed = ai_provider_order
         elif self.strategy == "ai_waterfall":
-            allowed = ["gemini", "openai_compatible", "google"]
+            allowed = ai_provider_order + ["google"]
         elif self.strategy == "google":
             allowed = ["google"]
         else:
-            allowed = [provider for provider in order if provider in {"gemini", "openai_compatible", "google"}]
+            allowed = [provider for provider in order if provider in set(ai_provider_order + ["google"])]
             if not allowed:
-                allowed = ["gemini", "openai_compatible", "google"]
+                allowed = ai_provider_order + ["google"]
 
         return {
             "mode": config_manager.provider_router_policy,
@@ -154,6 +151,7 @@ class TranslationService:
                     "provider_fail",
                     provider=attempt.get("provider", ""),
                     model=attempt.get("model", ""),
+                    key_index=attempt.get("key_index", -1),
                     error_type=attempt.get("reason", ""),
                     error_message=attempt.get("message", ""),
                     source_lang=src_lang,
@@ -170,6 +168,7 @@ class TranslationService:
                     "provider_success",
                     provider=attempt.get("provider", ""),
                     model=attempt.get("model", ""),
+                    key_index=attempt.get("key_index", -1),
                     latency_ms=attempt.get("latency_ms", 0),
                     source_lang=src_lang,
                     target_lang=dest_lang,
@@ -254,16 +253,18 @@ class TranslationService:
                 "provider_success",
                 provider=provider,
                 model=model,
+                key_index=-1,
                 latency_ms=latency_ms,
                 source_lang=src_lang,
                 target_lang=dest_lang,
             )
 
-        def mark_provider_fail(provider: str, error_type: str = "", error_message: str = "", model: str = ""):
+        def mark_provider_fail(provider: str, error_type: str = "", error_message: str = "", model: str = "", key_index: int = -1):
             self._emit_runtime_event(
                 "provider_fail",
                 provider=provider,
                 model=model,
+                key_index=key_index,
                 error_type=error_type,
                 error_message=error_message,
                 source_lang=src_lang,

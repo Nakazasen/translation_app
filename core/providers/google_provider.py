@@ -8,11 +8,12 @@ from deep_translator import GoogleTranslator
 
 from translation_app.config import config
 from translation_app.core.provider_router import TranslationRequest, TranslationResult, classify_error
-from translation_app.core.providers.base import BaseTranslationProvider
+from translation_app.core.providers.base import BaseTranslationProvider, ProviderCandidate
 
 
 class GoogleTranslateProvider(BaseTranslationProvider):
     name = "google"
+    display_name = "Google Translate"
     supports_glossary = False
     supports_ai_prompt = False
     default_model = "google-translate"
@@ -20,7 +21,7 @@ class GoogleTranslateProvider(BaseTranslationProvider):
     def is_available(self) -> bool:
         return True
 
-    def translate(self, request: TranslationRequest) -> TranslationResult:
+    def translate(self, request: TranslationRequest, candidate: ProviderCandidate | None = None) -> TranslationResult:
         started = time.time()
         try:
             source_lang = "auto" if request.source_lang.lower() == "auto" else config.normalize_language_code(request.source_lang)
