@@ -10,6 +10,18 @@ from typing import Optional
 from translation_app.config import config
 
 
+def _get_console_stream():
+    """Return a console stream that won't fail on unencodable Unicode."""
+    stream = sys.stdout
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+    return stream
+
+
 def setup_logging(log_level: Optional[str] = None) -> logging.Logger:
     """
     Setup comprehensive logging system with file rotation
@@ -46,7 +58,7 @@ def setup_logging(log_level: Optional[str] = None) -> logging.Logger:
     )
     
     # Console handler
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler(_get_console_stream())
     
     # Formatter
     formatter = logging.Formatter(
