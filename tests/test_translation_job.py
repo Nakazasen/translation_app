@@ -105,6 +105,29 @@ def test_checkpoint_append_jsonl(tmp_path):
     assert checkpoints[1]["event"] == "segment_completed"
 
 
+def test_checkpoint_accepts_provider_metadata_without_leaking_keys(tmp_path):
+    manager = TranslationJobManager(tmp_path)
+    job = manager.create_job(["input.xlsx"], tmp_path / "out", "en", "vi", "ai")
+
+    manager.record_checkpoint(
+        job["job_id"],
+        "provider_fail",
+        provider="openai_compatible",
+        model="gpt-test",
+        error_type="auth_failure",
+        error_message=f"bad key {SENTINEL_KEY}",
+        status="failed",
+    )
+
+    checkpoints = _read_jsonl(tmp_path / job["job_id"] / "checkpoints.jsonl")
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["provider"] == "openai_compatible"
+    assert checkpoints[0]["model"] == "gpt-test"
+    assert checkpoints[0]["error_type"] == "auth_failure"
+    assert SENTINEL_KEY not in json.dumps(checkpoints[0])
+    assert "[REDACTED_API_KEY]" in checkpoints[0]["error_message"]
+
+
 def test_can_resume_statuses(tmp_path):
     manager = TranslationJobManager(tmp_path)
     resumable = {"pending", "running", "paused", "failed"}

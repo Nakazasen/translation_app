@@ -232,12 +232,14 @@ def test_ai_only_does_not_google_fallback():
         ai_service = get_ai_service()
         original_config_path = ai_service.config_manager.config_path
         original_env_key = os.environ.get("GEMINI_API_KEY")
+        original_use_tm = ai_service.config_manager.use_translation_memory
         try:
             # Override singleton config path and reload
             ai_service.config_manager.config_path = config_path
             if "GEMINI_API_KEY" in os.environ:
                 del os.environ["GEMINI_API_KEY"]
             ai_service.reload_config()
+            ai_service.config_manager.use_translation_memory = False
             
             # Explicitly force empty key and unconfigured state on the singleton
             ai_service.api_key = ""
@@ -279,6 +281,7 @@ def test_ai_only_does_not_google_fallback():
             # Restore
             if original_env_key is not None:
                 os.environ["GEMINI_API_KEY"] = original_env_key
+            ai_service.config_manager.use_translation_memory = original_use_tm
             ai_service.config_manager.config_path = original_config_path
             ai_service.reload_config()
 

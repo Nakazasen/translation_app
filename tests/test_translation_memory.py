@@ -2,6 +2,7 @@ import os
 import tempfile
 import pytest
 import sqlite3
+from deep_translator import GoogleTranslator
 
 from translation_app.core.translation_memory import TranslationMemoryManager, normalize_text, get_segment_hash
 from translation_app.core.translator import TranslationService
@@ -202,3 +203,15 @@ def test_translator_does_not_save_when_tm_disabled(temp_db_path, monkeypatch):
     
     # Re-enable TM to avoid side effects on other tests
     ai_service.config_manager.use_translation_memory = True
+
+
+def test_translation_event_callback_failure_does_not_fail_translation(monkeypatch):
+    service = TranslationService()
+    service.set_strategy("google translate (mặc định)")
+    service.set_runtime_observer(lambda event, metadata: (_ for _ in ()).throw(RuntimeError("observer boom")))
+
+    monkeypatch.setattr(GoogleTranslator, "translate", lambda self, text: "Observer Safe")
+
+    result = service.translate_text("Hello world", "en", "vi")
+
+    assert result == "Observer Safe"
