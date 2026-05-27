@@ -2,6 +2,7 @@ import os
 import gc
 import pytest
 import tempfile
+import time
 from pathlib import Path
 
 import translation_app.core.translation_memory
@@ -309,3 +310,187 @@ def test_no_mojibake_in_ui_after_ux_refactor():
                 matched.append(pattern)
     assert not has_mojibake, f"Found Mojibake pattern(s): {matched}"
 
+
+class _ImmediateThread:
+    def __init__(self, target=None, daemon=None, *args, **kwargs):
+        self._target = target
+
+    def start(self):
+        if self._target:
+            self._target()
+
+
+def _prepare_translate_file_ui(monkeypatch, tmp_path, suffix):
+    from translation_app.ui.main_window import MainWindow
+
+    input_path = tmp_path / f"sample{suffix}"
+    input_path.write_bytes(b"stub")
+
+    monkeypatch.setattr("translation_app.ui.main_window.FileValidator.validate_file", lambda *_: None)
+    monkeypatch.setattr("translation_app.ui.main_window.LanguageValidator.validate_language_pair", lambda *_: None)
+    monkeypatch.setattr("translation_app.ui.main_window.threading.Thread", _ImmediateThread)
+
+    root = MainWindow()
+    root.withdraw()
+    root.after = lambda delay, callback=None, *args: callback(*args) if callback else None
+    root._show_pdf_ai_guide_and_wait = lambda: False
+    root.entry_file_path.delete(0, "end")
+    root.entry_file_path.insert(0, str(input_path))
+    return root, input_path
+
+
+def test_pdf_experimental_ui_default_off(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".pdf")
+    calls = []
+    infos = []
+    try:
+        assert root.use_experimental_pdf_output.get() is False
+
+        monkeypatch.setattr(
+            root.pdf_handler,
+            "translate",
+            lambda file_path, output_file, src_lang, dest_lang: calls.append(("stable", output_file)),
+        )
+        monkeypatch.setattr(
+            root.pdf_handler,
+            "translate_to_pdf_experimental",
+            lambda *args, **kwargs: calls.append(("experimental", args[1])),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: infos.append(args))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert calls == [("stable", str(input_path.with_name(f"sample_translated_{time.strftime('%Y%m%d')}.docx")))]
+        assert infos
+    finally:
+        root.destroy()
+
+
+def test_pdf_experimental_ui_changes_output_extension_to_pdf(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".pdf")
+    calls = []
+    try:
+        root.use_experimental_pdf_output.set(True)
+        monkeypatch.setattr(
+            root.pdf_handler,
+            "translate_to_pdf_experimental",
+            lambda file_path, output_file, src_lang, dest_lang: calls.append(output_file),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert len(calls) == 1
+        assert calls[0].endswith(".pdf")
+        assert "_translated_" in calls[0]
+    finally:
+        root.destroy()
+
+
+def test_pdf_experimental_ui_calls_experimental_method(monkeypatch, tmp_path):
+    root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".pdf")
+    calls = []
+    try:
+        root.use_experimental_pdf_output.set(True)
+        monkeypatch.setattr(
+            root.pdf_handler,
+            "translate_to_pdf_experimental",
+            lambda file_path, output_file, src_lang, dest_lang: calls.append((file_path, output_file, src_lang, dest_lang)),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert len(calls) == 1
+        assert calls[0][1].endswith(".pdf")
+    finally:
+        root.destroy()
+
+
+def test_pdf_experimental_ui_does_not_affect_non_pdf(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".xlsx")
+    calls = []
+    try:
+        root.use_experimental_pdf_output.set(True)
+        monkeypatch.setattr(
+            root.excel_handler,
+            "translate",
+            lambda file_path, output_file, src_lang, dest_lang: calls.append(output_file),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert calls == [str(input_path.with_name(f"sample_translated_{time.strftime('%Y%m%d')}.xlsx"))]
+    finally:
+        root.destroy()
+
+
+def test_pdf_experimental_ui_wording_is_safe():
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        widgets_text = []
+
+        def traverse(widget):
+            for child in widget.winfo_children():
+                if hasattr(child, "cget"):
+                    try:
+                        text = child.cget("text")
+                        if text:
+                            widgets_text.append(text)
+                    except Exception:
+                        pass
+                traverse(child)
+
+        traverse(root.tab_file)
+        full_text = " ".join(widgets_text)
+
+        assert "thử nghiệm" in full_text
+        assert "DOCX ổn định" in full_text
+        assert "giữ nguyên PDF" not in full_text
+        assert "layout chính xác" not in full_text
+        assert "preserve layout tốt" not in full_text
+    finally:
+        root.destroy()
+
+
+def test_pdf_experimental_ui_shows_supported_error(monkeypatch, tmp_path):
+    from translation_app.utils.error_handler import FileProcessingError
+
+    root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".pdf")
+    errors = []
+    try:
+        root.use_experimental_pdf_output.set(True)
+        monkeypatch.setattr(
+            root.pdf_handler,
+            "translate_to_pdf_experimental",
+            lambda *args, **kwargs: (_ for _ in ()).throw(FileProcessingError("unsupported experimental pdf")),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda title, message: errors.append((title, message)))
+
+        root.translate_file()
+
+        assert errors
+        assert "PDF này không phù hợp với chế độ thử nghiệm" in errors[0][1]
+        assert "DOCX ổn định" in errors[0][1]
+    finally:
+        root.destroy()
+
+
+def test_no_mojibake_after_pdf_ui_toggle():
+    from translation_app.core.encoding_utils import detect_mojibake
+
+    main_window_path = Path(__file__).parent.parent / "ui" / "main_window.py"
+    content = main_window_path.read_text(encoding="utf-8")
+
+    assert "Xuất PDF thử nghiệm cho PDF text đơn giản" in content
+    assert "DOCX ổn định" in content
+    assert not detect_mojibake(content)
