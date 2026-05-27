@@ -4,7 +4,7 @@ import logging
 import fitz
 import pytest
 
-from tests.helpers.pdf_fixtures import create_image_caption_pdf, create_table_like_pdf
+from tests.helpers.pdf_fixtures import create_image_caption_pdf, create_scanned_image_pdf, create_table_like_pdf
 from translation_app.core.file_handlers.pdf_text_fit import PDFTextFitResult
 from translation_app.core.file_handlers.pdf_handler import PDFHandler
 from translation_app.utils.error_handler import FileProcessingError
@@ -115,7 +115,7 @@ def test_pdf_experimental_preserves_page_count(tmp_path):
 
 
 def test_pdf_experimental_translates_simple_text_blocks(tmp_path):
-    _, output_path, service, _ = _run_experimental_translation(
+    _, output_path, service, stats = _run_experimental_translation(
         tmp_path,
         ["Hello world"],
         translations={"Hello world": "Xin chao the gioi"},
@@ -125,6 +125,50 @@ def test_pdf_experimental_translates_simple_text_blocks(tmp_path):
     assert "Xin chao the gioi" in output_text
     assert "Hello world" not in output_text
     assert service.calls == ["Hello world"]
+    assert stats["translated_blocks"] == 1
+
+
+def test_pdf_experimental_generates_success_report(tmp_path):
+    input_path = tmp_path / "success_report_input.pdf"
+    output_path = tmp_path / "success_report_output.pdf"
+    _make_text_pdf(input_path, ["Hello world"])
+
+    service = FakeTranslationService(translations={"Hello world": "Xin chao the gioi"})
+    handler = PDFHandler(service)
+    try:
+        stats = handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    assert output_path.exists()
+    assert stats["translated_blocks"] == 1
+    assert handler.last_pdf_qa_report is not None
+    assert handler.last_pdf_qa_report["translated_blocks"] == 1
+    assert handler.last_pdf_qa_report["page_count"] == 1
+    assert handler.last_pdf_qa_report["rejected"] is False
+
+
+def test_pdf_experimental_report_is_available_on_handler(tmp_path):
+    input_path = tmp_path / "report_input.pdf"
+    output_path = tmp_path / "report_output.pdf"
+    _make_text_pdf(input_path, ["Hello world"])
+
+    service = FakeTranslationService(translations={"Hello world": "Xin chao the gioi"})
+    handler = PDFHandler(service)
+    try:
+        handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    report = handler.last_pdf_qa_report
+    assert report is not None
+    assert report["mode"] == "experimental_pdf"
+    assert report["page_count"] == 1
+    assert report["translated_blocks"] == 1
+    assert report["rejected"] is False
+    assert report["input_file"] == "report_input.pdf"
+    assert report["output_file"] == "report_output.pdf"
+    assert "Hello world" not in repr(report)
 
 
 def test_pdf_experimental_uses_translation_service(tmp_path, monkeypatch):
@@ -160,6 +204,28 @@ def test_pdf_experimental_rejects_scanned_or_empty_pdf(tmp_path):
         service.executor.shutdown(wait=True)
 
     assert not output_path.exists()
+    assert handler.last_pdf_qa_report is not None
+    assert handler.last_pdf_qa_report["rejected"] is True
+    assert handler.last_pdf_qa_report["rejection_reason"] is not None
+
+
+def test_pdf_experimental_rejected_scanned_report(tmp_path):
+    input_path = create_scanned_image_pdf(tmp_path / "scanned_input.pdf")
+    output_path = tmp_path / "scanned_output.pdf"
+
+    service = FakeTranslationService()
+    handler = PDFHandler(service)
+    try:
+        with pytest.raises(FileProcessingError, match="Scanned or image-only PDFs are not supported"):
+            handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    report = handler.last_pdf_qa_report
+    assert report is not None
+    assert report["rejected"] is True
+    assert report["protected_regions_by_kind"]["scanned_page"] == 1
+    assert "Scanned or image-only PDFs are not supported." in report["rejection_reason"]
 
 
 def test_pdf_experimental_does_not_log_raw_text_or_keys(tmp_path, caplog):
@@ -250,6 +316,7 @@ def test_pdf_experimental_skips_formula_like_blocks(tmp_path):
     assert "Doan van da dich" in output_text
     assert "E = mc^2" in output_text
     assert stats["skipped_protected_blocks"] >= 1
+    assert handler.last_pdf_qa_report["protected_regions_by_kind"]["formula"] >= 1
 
 
 def test_pdf_experimental_skips_table_regions(tmp_path):
@@ -265,6 +332,23 @@ def test_pdf_experimental_skips_table_regions(tmp_path):
 
     assert service.calls == ["Item\nQty\nPrice"]
     assert stats["skipped_protected_blocks"] >= 1
+    assert handler.last_pdf_qa_report["protected_regions_by_kind"]["table"] >= 1
+
+
+def test_pdf_experimental_report_counts_image_protection(tmp_path):
+    input_path = create_image_caption_pdf(tmp_path / "image_caption.pdf", caption_text="Figure 1: Chart sample")
+    output_path = tmp_path / "image_caption_output.pdf"
+
+    service = FakeTranslationService()
+    handler = PDFHandler(service)
+    try:
+        stats = handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    assert stats["translated_blocks"] >= 1
+    assert handler.last_pdf_qa_report["protected_regions_by_kind"]["chart"] >= 1
+    assert handler.last_pdf_qa_report["protected_regions_by_kind"]["caption"] >= 1
 
 
 def test_pdf_experimental_uses_text_fit_for_insert(tmp_path, monkeypatch):
@@ -300,6 +384,42 @@ def test_pdf_experimental_uses_text_fit_for_insert(tmp_path, monkeypatch):
     assert stats["warning_count"] >= 2
 
 
+def test_pdf_experimental_report_counts_overflow(tmp_path, monkeypatch):
+    import translation_app.core.file_handlers.pdf_handler as pdf_handler_module
+
+    def fake_fit(request):
+        return PDFTextFitResult(
+            fitted_text="Wrapped\ntranslation",
+            lines=["Wrapped", "translation"],
+            font_size=max(6.0, request.font_size - 2.0),
+            line_height=max(6.0, request.font_size - 2.0) * request.line_height_ratio,
+            bbox=request.bbox,
+            overflow=True,
+            overflow_reason="text_overflow",
+            warnings=["font_shrunk", "text_overflow"],
+            scale_ratio=0.75,
+        )
+
+    monkeypatch.setattr(pdf_handler_module, "fit_text_to_bbox", fake_fit)
+
+    input_path = tmp_path / "overflow_input.pdf"
+    output_path = tmp_path / "overflow_output.pdf"
+    _make_text_pdf(input_path, ["Hello world"])
+
+    service = FakeTranslationService(translations={"Hello world": "Very long translated block"})
+    handler = PDFHandler(service)
+    try:
+        handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    report = handler.last_pdf_qa_report
+    assert report["overflow_blocks"] == 1
+    assert report["warning_count"] >= 2
+    assert report["warnings_by_type"]["text_overflow"] >= 1
+    assert "Very long translated block" not in repr(report)
+
+
 def test_pdf_experimental_outputs_warning_summary_without_raw_text(tmp_path):
     _, _, _, stats = _run_experimental_translation(
         tmp_path,
@@ -309,7 +429,28 @@ def test_pdf_experimental_outputs_warning_summary_without_raw_text(tmp_path):
 
     assert "warning_count" in stats
     assert "skipped_protected_blocks" in stats
+    assert "skipped_noisy_blocks" in stats
     assert "Hello world" not in repr(stats)
+
+
+def test_pdf_experimental_outputs_warning_summary_without_raw_text_in_report(tmp_path):
+    input_path = tmp_path / "warning_input.pdf"
+    output_path = tmp_path / "warning_output.pdf"
+    _make_text_pdf(input_path, ["Hello world"])
+
+    service = FakeTranslationService(translations={"Hello world": "Xin chao the gioi"})
+    handler = PDFHandler(service)
+    try:
+        handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    report = handler.last_pdf_qa_report
+    assert report is not None
+    assert "warning_count" in report
+    assert "warnings_by_type" in report
+    assert "Hello world" not in repr(report)
+    assert "Xin chao the gioi" not in repr(report)
 
 
 def test_pdf_experimental_no_mojibake_with_vietnamese_text_when_supported(tmp_path):
