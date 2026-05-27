@@ -102,7 +102,7 @@ def create_table_like_pdf(path: str | Path) -> Path:
     return Path(path)
 
 
-def create_image_caption_pdf(path: str | Path) -> Path:
+def create_image_caption_pdf(path: str | Path, caption_text: str = "Caption: Sample image block") -> Path:
     image = Image.new("RGB", (120, 120), "white")
     draw = ImageDraw.Draw(image)
     draw.rectangle((12, 12, 108, 108), outline="black", width=3)
@@ -117,7 +117,7 @@ def create_image_caption_pdf(path: str | Path) -> Path:
     page.insert_image(fitz.Rect(72, 72, 220, 220), stream=buffer.getvalue())
     page.insert_textbox(
         fitz.Rect(72, 236, 320, 280),
-        "Caption: Sample image block",
+        caption_text,
         fontsize=12,
         fontname="helv",
     )
@@ -130,6 +130,16 @@ def create_formula_like_pdf(path: str | Path) -> Path:
     page = doc.new_page()
     text = "E = mc^2\nSUM(A1:A3)\nx^2 + y^2"
     page.insert_textbox(fitz.Rect(72, 72, 360, 220), text, fontsize=14, fontname="cour")
+    _save_document(doc, path)
+    return Path(path)
+
+
+def create_noisy_text_pdf(path: str | Path) -> Path:
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 72), "A", fontsize=4, fontname="helv")
+    page.insert_text((92, 72), "=", fontsize=4, fontname="helv")
+    page.insert_textbox(fitz.Rect(72, 120, 320, 200), "Stable text block", fontsize=14, fontname="helv")
     _save_document(doc, path)
     return Path(path)
 

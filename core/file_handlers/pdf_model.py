@@ -13,7 +13,7 @@ import fitz
 BBox = tuple[float, float, float, float]
 
 FORMULA_PATTERN = re.compile(
-    r"(?:\bSUM\(|\b[A-Za-z]\d+:\w+\d+\b|mc\^2|x\^2|y\^2|=|\^|√|∑|∫)",
+    r"(?:\bSUM\(|\bAVG\(|\b[A-Za-z]\d+:\w+\d+\b|mc\^2|x\^2|y\^2|=|\^|\u2211|\u221a|\u222b|\u00b1|\u2264|\u2265|\u2248)",
     re.IGNORECASE,
 )
 MULTI_COLUMN_SPACING_PATTERN = re.compile(r"\S\s{2,}\S")
