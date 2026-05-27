@@ -30,6 +30,16 @@ def main():
         setup_logging(config.log_level)
         logger.info("=" * 60)
         logger.info("Translation Application Starting")
+        
+        # Log git commit short SHA and source path in debug mode
+        import subprocess
+        try:
+            commit_sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode("utf-8").strip()
+        except Exception:
+            commit_sha = "Unknown"
+        source_path = os.path.abspath(__file__)
+        logger.debug(f"Source Path: {source_path}")
+        logger.info(f"Git Commit SHA: {commit_sha}")
         logger.info("=" * 60)
         
         from translation_app.utils.update_service import check_for_updates, perform_update
