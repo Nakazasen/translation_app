@@ -24,8 +24,15 @@ from translation_app.core.file_handlers.pdf_protection import (
     apply_protected_flags,
     detect_protected_regions,
     get_translatable_blocks,
+    model_to_protection_summary,
+)
+from translation_app.core.file_handlers.pdf_qa_report import (
+    PDFQAReport,
+    build_pdf_qa_report,
+    report_to_public_dict,
 )
 from translation_app.core.file_handlers.pdf_text_fit import PDFTextFitRequest, PDFTextFitResult, fit_text_to_bbox
+from translation_app.core.file_handlers.pdf_text_fit import summarize_fit_results
 from translation_app.core.file_handlers.word_handler import WordHandler
 from translation_app.core.ocr_handler import OCRHandler
 from translation_app.utils.error_handler import FileProcessingError
@@ -240,6 +247,7 @@ class PDFHandler:
         self.font_name = 'Times New Roman'
         self.method_used = None  # Track which method was used for logging
         self.progress_callback = None  # Function to update UI progress (status_text, percentage)
+        self.last_pdf_qa_report: Dict[str, Any] | None = None
         self._main_thread_id = threading.current_thread().ident  # Lưu ID thread chính để kiểm tra thread-safety
     
     def _safe_progress_callback(self, message: str, progress: int) -> None:
@@ -395,6 +403,7 @@ class PDFHandler:
         try:
             with suppress_pdf_warnings():
                 logger.info(f"Starting experimental PDF layout translation: {os.path.basename(input_file)}")
+                self.last_pdf_qa_report = None
                 if self.progress_callback:
                     self.progress_callback("Preparing experimental PDF layout output...", 5)
 
@@ -409,15 +418,50 @@ class PDFHandler:
 
                 regions = detect_protected_regions(model)
                 apply_protected_flags(model, regions)
-                page_blocks, skipped_protected_blocks = self._collect_experimental_page_blocks(model, regions)
+                page_blocks, selection_summary = self._collect_experimental_page_blocks(model, regions)
                 total_blocks = sum(len(blocks) for blocks in page_blocks)
+                protection_summary = model_to_protection_summary(model, regions)
                 scanned_only = any(region.kind == "scanned_page" for region in regions)
                 if scanned_only and total_blocks == 0:
+                    self._set_last_pdf_qa_report(
+                        build_pdf_qa_report(
+                            input_file=input_file,
+                            output_file=output_file,
+                            mode="experimental_pdf",
+                            page_count=page_count,
+                            skipped_protected_blocks=selection_summary["skipped_protected_blocks"],
+                            skipped_noisy_blocks=selection_summary["skipped_noisy_blocks"],
+                            protected_regions_by_kind=protection_summary.get("counts_by_kind"),
+                            rejected=True,
+                            rejection_reason=(
+                                "Experimental PDF layout output found no supported text blocks. "
+                                "Scanned or image-only PDFs are not supported."
+                            ),
+                            engine_version="phase_5h6",
+                        )
+                    )
                     raise FileProcessingError(
                         "Experimental PDF layout output found no supported text blocks. "
                         "Scanned or image-only PDFs are not supported."
                     )
                 if total_blocks == 0:
+                    self._set_last_pdf_qa_report(
+                        build_pdf_qa_report(
+                            input_file=input_file,
+                            output_file=output_file,
+                            mode="experimental_pdf",
+                            page_count=page_count,
+                            skipped_protected_blocks=selection_summary["skipped_protected_blocks"],
+                            skipped_noisy_blocks=selection_summary["skipped_noisy_blocks"],
+                            protected_regions_by_kind=protection_summary.get("counts_by_kind"),
+                            rejected=True,
+                            rejection_reason=(
+                                "Experimental PDF layout output found no supported text blocks. "
+                                "Blank, scanned, or layout-heavy PDFs are not supported."
+                            ),
+                            engine_version="phase_5h6",
+                        )
+                    )
                     raise FileProcessingError(
                         "Experimental PDF layout output found no supported text blocks. "
                         "Blank, scanned, or layout-heavy PDFs are not supported."
@@ -426,8 +470,7 @@ class PDFHandler:
                 doc = fitz.open(input_file)
                 try:
                     translated_blocks = 0
-                    overflow_blocks = 0
-                    warning_count = 0
+                    fit_results: List[PDFTextFitResult] = []
 
                     for page_index, blocks in enumerate(page_blocks):
                         page = doc[page_index]
@@ -455,28 +498,48 @@ class PDFHandler:
 
                         for block in blocks:
                             fit_result = self._insert_translated_block(page, block)
-                            warning_count += len(fit_result.warnings)
-                            if fit_result.overflow:
-                                overflow_blocks += 1
+                            fit_results.append(fit_result)
 
                     doc.save(output_file)
                 finally:
                     doc.close()
+
+                fit_summary = summarize_fit_results(fit_results)
+                report = build_pdf_qa_report(
+                    input_file=input_file,
+                    output_file=output_file,
+                    mode="experimental_pdf",
+                    page_count=page_count,
+                    translated_blocks=translated_blocks,
+                    skipped_protected_blocks=selection_summary["skipped_protected_blocks"],
+                    skipped_noisy_blocks=selection_summary["skipped_noisy_blocks"],
+                    overflow_blocks=int(fit_summary.get("overflow_count", 0) or 0),
+                    warning_count=sum(
+                        int(count) for count in (fit_summary.get("warning_counts", {}) or {}).values()
+                    ),
+                    warnings_by_type=fit_summary.get("warning_counts", {}),
+                    protected_regions_by_kind=protection_summary.get("counts_by_kind"),
+                    rejected=False,
+                    engine_version="phase_5h6",
+                )
+                self._set_last_pdf_qa_report(report)
 
                 if self.progress_callback:
                     self.progress_callback("Experimental PDF layout output completed.", 100)
 
                 logger.info(
                     "Experimental PDF layout translation completed: "
-                    f"{page_count} pages, {translated_blocks} blocks, {skipped_protected_blocks} protected skips, "
-                    f"{overflow_blocks} overflow fallbacks, {warning_count} fit warnings"
+                    f"{page_count} pages, {translated_blocks} blocks, "
+                    f"{selection_summary['skipped_protected_blocks']} protected skips, "
+                    f"{report.overflow_blocks} overflow fallbacks, {report.warning_count} fit warnings"
                 )
                 return {
                     "page_count": page_count,
                     "translated_blocks": translated_blocks,
-                    "skipped_protected_blocks": skipped_protected_blocks,
-                    "overflow_blocks": overflow_blocks,
-                    "warning_count": warning_count,
+                    "skipped_protected_blocks": selection_summary["skipped_protected_blocks"],
+                    "skipped_noisy_blocks": selection_summary["skipped_noisy_blocks"],
+                    "overflow_blocks": report.overflow_blocks,
+                    "warning_count": report.warning_count,
                 }
         except FileProcessingError:
             raise
@@ -1174,16 +1237,22 @@ class PDFHandler:
         doc.save(output_file)
         logger.info(f"Saved Word file with {len(tables)} tables and {len(text_blocks)} text blocks")
 
+    def _set_last_pdf_qa_report(self, report: PDFQAReport) -> None:
+        self.last_pdf_qa_report = report_to_public_dict(report)
+
     def _collect_experimental_page_blocks(
         self, model, regions
-    ) -> Tuple[List[List[Dict[str, Any]]], int]:
+    ) -> Tuple[List[List[Dict[str, Any]]], Dict[str, int]]:
         page_blocks: List[List[Dict[str, Any]]] = [[] for _ in range(model.page_count)]
         translatable_blocks = get_translatable_blocks(model, regions, exclude_protected=True)
         skipped_protected_blocks = 0
+        skipped_noisy_blocks = 0
 
         translatable_ids = {block.block_id for block in translatable_blocks}
         for page in model.pages:
             for block in page.blocks:
+                if block.kind == "text" and "noisy" in block.flags and block.block_id not in translatable_ids:
+                    skipped_noisy_blocks += 1
                 has_protection_signal = (
                     "protected" in block.flags
                     or "non_translatable" in block.flags
@@ -1196,7 +1265,10 @@ class PDFHandler:
         for block in translatable_blocks:
             page_blocks[block.page_index].append(self._build_experimental_block_from_model(block))
 
-        return page_blocks, skipped_protected_blocks
+        return page_blocks, {
+            "skipped_protected_blocks": skipped_protected_blocks,
+            "skipped_noisy_blocks": skipped_noisy_blocks,
+        }
 
     def _build_experimental_block_from_model(self, block: PDFBlockModel) -> Dict[str, Any]:
         font_sizes = [
