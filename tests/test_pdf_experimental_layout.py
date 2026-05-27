@@ -4,6 +4,8 @@ import logging
 import fitz
 import pytest
 
+from tests.helpers.pdf_fixtures import create_image_caption_pdf, create_table_like_pdf
+from translation_app.core.file_handlers.pdf_text_fit import PDFTextFitResult
 from translation_app.core.file_handlers.pdf_handler import PDFHandler
 from translation_app.utils.error_handler import FileProcessingError
 
@@ -45,6 +47,25 @@ def _make_text_pdf(path, pages):
 def _make_blank_pdf(path):
     doc = fitz.open()
     doc.new_page()
+    doc.save(path)
+    doc.close()
+
+
+def _make_formula_mixed_pdf(path):
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_textbox(
+        fitz.Rect(72, 72, 320, 130),
+        "Translate this paragraph",
+        fontsize=14,
+        fontname="helv",
+    )
+    page.insert_textbox(
+        fitz.Rect(72, 170, 360, 240),
+        "E = mc^2\nSUM(A1:A3)",
+        fontsize=14,
+        fontname="cour",
+    )
     doc.save(path)
     doc.close()
 
@@ -160,6 +181,137 @@ def test_pdf_experimental_does_not_log_raw_text_or_keys(tmp_path, caplog):
     assert service.calls == [source_text]
 
 
+def test_pdf_experimental_uses_canonical_model_and_protection(tmp_path, monkeypatch):
+    import translation_app.core.file_handlers.pdf_handler as pdf_handler_module
+
+    call_counts = {
+        "build_model": 0,
+        "detect_regions": 0,
+        "apply_flags": 0,
+        "get_translatable": 0,
+    }
+
+    original_build = pdf_handler_module.build_pdf_document_model
+    original_detect = pdf_handler_module.detect_protected_regions
+    original_apply = pdf_handler_module.apply_protected_flags
+    original_get = pdf_handler_module.get_translatable_blocks
+
+    def wrapped_build(*args, **kwargs):
+        call_counts["build_model"] += 1
+        return original_build(*args, **kwargs)
+
+    def wrapped_detect(*args, **kwargs):
+        call_counts["detect_regions"] += 1
+        return original_detect(*args, **kwargs)
+
+    def wrapped_apply(*args, **kwargs):
+        call_counts["apply_flags"] += 1
+        return original_apply(*args, **kwargs)
+
+    def wrapped_get(*args, **kwargs):
+        call_counts["get_translatable"] += 1
+        return original_get(*args, **kwargs)
+
+    monkeypatch.setattr(pdf_handler_module, "build_pdf_document_model", wrapped_build)
+    monkeypatch.setattr(pdf_handler_module, "detect_protected_regions", wrapped_detect)
+    monkeypatch.setattr(pdf_handler_module, "apply_protected_flags", wrapped_apply)
+    monkeypatch.setattr(pdf_handler_module, "get_translatable_blocks", wrapped_get)
+
+    _, output_path, _, stats = _run_experimental_translation(
+        tmp_path,
+        ["Hello world"],
+        translations={"Hello world": "Xin chao the gioi"},
+    )
+
+    assert output_path.exists()
+    assert stats["translated_blocks"] == 1
+    assert call_counts == {
+        "build_model": 1,
+        "detect_regions": 1,
+        "apply_flags": 1,
+        "get_translatable": 1,
+    }
+
+
+def test_pdf_experimental_skips_formula_like_blocks(tmp_path):
+    input_path = tmp_path / "formula_mixed.pdf"
+    output_path = tmp_path / "formula_mixed_output.pdf"
+    _make_formula_mixed_pdf(input_path)
+
+    service = FakeTranslationService(translations={"Translate this paragraph": "Doan van da dich"})
+    handler = PDFHandler(service)
+    try:
+        stats = handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    output_text = _extract_page_texts(output_path)[0]
+    assert service.calls == ["Translate this paragraph"]
+    assert "Doan van da dich" in output_text
+    assert "E = mc^2" in output_text
+    assert stats["skipped_protected_blocks"] >= 1
+
+
+def test_pdf_experimental_skips_table_regions(tmp_path):
+    input_path = create_table_like_pdf(tmp_path / "table_like.pdf")
+    output_path = tmp_path / "table_like_output.pdf"
+
+    service = FakeTranslationService()
+    handler = PDFHandler(service)
+    try:
+        stats = handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    assert service.calls == ["Item\nQty\nPrice"]
+    assert stats["skipped_protected_blocks"] >= 1
+
+
+def test_pdf_experimental_uses_text_fit_for_insert(tmp_path, monkeypatch):
+    import translation_app.core.file_handlers.pdf_handler as pdf_handler_module
+
+    calls = {"fit": 0}
+
+    def fake_fit(request):
+        calls["fit"] += 1
+        return PDFTextFitResult(
+            fitted_text="Wrapped\ntranslation",
+            lines=["Wrapped", "translation"],
+            font_size=max(6.0, request.font_size - 2.0),
+            line_height=max(6.0, request.font_size - 2.0) * request.line_height_ratio,
+            bbox=request.bbox,
+            overflow=True,
+            overflow_reason="text_overflow",
+            warnings=["font_shrunk", "text_overflow"],
+            scale_ratio=0.75,
+        )
+
+    monkeypatch.setattr(pdf_handler_module, "fit_text_to_bbox", fake_fit)
+
+    _, output_path, _, stats = _run_experimental_translation(
+        tmp_path,
+        ["Hello world"],
+        translations={"Hello world": "A much longer translated paragraph for fitting"},
+    )
+
+    assert output_path.exists()
+    assert calls["fit"] == 1
+    assert stats["overflow_blocks"] == 1
+    assert stats["warning_count"] >= 2
+
+
+def test_pdf_experimental_outputs_warning_summary_without_raw_text(tmp_path):
+    _, _, _, stats = _run_experimental_translation(
+        tmp_path,
+        ["Hello world"],
+        translations={"Hello world": "Xin chao the gioi"},
+    )
+
+    assert "warning_count" in stats
+    assert "skipped_protected_blocks" in stats
+    assert "Hello world" not in repr(stats)
+
+
 def test_pdf_experimental_no_mojibake_with_vietnamese_text_when_supported(tmp_path):
     source_text = "Xin chao PDF thu nghiem"
     translated_text = "Ban dich tieng Viet on dinh"
@@ -177,4 +329,3 @@ def test_pdf_experimental_no_mojibake_with_vietnamese_text_when_supported(tmp_pa
     output_pages = _extract_page_texts(output_path)
     assert translated_text in output_pages[0]
     assert stats["page_count"] == 1
-
