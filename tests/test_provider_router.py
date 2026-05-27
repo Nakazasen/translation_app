@@ -3,6 +3,8 @@ import os
 import tempfile
 import threading
 import time
+import io
+import urllib.error
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -10,8 +12,8 @@ import pytest
 from deep_translator import GoogleTranslator
 
 from translation_app.core.ai_service import get_ai_service
-from translation_app.core.provider_router import ProviderRouter, TranslationRequest, TranslationResult
-from translation_app.core.providers import build_provider_profiles
+from translation_app.core.provider_router import ProviderRouter, TranslationRequest, TranslationResult, classify_error
+from translation_app.core.providers import build_provider_profiles, get_default_provider_profiles
 from translation_app.core.providers.base import BaseTranslationProvider, ProviderCandidate
 from translation_app.core.providers.openai_compatible_provider import OpenAICompatibleProvider
 from translation_app.core.translation_memory import get_tm_manager
@@ -115,14 +117,20 @@ def serve_json_response(status_code, payload, capture=None):
 
 
 def test_provider_profiles_default_disabled_except_safe_defaults():
-    profiles = build_provider_profiles(get_ai_service().config_manager)
+    config_manager = get_ai_service().config_manager
+    original = config_manager.providers_config
+    config_manager.providers_config = get_default_provider_profiles()
+    try:
+        profiles = build_provider_profiles(config_manager)
 
-    assert profiles["gemini"].enabled is True
-    assert profiles["google"].enabled is True
-    assert profiles["chatanywhere"].enabled is False
-    assert profiles["deepseek"].enabled is False
-    assert profiles["nvidia_nim"].enabled is False
-    assert profiles["openai_compatible"].enabled is False
+        assert profiles["gemini"].enabled is True
+        assert profiles["google"].enabled is True
+        assert profiles["chatanywhere"].enabled is False
+        assert profiles["deepseek"].enabled is False
+        assert profiles["nvidia_nim"].enabled is False
+        assert profiles["openai_compatible"].enabled is False
+    finally:
+        config_manager.providers_config = original
 
 
 def test_chatanywhere_profile_uses_openai_compatible_endpoint():
@@ -399,39 +407,29 @@ def test_provider_model_fallback_runtime_only():
     assert second[0].model == "model-b"
 
 
-def test_openai_compatible_provider_redacts_key_and_classifies_auth_http_error():
+def test_openai_compatible_provider_redacts_key_and_classifies_auth_http_error(monkeypatch):
     secret = "sk-auth-secret-123"
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=secret,
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            payload = json.dumps({"error": f"invalid api key {secret}"}).encode("utf-8")
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, format, *args):
-            return
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    try:
-        provider = OpenAICompatibleProvider(
-            enabled=True,
-            base_url=f"http://127.0.0.1:{server.server_port}/v1",
-            api_key=secret,
-            model="gpt-mock",
-            provider_name="mock-openai",
-            timeout=5,
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": f"invalid api key {secret}"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(payload),
         )
-        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
 
     assert result.status == "error"
     assert result.error_type == "auth_failure"
@@ -509,73 +507,55 @@ def test_provider_specific_quota_error_classification():
     assert result.error_type == "quota_rate_limit"
 
 
-def test_openai_compatible_provider_classifies_403_as_auth_failure():
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            payload = json.dumps({"error": "forbidden"}).encode("utf-8")
-            self.send_response(403)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+def test_openai_compatible_provider_classifies_403_as_auth_failure(monkeypatch):
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="sk-test-403",
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
 
-        def log_message(self, format, *args):
-            return
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    try:
-        provider = OpenAICompatibleProvider(
-            enabled=True,
-            base_url=f"http://127.0.0.1:{server.server_port}/v1",
-            api_key="sk-test-403",
-            model="gpt-mock",
-            provider_name="mock-openai",
-            timeout=5,
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": "forbidden"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(payload),
         )
-        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
 
     assert result.status == "error"
     assert result.error_type == "auth_failure"
 
 
-def test_openai_compatible_provider_classifies_429_as_quota():
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            payload = json.dumps({"error": "too many requests"}).encode("utf-8")
-            self.send_response(429)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+def test_openai_compatible_provider_classifies_429_as_quota(monkeypatch):
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="sk-test-429",
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
 
-        def log_message(self, format, *args):
-            return
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    try:
-        provider = OpenAICompatibleProvider(
-            enabled=True,
-            base_url=f"http://127.0.0.1:{server.server_port}/v1",
-            api_key="sk-test-429",
-            model="gpt-mock",
-            provider_name="mock-openai",
-            timeout=5,
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": "too many requests"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(payload),
         )
-        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
 
     assert result.status == "error"
     assert result.error_type == "quota_rate_limit"
@@ -599,6 +579,77 @@ def test_openai_compatible_provider_classifies_timeout(monkeypatch):
 
     assert result.status == "error"
     assert result.error_type == "timeout"
+
+
+def test_classify_error_uses_status_code_even_if_body_is_empty():
+    assert classify_error("plain failure", status_code=403, response_body="") == "auth_failure"
+    assert classify_error("plain failure", status_code=429, response_body="") == "quota_rate_limit"
+
+
+def test_classify_error_uses_body_when_status_missing():
+    assert classify_error(Exception("request failed"), response_body="forbidden") == "auth_failure"
+    assert classify_error(Exception("request failed"), response_body="too many requests") == "quota_rate_limit"
+
+
+def test_http_error_body_is_sanitized_without_losing_error_type(monkeypatch):
+    secret = "sk-sanitize-999"
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=secret,
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
+
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": f"forbidden token {secret}"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=io.BytesIO(payload),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+
+    assert result.status == "error"
+    assert result.error_type == "auth_failure"
+    assert secret not in result.error_message
+    assert "[REDACTED_API_KEY]" in result.error_message
+
+
+def test_provider_result_does_not_leak_authorization_or_api_key_on_http_error(monkeypatch):
+    secret = "sk-leak-check-0001"
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=secret,
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
+
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": f"Authorization: Bearer {secret}"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(payload),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+
+    assert result.status == "error"
+    assert result.error_type == "auth_failure"
+    assert secret not in result.error_message
+    assert "Authorization: Bearer" not in result.error_message
+    assert "Authorization: [REDACTED_API_KEY]" in result.error_message
 
 
 def test_openai_compatible_provider_handles_nvidia_nim_mock():

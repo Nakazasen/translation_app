@@ -131,27 +131,30 @@ class OpenAICompatibleProvider(BaseTranslationProvider):
                 latency_ms=round((time.time() - started) * 1000),
             )
         except urllib.error.HTTPError as exc:
-            raw_detail = exc.read().decode("utf-8", errors="replace")
-            detail = _sanitize_error_detail(_normalize_error_payload(raw_detail), api_key)
+            status_code, raw_detail = _extract_http_error_context(exc)
+            normalized_detail = _normalize_error_payload(raw_detail)
+            detail = _sanitize_error_detail(normalized_detail or str(exc), api_key)
             return TranslationResult(
                 status="error",
                 provider=self.name,
                 model=candidate.model or self.default_model,
                 key_id=candidate.key_id,
                 key_index=candidate.key_index,
-                error_type=classify_error(f"{exc.code} {detail}"),
-                error_message=f"HTTP {exc.code}: {detail}",
+                error_type=classify_error(exc, status_code=status_code, response_body=normalized_detail or raw_detail),
+                error_message=_format_http_error_message(status_code, detail),
                 latency_ms=round((time.time() - started) * 1000),
             )
         except Exception as exc:
-            detail = _sanitize_error_detail(str(exc), api_key)
+            status_code, raw_detail = _extract_http_error_context(exc)
+            detail_source = _normalize_error_payload(raw_detail) or raw_detail or str(exc)
+            detail = _sanitize_error_detail(detail_source, api_key)
             return TranslationResult(
                 status="error",
                 provider=self.name,
                 model=candidate.model or self.default_model,
                 key_id=candidate.key_id,
                 key_index=candidate.key_index,
-                error_type=classify_error(detail),
+                error_type=classify_error(exc, status_code=status_code, response_body=detail_source),
                 error_message=detail,
                 latency_ms=round((time.time() - started) * 1000),
             )
@@ -220,6 +223,56 @@ def _normalize_error_payload(raw_detail: str) -> str:
     return detail
 
 
+def _extract_http_error_context(error: Exception) -> tuple[int | None, str]:
+    status_code = _extract_status_code(error)
+    body = ""
+
+    read_method = getattr(error, "read", None)
+    if callable(read_method):
+        try:
+            raw_payload = read_method()
+            if isinstance(raw_payload, bytes):
+                body = raw_payload.decode("utf-8", errors="replace")
+            elif raw_payload is not None:
+                body = str(raw_payload)
+        except Exception:
+            body = ""
+
+    if not body:
+        response = getattr(error, "response", None)
+        if response is not None:
+            text = getattr(response, "text", None)
+            if text:
+                body = str(text)
+
+    return status_code, body
+
+
+def _extract_status_code(error: Exception) -> int | None:
+    for attr_name in ("code", "status", "status_code"):
+        value = getattr(error, attr_name, None)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    return None
+
+
+def _format_http_error_message(status_code: int | None, detail: str) -> str:
+    if status_code is None and detail:
+        return detail
+    if status_code is None:
+        return "HTTP error"
+    if detail:
+        return f"HTTP {status_code}: {detail}"
+    return f"HTTP {status_code}"
+
+
 def _is_local_base_url(base_url: str) -> bool:
     parsed = urllib.parse.urlparse(base_url)
     hostname = (parsed.hostname or "").lower()
@@ -230,6 +283,12 @@ def _sanitize_error_detail(detail: str, api_key: str = "") -> str:
     sanitized = str(detail or "")
     if api_key:
         sanitized = sanitized.replace(api_key, "[REDACTED_API_KEY]")
+    sanitized = re.sub(
+        r"Authorization\s*:\s*Bearer\s+[^\s,;]+",
+        "Authorization: [REDACTED_API_KEY]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
     sanitized = re.sub(r"Bearer\s+[^\s,;]+", "Bearer [REDACTED_API_KEY]", sanitized, flags=re.IGNORECASE)
     sanitized = re.sub(r"AIza[0-9A-Za-z\-_]{8,}", "[REDACTED_API_KEY]", sanitized)
     return sanitized[:500]

@@ -25,16 +25,22 @@ AUTH_HINTS = (
 QUOTA_HINTS = ("429", "quota", "rate limit", "rate_limit", "resource exhausted", "too many requests")
 TIMEOUT_HINTS = ("timeout", "timed out")
 TRANSPORT_HINTS = (
+    "connection failed",
     "connection aborted",
     "connection refused",
     "connection reset",
     "connection error",
+    "actively refused",
+    "winerror 10061",
+    "winerror 10054",
+    "winerror 11001",
     "remote end closed connection",
     "temporary failure in name resolution",
     "name or service not known",
     "no address associated with hostname",
     "network is unreachable",
     "failed to establish a new connection",
+    "max retries exceeded",
 )
 MODEL_UNAVAILABLE_HINTS = ("404", "410", "not found", "model unavailable")
 MODEL_ERROR_HINTS = ("invalid model", "model not found", "unknown model", "unsupported model")
@@ -354,13 +360,23 @@ class ProviderRouter:
         return state.cooldown_until > current
 
 
-def classify_error(error: Any) -> str:
-    if isinstance(error, str):
-        detail = error.lower()
-    elif isinstance(error, dict):
-        detail = " ".join(str(value) for value in error.values()).lower()
-    else:
-        detail = str(error or "").lower()
+def classify_error(error: Any, status_code: int | None = None, response_body: Any = None) -> str:
+    if status_code in (401, 403):
+        return "auth_failure"
+    if status_code == 429:
+        return "quota_rate_limit"
+    if status_code == 400:
+        detail_400 = _build_error_detail(error, response_body)
+        if any(token in detail_400 for token in MODEL_ERROR_HINTS):
+            return "model_error"
+    if status_code in (404, 410):
+        detail_404 = _build_error_detail(error, response_body)
+        if any(token in detail_404 for token in MODEL_ERROR_HINTS + MODEL_UNAVAILABLE_HINTS):
+            return "model_unavailable"
+    if status_code is not None and 500 <= status_code <= 599:
+        return "provider_5xx"
+
+    detail = _build_error_detail(error, response_body)
 
     if any(token in detail for token in AUTH_HINTS):
         return "auth_failure"
@@ -381,3 +397,23 @@ def classify_error(error: Any) -> str:
     if any(token in detail for token in PROVIDER_5XX_HINTS):
         return "provider_5xx"
     return "unknown_transport_error"
+
+
+def _build_error_detail(error: Any, response_body: Any = None) -> str:
+    parts: list[str] = []
+
+    if response_body:
+        if isinstance(response_body, dict):
+            parts.append(" ".join(str(value) for value in response_body.values()))
+        else:
+            parts.append(str(response_body))
+
+    if isinstance(error, str):
+        parts.append(error)
+    elif isinstance(error, dict):
+        parts.append(" ".join(str(value) for value in error.values()))
+    elif error is not None:
+        parts.append(type(error).__name__)
+        parts.append(str(error))
+
+    return " ".join(part for part in parts if part).lower()
