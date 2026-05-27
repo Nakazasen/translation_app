@@ -19,6 +19,13 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 import pdfplumber
 
 from translation_app.core.translator import TranslationService
+from translation_app.core.file_handlers.pdf_model import PDFBlockModel, build_pdf_document_model
+from translation_app.core.file_handlers.pdf_protection import (
+    apply_protected_flags,
+    detect_protected_regions,
+    get_translatable_blocks,
+)
+from translation_app.core.file_handlers.pdf_text_fit import PDFTextFitRequest, PDFTextFitResult, fit_text_to_bbox
 from translation_app.core.file_handlers.word_handler import WordHandler
 from translation_app.core.ocr_handler import OCRHandler
 from translation_app.utils.error_handler import FileProcessingError
@@ -391,31 +398,36 @@ class PDFHandler:
                 if self.progress_callback:
                     self.progress_callback("Preparing experimental PDF layout output...", 5)
 
+                model = build_pdf_document_model(input_file)
+                page_count = model.page_count
+                if page_count == 0:
+                    raise FileProcessingError("Input PDF has no pages.")
+                if page_count > 2:
+                    raise FileProcessingError(
+                        "Experimental PDF layout output currently supports only simple 1-2 page PDFs."
+                    )
+
+                regions = detect_protected_regions(model)
+                apply_protected_flags(model, regions)
+                page_blocks, skipped_protected_blocks = self._collect_experimental_page_blocks(model, regions)
+                total_blocks = sum(len(blocks) for blocks in page_blocks)
+                scanned_only = any(region.kind == "scanned_page" for region in regions)
+                if scanned_only and total_blocks == 0:
+                    raise FileProcessingError(
+                        "Experimental PDF layout output found no supported text blocks. "
+                        "Scanned or image-only PDFs are not supported."
+                    )
+                if total_blocks == 0:
+                    raise FileProcessingError(
+                        "Experimental PDF layout output found no supported text blocks. "
+                        "Blank, scanned, or layout-heavy PDFs are not supported."
+                    )
+
                 doc = fitz.open(input_file)
                 try:
-                    page_count = len(doc)
-                    if page_count == 0:
-                        raise FileProcessingError("Input PDF has no pages.")
-                    if page_count > 2:
-                        raise FileProcessingError(
-                            "Experimental PDF layout output currently supports only simple 1-2 page PDFs."
-                        )
-
-                    page_blocks: List[List[Dict[str, Any]]] = []
-                    total_blocks = 0
-                    for page_index in range(page_count):
-                        blocks = self._extract_experimental_text_blocks(doc[page_index], page_index + 1)
-                        page_blocks.append(blocks)
-                        total_blocks += len(blocks)
-
-                    if total_blocks == 0:
-                        raise FileProcessingError(
-                            "Experimental PDF layout output found no supported text blocks. "
-                            "Blank, scanned, or layout-heavy PDFs are not supported."
-                        )
-
                     translated_blocks = 0
                     overflow_blocks = 0
+                    warning_count = 0
 
                     for page_index, blocks in enumerate(page_blocks):
                         page = doc[page_index]
@@ -442,8 +454,9 @@ class PDFHandler:
                             )
 
                         for block in blocks:
-                            inserted = self._insert_translated_block(page, block)
-                            if not inserted:
+                            fit_result = self._insert_translated_block(page, block)
+                            warning_count += len(fit_result.warnings)
+                            if fit_result.overflow:
                                 overflow_blocks += 1
 
                     doc.save(output_file)
@@ -455,12 +468,15 @@ class PDFHandler:
 
                 logger.info(
                     "Experimental PDF layout translation completed: "
-                    f"{page_count} pages, {translated_blocks} blocks, {overflow_blocks} overflow fallbacks"
+                    f"{page_count} pages, {translated_blocks} blocks, {skipped_protected_blocks} protected skips, "
+                    f"{overflow_blocks} overflow fallbacks, {warning_count} fit warnings"
                 )
                 return {
                     "page_count": page_count,
                     "translated_blocks": translated_blocks,
+                    "skipped_protected_blocks": skipped_protected_blocks,
                     "overflow_blocks": overflow_blocks,
+                    "warning_count": warning_count,
                 }
         except FileProcessingError:
             raise
@@ -1158,6 +1174,54 @@ class PDFHandler:
         doc.save(output_file)
         logger.info(f"Saved Word file with {len(tables)} tables and {len(text_blocks)} text blocks")
 
+    def _collect_experimental_page_blocks(
+        self, model, regions
+    ) -> Tuple[List[List[Dict[str, Any]]], int]:
+        page_blocks: List[List[Dict[str, Any]]] = [[] for _ in range(model.page_count)]
+        translatable_blocks = get_translatable_blocks(model, regions, exclude_protected=True)
+        skipped_protected_blocks = 0
+
+        translatable_ids = {block.block_id for block in translatable_blocks}
+        for page in model.pages:
+            for block in page.blocks:
+                has_protection_signal = (
+                    "protected" in block.flags
+                    or "non_translatable" in block.flags
+                    or "page_scanned" in block.flags
+                    or any(flag.startswith("protected_region:") for flag in block.flags)
+                )
+                if block.kind == "text" and has_protection_signal and block.block_id not in translatable_ids:
+                    skipped_protected_blocks += 1
+
+        for block in translatable_blocks:
+            page_blocks[block.page_index].append(self._build_experimental_block_from_model(block))
+
+        return page_blocks, skipped_protected_blocks
+
+    def _build_experimental_block_from_model(self, block: PDFBlockModel) -> Dict[str, Any]:
+        font_sizes = [
+            float(span.size)
+            for line in block.lines
+            for span in line.spans
+            if getattr(span, "size", 0.0)
+        ]
+        font_names = [
+            str(span.font)
+            for line in block.lines
+            for span in line.spans
+            if getattr(span, "font", "")
+        ]
+        return {
+            "block_id": block.block_id,
+            "page_number": block.page_index + 1,
+            "page_index": block.page_index,
+            "rect": fitz.Rect(block.bbox),
+            "text": block.text,
+            "font_size": max(8.0, min(font_sizes) if font_sizes else 11.0),
+            "font_name": font_names[0] if font_names else "helv",
+            "language_hint": None,
+        }
+
     def _extract_experimental_text_blocks(self, page, page_number: int) -> List[Dict[str, Any]]:
         """
         Extract simple text blocks suitable for experimental PDF write-back.
@@ -1208,45 +1272,67 @@ class PDFHandler:
 
         return blocks
 
-    def _insert_translated_block(self, page, block: Dict[str, Any]) -> bool:
+    def _insert_translated_block(self, page, block: Dict[str, Any]) -> PDFTextFitResult:
         """
-        Insert translated text back into a page rectangle. Returns True when the
-        text fits the rectangle or a fallback insertion succeeds.
+        Insert translated text back into a page rectangle using the text fitting
+        engine. Returns the fit result used for insertion.
         """
         rect = block["rect"]
         translated_text = block.get("translated_text", block.get("text", ""))
         font_size = float(block.get("font_size", 11.0))
-        min_font_size = 6.0
-
-        current_size = font_size
-        while current_size >= min_font_size:
-            remaining = page.insert_textbox(
-                rect,
-                translated_text,
-                fontsize=current_size,
-                fontname="helv",
-                align=fitz.TEXT_ALIGN_LEFT,
-                overlay=True,
-                color=(0, 0, 0),
+        fit_result = fit_text_to_bbox(
+            PDFTextFitRequest(
+                text=translated_text,
+                bbox=(rect.x0, rect.y0, rect.x1, rect.y1),
+                font_name=block.get("font_name"),
+                font_size=font_size,
+                min_font_size=6.0,
+                language_hint=block.get("language_hint"),
             )
-            if remaining >= 0:
-                return True
-            current_size -= 1.0
+        )
 
-        # Final fallback: place the text near the original top-left even if it may overflow.
-        page.insert_text(
-            fitz.Point(rect.x0, rect.y0 + min_font_size),
-            translated_text,
-            fontsize=min_font_size,
+        if fit_result.overflow:
+            page.insert_text(
+                fitz.Point(rect.x0, rect.y0 + fit_result.font_size),
+                fit_result.fitted_text or translated_text,
+                fontsize=fit_result.font_size,
+                fontname="helv",
+                color=(0, 0, 0),
+                overlay=True,
+            )
+            logger.warning(
+                "Experimental PDF block overflow fallback used on "
+                f"page {block.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
+            )
+            return fit_result
+
+        remaining = page.insert_textbox(
+            rect,
+            fit_result.fitted_text,
+            fontsize=fit_result.font_size,
             fontname="helv",
+            align=fitz.TEXT_ALIGN_LEFT,
             color=(0, 0, 0),
             overlay=True,
         )
-        logger.warning(
-            "Experimental PDF block overflow fallback used on "
-            f"page {block.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
-        )
-        return False
+        if remaining < 0:
+            fit_result.overflow = True
+            fit_result.overflow_reason = fit_result.overflow_reason or "textbox_insert_overflow"
+            if "text_overflow" not in fit_result.warnings:
+                fit_result.warnings.append("text_overflow")
+            page.insert_text(
+                fitz.Point(rect.x0, rect.y0 + fit_result.font_size),
+                fit_result.fitted_text or translated_text,
+                fontsize=fit_result.font_size,
+                fontname="helv",
+                color=(0, 0, 0),
+                overlay=True,
+            )
+            logger.warning(
+                "Experimental PDF block overflow fallback used on "
+                f"page {block.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
+            )
+        return fit_result
 
     def _translate_simple_extraction(self, input_file: str, output_file: str, src_lang: str, dest_lang: str) -> None:
         """
@@ -1711,4 +1797,3 @@ class PDFHandler:
         text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
         
         return text.strip()
-
