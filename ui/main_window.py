@@ -22,7 +22,7 @@ from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.ui.theme import setup_theme
 from translation_app.ui.components import create_styled_button, create_language_combobox
 from translation_app.utils.validators import FileValidator, LanguageValidator
-from translation_app.utils.error_handler import handle_translation_error
+from translation_app.utils.error_handler import FileProcessingError, handle_translation_error
 from translation_app.utils.logger import logger
 from translation_app.config import config
 
@@ -775,6 +775,31 @@ class MainWindow(tk.Tk):
             selectcolor=self.colors['white']
         )
         checkbox_ai_vision.pack(anchor=tk.W)
+
+        self.use_experimental_pdf_output = tk.BooleanVar(value=False)
+        checkbox_pdf_experimental = tk.Checkbutton(
+            frame_ai_option,
+            text="Xuất PDF thử nghiệm cho PDF text đơn giản",
+            variable=self.use_experimental_pdf_output,
+            bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
+            font=('Segoe UI', 9),
+            activebackground=self.colors['gray_light'],
+            selectcolor=self.colors['white']
+        )
+        checkbox_pdf_experimental.pack(anchor=tk.W, pady=(4, 0))
+
+        label_pdf_experimental_warning = tk.Label(
+            frame_ai_option,
+            text=(
+                "    Chế độ thử nghiệm: chỉ phù hợp PDF text đơn giản 1-2 trang. "
+                "Bố cục có thể lệch. Với tài liệu quan trọng, hãy dùng chế độ DOCX ổn định."
+            ),
+            bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
+            font=('Segoe UI', 8, 'italic'),
+            justify=tk.LEFT,
+            wraplength=760
+        )
+        label_pdf_experimental_warning.pack(anchor=tk.W, pady=(2, 0))
         
         # Pages per batch option (to save API requests)
         frame_batch_option = tk.Frame(frame_ai_option, bg=self.colors['gray_light'])
@@ -1261,14 +1286,18 @@ class MainWindow(tk.Tk):
         ext_lower = ext.lower()
         today_str = datetime.now().strftime("%Y%m%d")
         
+        use_ai_vision = (ext_lower == '.pdf' and self.use_ai_vision_for_pdf.get())
+        use_pdf_experimental = (ext_lower == '.pdf' and self.use_experimental_pdf_output.get())
+
         # Show PDF AI Vision guide if it's a PDF file and get user's choice
-        if ext_lower == '.pdf' and not self.use_ai_vision_for_pdf.get():
+        if ext_lower == '.pdf' and not use_ai_vision and not use_pdf_experimental:
             user_choice = self._show_pdf_ai_guide_and_wait()
             if user_choice is None:
                 # User closed dialog without making a choice - cancel translation
                 logger.info("User cancelled PDF translation dialog")
                 return
             # user_choice is already reflected in self.use_ai_vision_for_pdf
+            use_ai_vision = self.use_ai_vision_for_pdf.get()
 
         
         handlers_map = {
@@ -1296,10 +1325,9 @@ class MainWindow(tk.Tk):
             return
         
         handler, output_ext = handlers_map[ext_lower]
+        if use_pdf_experimental:
+            output_ext = '.pdf'
         output_file = f"{base}_translated_{today_str}{output_ext}"
-        
-        # Check if AI Vision should be used for PDF
-        use_ai_vision = (ext_lower == '.pdf' and self.use_ai_vision_for_pdf.get())
         pages_per_batch = int(self.ai_vision_pages_per_batch.get()) if use_ai_vision else 4
         
         # Prepare progress update function
@@ -1319,6 +1347,8 @@ class MainWindow(tk.Tk):
         
         if use_ai_vision:
             update_progress(f"⚙️ Đang chuẩn bị dịch AI Vision ({pages_per_batch} trang/batch)...", 2)
+        elif use_pdf_experimental:
+            update_progress("⚙️ Đang chuẩn bị xuất PDF thử nghiệm...", 2)
         else:
             update_progress(f"Đang chuẩn bị dịch '{os.path.basename(file_path)}'...", 2)
         
@@ -1336,13 +1366,23 @@ class MainWindow(tk.Tk):
                         file_path, output_file, src_lang, dest_lang,
                         pages_per_batch=pages_per_batch
                     )
+                elif use_pdf_experimental:
+                    self.pdf_handler.progress_callback = update_progress
+                    self.pdf_handler.translate_to_pdf_experimental(
+                        file_path, output_file, src_lang, dest_lang
+                    )
                 else:
                     handler.translate(file_path, output_file, src_lang, dest_lang)
 
                 # Stop progress and show success
                 def _on_success():
                     self.progress_file['value'] = 100
-                    method_info = " (AI Vision)" if use_ai_vision else ""
+                    if use_ai_vision:
+                        method_info = " (AI Vision)"
+                    elif use_pdf_experimental:
+                        method_info = " (PDF thử nghiệm)"
+                    else:
+                        method_info = ""
                     self.label_file_status.config(text="🟢 Hoàn tất!")
                     messagebox.showinfo(
 "Thành công",
@@ -1361,7 +1401,10 @@ class MainWindow(tk.Tk):
                     self.progress_file.config(mode='indeterminate')
                     self.progress_file.stop()
                     self.label_file_status.config(text="")
-                    error_msg = handle_translation_error(e, "Dịch file")
+                    if use_pdf_experimental and isinstance(e, FileProcessingError):
+                        error_msg = "PDF này không phù hợp với chế độ thử nghiệm. Vui lòng dùng chế độ DOCX ổn định."
+                    else:
+                        error_msg = handle_translation_error(e, "Dịch file")
                     messagebox.showerror("Lỗi", error_msg)
                 
                 self.after(0, _on_error)
@@ -2673,5 +2716,3 @@ Bước 3: Sử dụng AI Vision
         logger.info("Application closing")
         self.translation_service.shutdown()
         self.destroy()
-
-
