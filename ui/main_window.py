@@ -271,6 +271,7 @@ class MainWindow(tk.Tk):
         self.prov_enabled_var = tk.BooleanVar(value=False)
         self.prov_base_url_var = tk.StringVar()
         self.prov_new_key_var = tk.StringVar()
+        self.prov_new_model_var = tk.StringVar()
         self.prov_default_model_var = tk.StringVar()
 
         # Enabled Checkbox
@@ -318,6 +319,42 @@ class MainWindow(tk.Tk):
         )
         self.btn_delete_key.config(state=tk.DISABLED)
         self.btn_delete_key.pack(side=tk.LEFT, padx=2)
+
+        # Model catalog frame
+        self.frame_models = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
+        self.frame_models.pack(fill=tk.X, pady=5)
+
+        tk.Label(self.frame_models, text="Model:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, anchor=tk.N)
+
+        self.frame_models_list_buttons = tk.Frame(self.frame_models, bg=self.colors['gray_light'])
+        self.frame_models_list_buttons.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        self.listbox_models = tk.Listbox(self.frame_models_list_buttons, height=4, bg=self.colors['white'], font=('Consolas', 9), state=tk.DISABLED)
+        self.listbox_models.pack(fill=tk.X, expand=True, pady=(0, 5))
+
+        self.frame_add_model = tk.Frame(self.frame_models_list_buttons, bg=self.colors['gray_light'])
+        self.frame_add_model.pack(fill=tk.X)
+
+        self.entry_new_model = tk.Entry(self.frame_add_model, textvariable=self.prov_new_model_var, bg=self.colors['white'], width=30, state=tk.DISABLED)
+        self.entry_new_model.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        self.btn_add_model = create_styled_button(
+            self.frame_add_model, text="Thêm Model", command=self._add_provider_model, colors=self.colors
+        )
+        self.btn_add_model.config(state=tk.DISABLED)
+        self.btn_add_model.pack(side=tk.LEFT, padx=2)
+
+        self.btn_delete_model = create_styled_button(
+            self.frame_add_model, text="Xóa Model", command=self._delete_provider_model, colors=self.colors
+        )
+        self.btn_delete_model.config(state=tk.DISABLED)
+        self.btn_delete_model.pack(side=tk.LEFT, padx=2)
+
+        self.btn_refresh_models = create_styled_button(
+            self.frame_add_model, text="Làm mới model", command=self._refresh_provider_models_catalog, colors=self.colors
+        )
+        self.btn_refresh_models.config(state=tk.DISABLED)
+        self.btn_refresh_models.pack(side=tk.LEFT, padx=2)
 
         # Default model row
         self.frame_model = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
@@ -524,9 +561,8 @@ class MainWindow(tk.Tk):
                     keys_count = 0
                 
                 # Models
-                models = p_cfg.get("models", [])
-                default_model = models[0] if models else "Chưa cài đặt"
-                if p_name == "gemini" and not models:
+                default_model = p_cfg.get("default_model", "") or "Chưa cài đặt"
+                if p_name == "gemini" and not p_cfg.get("default_model"):
                     default_model = "gemini-3.5-flash (Waterfall)"
                 
                 self.prov_tree.insert(
@@ -547,6 +583,11 @@ class MainWindow(tk.Tk):
             self.entry_new_key.config(state=tk.DISABLED)
             self.btn_add_key.config(state=tk.DISABLED)
             self.btn_delete_key.config(state=tk.DISABLED)
+            self.listbox_models.config(state=tk.DISABLED)
+            self.entry_new_model.config(state=tk.DISABLED)
+            self.btn_add_model.config(state=tk.DISABLED)
+            self.btn_delete_model.config(state=tk.DISABLED)
+            self.btn_refresh_models.config(state=tk.DISABLED)
             self.combo_model.config(state="disabled")
             self.btn_save_prov.config(state=tk.DISABLED)
             return
@@ -557,6 +598,8 @@ class MainWindow(tk.Tk):
         # Load profile data
         pub_data = self.config_manager.get_provider_profiles_public()
         p_cfg = pub_data.get(p_name, {})
+        catalog = self.config_manager.get_provider_model_catalog_public()
+        catalog_entry = catalog.get("providers", {}).get(p_name, {})
         
         # Update enabled
         self.prov_enabled_var.set(p_cfg.get("enabled", False))
@@ -582,34 +625,45 @@ class MainWindow(tk.Tk):
         self.btn_add_key.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
         self.btn_delete_key.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
         
-        # Update models dropdown
-        self.combo_model.config(state="readonly")
-        
-        model_options = {
-            "gemini": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview"],
-            "chatanywhere": ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-            "deepseek": ["deepseek-chat", "deepseek-coder"],
-            "nvidia_nim": ["meta/llama-3.1-8b-instruct", "meta/llama-3.1-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-405b-instruct"],
-            "openai_compatible": [],
-            "google": ["google-translate"]
-        }
-        
-        opts = model_options.get(p_name, [])
-        self.combo_model.config(values=opts)
-        
-        models = p_cfg.get("models", [])
-        if p_name == "gemini" and not models:
-            models = ["gemini-3.5-flash"]
-            
-        default_model = models[0] if models else (opts[0] if opts else "")
-        self.prov_default_model_var.set(default_model)
-        
-        if p_name == "google":
-            self.combo_model.config(state="disabled")
+        self._refresh_provider_model_controls(p_name, catalog_entry)
             
         self.btn_save_prov.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
         
         self.frame_detail.config(text=f"🛠️ Chi tiết nhà cung cấp được chọn: {p_name.upper()}")
+
+    def _refresh_provider_model_controls(self, provider_name: str, catalog_entry: dict | None = None):
+        catalog = self.config_manager.get_provider_model_catalog_public()
+        entry = catalog_entry if isinstance(catalog_entry, dict) else catalog.get("providers", {}).get(provider_name, {})
+        model_entries = entry.get("models", []) if isinstance(entry, dict) else []
+
+        self.listbox_models.config(state=tk.NORMAL)
+        self.listbox_models.delete(0, tk.END)
+
+        enabled_models = []
+        for model_entry in model_entries:
+            model_id = str(model_entry.get("id", "")).strip()
+            if not model_id:
+                continue
+            status = "Bật" if model_entry.get("enabled", True) else "Tắt"
+            source = str(model_entry.get("source", "user")).strip() or "user"
+            self.listbox_models.insert(tk.END, f"{model_id} [{status} | {source}]")
+            if model_entry.get("enabled", True):
+                enabled_models.append(model_id)
+
+        is_google = provider_name == "google"
+        self.prov_new_model_var.set("")
+        self.entry_new_model.config(state=tk.NORMAL if not is_google else tk.DISABLED)
+        self.btn_add_model.config(state=tk.NORMAL if not is_google else tk.DISABLED)
+        self.btn_delete_model.config(state=tk.NORMAL if not is_google else tk.DISABLED)
+        self.btn_refresh_models.config(state=tk.NORMAL if entry.get("supports_refresh", False) else tk.DISABLED)
+
+        default_model = str(entry.get("default_model", "")).strip()
+        combo_values = list(enabled_models)
+        if default_model and default_model not in combo_values:
+            combo_values.insert(0, default_model)
+        self.combo_model.config(values=combo_values)
+        self.prov_default_model_var.set(default_model or (combo_values[0] if combo_values else ""))
+        self.combo_model.config(state="readonly" if combo_values and not is_google else "disabled")
 
     def _add_provider_key(self):
         """Add new API Key to current selected provider."""
@@ -653,6 +707,68 @@ class MainWindow(tk.Tk):
             else:
                 messagebox.showerror("Lỗi", "Không thể xóa API key.")
 
+    def _add_provider_model(self):
+        """Add a model to the selected provider catalog."""
+        if not self.selected_provider:
+            return
+
+        model_id = self.prov_new_model_var.get().strip()
+        if not model_id:
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập model trước khi thêm.")
+            return
+
+        success = self.config_manager.add_provider_model(self.selected_provider, model_id)
+        if not success:
+            messagebox.showerror("Lỗi", "Không thể thêm model. Model có thể đã tồn tại.")
+            return
+
+        self.config_manager.save_config()
+        self._refresh_providers_tree()
+        self._on_provider_selected()
+        messagebox.showinfo("Thành công", f"Đã thêm model mới cho {self.selected_provider}.")
+
+    def _delete_provider_model(self):
+        """Delete the selected model from the provider catalog."""
+        if not self.selected_provider:
+            return
+
+        selected = self.listbox_models.curselection()
+        if not selected:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn model cần xóa.")
+            return
+
+        raw_value = self.listbox_models.get(selected[0])
+        model_id = raw_value.split(" [", 1)[0].strip()
+        if not model_id:
+            return
+
+        if not messagebox.askyesno("Xác nhận", f"Bạn có chắc muốn xóa model '{model_id}' khỏi {self.selected_provider}?"):
+            return
+
+        success = self.config_manager.remove_provider_model(self.selected_provider, model_id)
+        if not success:
+            messagebox.showerror("Lỗi", "Không thể xóa model đã chọn.")
+            return
+
+        self.config_manager.save_config()
+        self._refresh_providers_tree()
+        self._on_provider_selected()
+        messagebox.showinfo("Thành công", f"Đã xóa model '{model_id}'.")
+
+    def _refresh_provider_models_catalog(self):
+        """Refresh models from a provider /models endpoint when supported."""
+        if not self.selected_provider:
+            return
+
+        try:
+            discovered = self.config_manager.refresh_provider_models(self.selected_provider)
+            self.config_manager.save_config()
+            self._refresh_providers_tree()
+            self._on_provider_selected()
+            messagebox.showinfo("Thành công", f"Đã làm mới {len(discovered)} model cho {self.selected_provider}.")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể làm mới model: {e}")
+
     def _save_provider_detail(self):
         """Save base_url, enabled state and default model for current provider."""
         if not self.selected_provider:
@@ -665,8 +781,10 @@ class MainWindow(tk.Tk):
         self.config_manager.update_provider_enabled(self.selected_provider, enabled)
         if self.selected_provider in ("chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"):
             self.config_manager.update_provider_base_url(self.selected_provider, base_url)
-            
-        self.config_manager.update_provider_default_model(self.selected_provider, default_model)
+
+        if default_model and not self.config_manager.set_provider_default_model(self.selected_provider, default_model):
+            messagebox.showerror("Lỗi", "Model mặc định không tồn tại trong catalog của provider.")
+            return
         self.config_manager.save_config()
         
         self._refresh_quick_config_summary()
