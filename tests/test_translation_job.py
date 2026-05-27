@@ -215,6 +215,9 @@ def test_excel_translation_job_hook_if_feasible(tmp_path, monkeypatch):
     ws = wb.active
     ws.title = "Sheet1"
     ws["A1"] = "Hello"
+    ws["B1"] = "=SUM(1,2)"
+    ws["C1"] = 42
+    ws["D1"] = True
     ws["B2"] = "World"
     wb.save(workbook_path)
 
