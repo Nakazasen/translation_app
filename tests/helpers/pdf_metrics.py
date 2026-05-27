@@ -4,59 +4,22 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
-
-import fitz
 
 from translation_app.core.encoding_utils import detect_mojibake
-
-
-def _normalize_block_text(block: dict[str, Any]) -> str:
-    parts: list[str] = []
-    for line in block.get("lines", []):
-        span_parts: list[str] = []
-        for span in line.get("spans", []):
-            text = str(span.get("text", "") or "").strip()
-            if text:
-                span_parts.append(text)
-        if span_parts:
-            parts.append(" ".join(span_parts))
-    return "\n".join(parts).strip()
+from translation_app.core.file_handlers.pdf_model import (
+    build_pdf_document_model,
+    collect_text_blocks_from_model,
+    extract_text_joined_from_model,
+    model_to_public_metrics,
+)
 
 
 def collect_pdf_text_blocks(path: str | Path) -> list[dict[str, Any]]:
-    blocks_out: list[dict[str, Any]] = []
-    doc = fitz.open(path)
-    try:
-        for page_index, page in enumerate(doc):
-            page_dict = page.get_text("dict")
-            for block in page_dict.get("blocks", []):
-                if block.get("type") != 0:
-                    continue
-                text = _normalize_block_text(block)
-                if not text:
-                    continue
-                bbox = tuple(float(v) for v in block.get("bbox", (0, 0, 0, 0)))
-                blocks_out.append(
-                    {
-                        "page_index": page_index,
-                        "text": text,
-                        "text_preview": text[:80],
-                        "bbox": bbox,
-                        "length": len(text),
-                    }
-                )
-    finally:
-        doc.close()
-    return blocks_out
+    return collect_text_blocks_from_model(build_pdf_document_model(path))
 
 
 def count_pages(path: str | Path) -> int:
-    doc = fitz.open(path)
-    try:
-        return doc.page_count
-    finally:
-        doc.close()
+    return build_pdf_document_model(path).page_count
 
 
 def count_text_blocks(path: str | Path) -> int:
@@ -64,7 +27,7 @@ def count_text_blocks(path: str | Path) -> int:
 
 
 def extract_text_joined(path: str | Path) -> str:
-    return "\n".join(block["text"] for block in collect_pdf_text_blocks(path))
+    return extract_text_joined_from_model(build_pdf_document_model(path))
 
 
 def estimate_bbox_drift(
@@ -94,19 +57,11 @@ def estimate_bbox_drift(
 
 
 def count_images_or_drawings(path: str | Path) -> dict[str, int]:
-    image_count = 0
-    drawing_count = 0
-    doc = fitz.open(path)
-    try:
-        for page in doc:
-            image_count += len(page.get_images(full=True))
-            drawing_count += len(page.get_drawings())
-    finally:
-        doc.close()
+    metrics = model_to_public_metrics(build_pdf_document_model(path))
     return {
-        "image_count": image_count,
-        "drawing_count": drawing_count,
-        "protected_object_count": image_count + drawing_count,
+        "image_count": int(metrics["image_block_count"]),
+        "drawing_count": int(metrics["drawing_block_count"]),
+        "protected_object_count": int(metrics["protected_object_count"]),
     }
 
 
