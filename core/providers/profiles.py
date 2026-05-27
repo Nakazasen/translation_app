@@ -37,6 +37,7 @@ class ProviderProfile:
     timeout: int = 15
     supports_glossary: bool = True
     allow_no_key_local: bool = False
+    default_model: str = ""
 
     def normalized(self) -> "ProviderProfile":
         return ProviderProfile(
@@ -50,6 +51,7 @@ class ProviderProfile:
             timeout=max(1, int(self.timeout or 15)),
             supports_glossary=bool(self.supports_glossary),
             allow_no_key_local=bool(self.allow_no_key_local),
+            default_model=_normalize_text(self.default_model),
         )
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -61,6 +63,7 @@ class ProviderProfile:
             "base_url": self.base_url,
             "api_keys": ["[REDACTED_API_KEY]" for _ in self.api_key_pool],
             "models": list(self.model_pool),
+            "default_model": self.default_model or (self.model_pool[0] if self.model_pool else ""),
             "timeout": self.timeout,
             "supports_glossary": self.supports_glossary,
             "allow_no_key_local": self.allow_no_key_local,
@@ -85,7 +88,7 @@ def get_default_provider_profiles() -> dict[str, dict[str, Any]]:
             "display_name": "ChatAnyWhere",
             "base_url": "https://api.chatanywhere.tech/v1",
             "api_keys": [],
-            "models": ["gpt-4o-mini"],
+            "models": [],
             "timeout": 15,
             "supports_glossary": True,
         },
@@ -95,7 +98,7 @@ def get_default_provider_profiles() -> dict[str, dict[str, Any]]:
             "display_name": "DeepSeek",
             "base_url": "https://api.deepseek.com/v1",
             "api_keys": [],
-            "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+            "models": [],
             "timeout": 15,
             "supports_glossary": True,
         },
@@ -105,7 +108,7 @@ def get_default_provider_profiles() -> dict[str, dict[str, Any]]:
             "display_name": "NVIDIA NIM",
             "base_url": "https://integrate.api.nvidia.com/v1",
             "api_keys": [],
-            "models": ["meta/llama-3.1-405b-instruct"],
+            "models": [],
             "timeout": 15,
             "supports_glossary": True,
         },
@@ -136,6 +139,9 @@ def get_default_provider_profiles() -> dict[str, dict[str, Any]]:
 def build_provider_profiles(config_manager) -> dict[str, ProviderProfile]:
     configured = config_manager.providers_config
     profiles: dict[str, ProviderProfile] = {}
+    catalog = {}
+    if hasattr(config_manager, "get_provider_model_catalog_snapshot"):
+        catalog = config_manager.get_provider_model_catalog_snapshot().get("providers", {})
 
     active_gemini_models = [
         str(model.get("model_id", "")).strip()
@@ -150,6 +156,19 @@ def build_provider_profiles(config_manager) -> dict[str, ProviderProfile]:
         provider_type = _normalize_text(provider_data.get("type", provider_name)).lower()
         api_keys = _normalize_string_list(provider_data.get("api_keys"))
         models = _normalize_string_list(provider_data.get("models"))
+        catalog_entry = catalog.get(provider_name, {}) if isinstance(catalog, dict) else {}
+        catalog_models = []
+        if isinstance(catalog_entry, dict):
+            for item in catalog_entry.get("models", []):
+                if isinstance(item, dict) and item.get("enabled", True):
+                    model_id = _normalize_text(item.get("id"))
+                    if model_id:
+                        catalog_models.append(model_id)
+            default_model = _normalize_text(catalog_entry.get("default_model"))
+            if default_model and default_model in catalog_models:
+                catalog_models = [default_model] + [item for item in catalog_models if item != default_model]
+        else:
+            default_model = ""
         base_url = _normalize_text(provider_data.get("base_url"))
         timeout = max(1, int(provider_data.get("timeout", 15) or 15))
         supports_glossary = provider_data.get("supports_glossary", provider_type != "google_translate")
@@ -160,6 +179,12 @@ def build_provider_profiles(config_manager) -> dict[str, ProviderProfile]:
                 api_keys = gemini_keys
             if not models:
                 models = list(active_gemini_models)
+            if not default_model and models:
+                default_model = models[0]
+        elif catalog_models:
+            models = list(catalog_models)
+        elif models and not default_model:
+            default_model = models[0]
 
         profiles[provider_name] = ProviderProfile(
             name=provider_name,
@@ -172,6 +197,7 @@ def build_provider_profiles(config_manager) -> dict[str, ProviderProfile]:
             timeout=timeout,
             supports_glossary=bool(supports_glossary),
             allow_no_key_local=allow_no_key_local,
+            default_model=default_model or (models[0] if models else ""),
         ).normalized()
 
     return profiles

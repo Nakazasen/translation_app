@@ -50,7 +50,7 @@ class OpenAICompatibleProvider(BaseTranslationProvider):
         self.profile = profile.normalized()
         self.name = self.profile.name
         self.display_name = self.profile.display_name
-        self.default_model = self.profile.model_pool[0] if self.profile.model_pool else ""
+        self.default_model = self.profile.default_model or (self.profile.model_pool[0] if self.profile.model_pool else "")
         self.enabled = self.profile.enabled
         self.base_url = self.profile.base_url.rstrip("/")
         self.api_key_pool = list(self.profile.api_key_pool)

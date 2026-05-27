@@ -16,9 +16,12 @@ Config file: Stored in user's AppData folder for persistence across updates.
 import os
 import sys
 import json
+import re
 import time
 import logging
 import concurrent.futures
+import urllib.error
+import urllib.request
 from copy import deepcopy
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -74,6 +77,155 @@ DEFAULT_MODELS = [
     {"model_id": "gemma-4-26b-a4b-it", "is_active": True, "timeout": 15},
 ]
 
+DEFAULT_PROVIDER_MODEL_CATALOG_VERSION = 1
+
+
+def _gemini_catalog_seed() -> list[dict[str, Any]]:
+    vision_set = set(VISION_MODELS)
+    return [
+        {
+            "id": entry["model_id"],
+            "label": entry["model_id"],
+            "enabled": bool(entry.get("is_active", True)),
+            "source": "default",
+            "capabilities": {
+                "text": True,
+                "vision": entry["model_id"] in vision_set,
+            },
+        }
+        for entry in DEFAULT_MODELS
+    ]
+
+
+def get_default_provider_model_catalog() -> dict[str, Any]:
+    return {
+        "version": DEFAULT_PROVIDER_MODEL_CATALOG_VERSION,
+        "providers": {
+            "gemini": {
+                "default_model": "gemini-3.5-flash",
+                "models": _gemini_catalog_seed(),
+            },
+            "chatanywhere": {
+                "default_model": "gpt-4o-mini",
+                "models": [
+                    {"id": "gpt-4o-mini", "label": "gpt-4o-mini", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "gpt-4o", "label": "gpt-4o", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "gpt-3.5-turbo", "label": "gpt-3.5-turbo", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "deepseek": {
+                "default_model": "deepseek-v4-flash",
+                "models": [
+                    {"id": "deepseek-v4-flash", "label": "deepseek-v4-flash", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "deepseek-v4-pro", "label": "deepseek-v4-pro", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "nvidia_nim": {
+                "default_model": "meta/llama-3.1-405b-instruct",
+                "models": [
+                    {"id": "meta/llama-3.1-405b-instruct", "label": "meta/llama-3.1-405b-instruct", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "meta/llama-3.1-70b-instruct", "label": "meta/llama-3.1-70b-instruct", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "meta/llama-3.1-8b-instruct", "label": "meta/llama-3.1-8b-instruct", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "nvidia/llama-3.1-nemotron-70b-instruct", "label": "nvidia/llama-3.1-nemotron-70b-instruct", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "openai_compatible": {
+                "default_model": "",
+                "models": [],
+            },
+            "google": {
+                "default_model": "google-translate",
+                "models": [
+                    {"id": "google-translate", "label": "Google Translate", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+        },
+    }
+
+
+def _normalize_catalog_capabilities(value: Any) -> dict[str, bool]:
+    if not isinstance(value, dict):
+        return {"text": True, "vision": False}
+    return {
+        "text": bool(value.get("text", True)),
+        "vision": bool(value.get("vision", False)),
+    }
+
+
+def _normalize_model_catalog_entry(value: Any, default_source: str = "user") -> dict[str, Any] | None:
+    if isinstance(value, str):
+        model_id = value.strip()
+        if not model_id:
+            return None
+        return {
+            "id": model_id,
+            "label": model_id,
+            "enabled": True,
+            "source": default_source,
+            "capabilities": {"text": True, "vision": False},
+        }
+
+    if not isinstance(value, dict):
+        return None
+
+    model_id = str(value.get("id") or value.get("model_id") or "").strip()
+    if not model_id:
+        return None
+
+    label = str(value.get("label") or model_id).strip() or model_id
+    source = str(value.get("source") or default_source).strip() or default_source
+    return {
+        "id": model_id,
+        "label": label,
+        "enabled": bool(value.get("enabled", True)),
+        "source": source,
+        "capabilities": _normalize_catalog_capabilities(value.get("capabilities")),
+    }
+
+
+def _merge_model_catalog_lists(base: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for entry in base + incoming:
+        normalized = _normalize_model_catalog_entry(entry)
+        if normalized is None:
+            continue
+        model_id = normalized["id"]
+        if model_id not in order:
+            order.append(model_id)
+            merged[model_id] = normalized
+            continue
+
+        current = merged[model_id]
+        incoming_label = normalized.get("label") or ""
+        if (not current.get("label")) or current.get("label") == current["id"]:
+            current["label"] = incoming_label or current["label"]
+        elif incoming_label and incoming_label != model_id:
+            current["label"] = incoming_label
+        current["enabled"] = bool(normalized.get("enabled", current["enabled"]))
+        current["source"] = normalized.get("source") or current["source"]
+        current["capabilities"] = _normalize_catalog_capabilities(
+            normalized.get("capabilities") or current.get("capabilities")
+        )
+
+    return [merged[model_id] for model_id in order]
+
+
+def _sanitize_catalog_error_detail(detail: str, api_key: str = "") -> str:
+    sanitized = str(detail or "")
+    if api_key:
+        sanitized = sanitized.replace(api_key, "[REDACTED_API_KEY]")
+    sanitized = re.sub(
+        r"Authorization\s*:\s*Bearer\s+[^\s,;]+",
+        "Authorization: [REDACTED_API_KEY]",
+        sanitized,
+        flags=re.IGNORECASE,
+    )
+    sanitized = re.sub(r"AIza[0-9A-Za-z\-_]{8,}", "[REDACTED_API_KEY]", sanitized)
+    sanitized = sanitized.replace("\r", " ").replace("\n", " ")
+    return sanitized[:400]
+
 def validate_model_for_profile(model_id: str, profile: str) -> bool:
     """
     Validate if a model is suitable for a given profile.
@@ -114,7 +266,7 @@ class AIConfigManager:
         if not isinstance(config_data, dict):
             return defaults
             
-        merged = defaults.copy()
+        merged = deepcopy(defaults)
         
         # Merge top-level fields
         for key, default_val in defaults.items():
@@ -148,6 +300,13 @@ class AIConfigManager:
                     merged[key] = merged_strategy
                 else:
                     merged[key] = config_data[key]
+
+        merged["provider_model_catalog"] = self._normalize_provider_model_catalog(
+            config_data.get("provider_model_catalog"),
+            providers_value=config_data.get("providers"),
+            legacy_openai=config_data.get("openai_compatible"),
+            waterfall_strategy=config_data.get("waterfall_strategy"),
+        )
                     
         return merged
 
@@ -280,6 +439,7 @@ class AIConfigManager:
             },
             "provider_router": deepcopy(provider_router_defaults),
             "providers": deepcopy(provider_defaults),
+            "provider_model_catalog": get_default_provider_model_catalog(),
         }
 
     @property
@@ -315,14 +475,21 @@ class AIConfigManager:
         # Backward compatibility bridge for the single openai-compatible config block.
         legacy_openai = self._config.get("openai_compatible", {})
         if isinstance(legacy_openai, dict):
-            merged["openai_compatible"]["enabled"] = bool(legacy_openai.get("enabled", merged["openai_compatible"]["enabled"]))
-            merged["openai_compatible"]["base_url"] = legacy_openai.get("base_url", merged["openai_compatible"]["base_url"])
+            if "enabled" in legacy_openai:
+                merged["openai_compatible"]["enabled"] = bool(legacy_openai.get("enabled", merged["openai_compatible"]["enabled"]))
+            legacy_base_url = str(legacy_openai.get("base_url", "") or "").strip()
+            if legacy_base_url:
+                merged["openai_compatible"]["base_url"] = legacy_base_url
             legacy_api_key = str(legacy_openai.get("api_key", "") or "").strip()
-            merged["openai_compatible"]["api_keys"] = [legacy_api_key] if legacy_api_key else merged["openai_compatible"]["api_keys"]
+            if legacy_api_key:
+                merged["openai_compatible"]["api_keys"] = [legacy_api_key]
             legacy_model = str(legacy_openai.get("model", "") or "").strip()
-            merged["openai_compatible"]["models"] = [legacy_model] if legacy_model else merged["openai_compatible"]["models"]
-            merged["openai_compatible"]["timeout"] = int(legacy_openai.get("timeout", merged["openai_compatible"]["timeout"]) or merged["openai_compatible"]["timeout"])
-            merged["openai_compatible"]["allow_no_key_local"] = bool(legacy_openai.get("allow_no_key_local", merged["openai_compatible"]["allow_no_key_local"]))
+            if legacy_model:
+                merged["openai_compatible"]["models"] = [legacy_model]
+            if legacy_openai.get("timeout"):
+                merged["openai_compatible"]["timeout"] = int(legacy_openai.get("timeout", merged["openai_compatible"]["timeout"]) or merged["openai_compatible"]["timeout"])
+            if "allow_no_key_local" in legacy_openai:
+                merged["openai_compatible"]["allow_no_key_local"] = bool(legacy_openai.get("allow_no_key_local", merged["openai_compatible"]["allow_no_key_local"]))
 
         return merged
 
@@ -338,6 +505,123 @@ class AIConfigManager:
                     provider_merged.update(configured)
                 merged[provider_name] = provider_merged
         self._config["providers"] = merged
+        self._config["provider_model_catalog"] = self._normalize_provider_model_catalog(
+            self._config.get("provider_model_catalog"),
+            providers_value=merged,
+            legacy_openai=self._config.get("openai_compatible"),
+            waterfall_strategy=self._config.get("waterfall_strategy"),
+        )
+
+    def _normalize_provider_model_catalog(
+        self,
+        raw_catalog: Any,
+        *,
+        providers_value: Any | None = None,
+        legacy_openai: Any | None = None,
+        waterfall_strategy: Any | None = None,
+    ) -> Dict[str, Any]:
+        defaults = get_default_provider_model_catalog()
+        providers = deepcopy(defaults["providers"])
+
+        raw_providers = raw_catalog.get("providers", {}) if isinstance(raw_catalog, dict) else {}
+        for provider_name, default_entry in defaults["providers"].items():
+            configured = raw_providers.get(provider_name, {}) if isinstance(raw_providers, dict) else {}
+            has_configured_provider = isinstance(configured, dict) and provider_name in raw_providers
+            base_models = configured.get("models", []) if has_configured_provider else default_entry.get("models", [])
+            models = _merge_model_catalog_lists([], base_models)
+            default_model = str(
+                (configured.get("default_model", "") if has_configured_provider else default_entry.get("default_model", ""))
+                or ""
+            ).strip()
+            if default_model and not any(item["id"] == default_model for item in models):
+                models.append(
+                    {
+                        "id": default_model,
+                        "label": default_model,
+                        "enabled": True,
+                        "source": "user",
+                        "capabilities": {"text": True, "vision": False},
+                    }
+                )
+            providers[provider_name] = {
+                "default_model": default_model,
+                "models": models,
+            }
+
+        provider_configs = providers_value if isinstance(providers_value, dict) else (self._config.get("providers", {}) if isinstance(self._config, dict) else {})
+        if isinstance(provider_configs, dict):
+            for provider_name, provider_cfg in provider_configs.items():
+                if not isinstance(provider_cfg, dict) or provider_name not in providers:
+                    continue
+                if isinstance(raw_catalog, dict) and provider_name in raw_providers:
+                    continue
+                legacy_models = [
+                    _normalize_model_catalog_entry(model_id, default_source="legacy")
+                    for model_id in provider_cfg.get("models", [])
+                ]
+                legacy_models = [item for item in legacy_models if item is not None]
+                providers[provider_name]["models"] = _merge_model_catalog_lists(
+                    providers[provider_name]["models"],
+                    legacy_models,
+                )
+                if not providers[provider_name]["default_model"] and legacy_models:
+                    providers[provider_name]["default_model"] = legacy_models[0]["id"]
+
+        if isinstance(legacy_openai, dict):
+            legacy_model = str(legacy_openai.get("model", "") or "").strip()
+            if legacy_model:
+                providers["openai_compatible"]["models"] = _merge_model_catalog_lists(
+                    providers["openai_compatible"]["models"],
+                    [{"id": legacy_model, "label": legacy_model, "enabled": True, "source": "legacy", "capabilities": {"text": True, "vision": False}}],
+                )
+                if not providers["openai_compatible"]["default_model"]:
+                    providers["openai_compatible"]["default_model"] = legacy_model
+
+        strategy = waterfall_strategy if isinstance(waterfall_strategy, list) else (self._config.get("waterfall_strategy", []) if isinstance(self._config, dict) else [])
+        gemini_models = []
+        default_gemini = ""
+        for entry in strategy:
+            if not isinstance(entry, dict):
+                continue
+            model_id = str(entry.get("model_id", "")).strip()
+            if not model_id:
+                continue
+            normalized = {
+                "id": model_id,
+                "label": model_id,
+                "enabled": bool(entry.get("is_active", True)),
+                "source": "default" if model_id in {item["model_id"] for item in DEFAULT_MODELS} else "user",
+                "capabilities": {"text": True, "vision": model_id in VISION_MODELS},
+            }
+            gemini_models.append(normalized)
+            if not default_gemini and normalized["enabled"]:
+                default_gemini = model_id
+        providers["gemini"]["models"] = _merge_model_catalog_lists(providers["gemini"]["models"], gemini_models)
+        if default_gemini:
+            providers["gemini"]["default_model"] = default_gemini
+
+        for provider_name, entry in providers.items():
+            if not entry["default_model"]:
+                first_enabled = next((item["id"] for item in entry["models"] if item.get("enabled", True)), "")
+                entry["default_model"] = first_enabled
+
+        return {
+            "version": DEFAULT_PROVIDER_MODEL_CATALOG_VERSION,
+            "providers": providers,
+        }
+
+    @property
+    def provider_model_catalog(self) -> Dict[str, Any]:
+        return self._normalize_provider_model_catalog(self._config.get("provider_model_catalog"))
+
+    @provider_model_catalog.setter
+    def provider_model_catalog(self, value: Dict[str, Any]):
+        self._config["provider_model_catalog"] = self._normalize_provider_model_catalog(
+            value,
+            providers_value=self._config.get("providers"),
+            legacy_openai=self._config.get("openai_compatible"),
+            waterfall_strategy=self._config.get("waterfall_strategy"),
+        )
 
     @property
     def use_provider_router(self) -> bool:
@@ -629,6 +913,230 @@ class AIConfigManager:
         profiles = build_provider_profiles(self)
         return {name: profile.to_public_dict() for name, profile in profiles.items()}
 
+    def get_provider_model_catalog_snapshot(self) -> Dict[str, Any]:
+        """Return normalized provider model catalog for internal callers."""
+        return deepcopy(self.provider_model_catalog)
+
+    def get_provider_model_catalog_public(self) -> Dict[str, Any]:
+        """Return a public provider model catalog without secrets."""
+        catalog = self.get_provider_model_catalog_snapshot()
+        provider_profiles = self.providers_config
+        for provider_name, provider_entry in catalog.get("providers", {}).items():
+            provider_cfg = provider_profiles.get(provider_name, {})
+            provider_type = str(provider_cfg.get("type", provider_name) or provider_name).strip().lower()
+            provider_entry["provider_type"] = provider_type
+            provider_entry["supports_refresh"] = provider_type == "openai_compatible" and bool(
+                str(provider_cfg.get("base_url", "") or "").strip()
+            )
+        return catalog
+
+    def _sync_provider_catalog_to_legacy_fields(self, provider_name: str) -> None:
+        catalog = self.provider_model_catalog
+        provider_entry = catalog.get("providers", {}).get(provider_name, {})
+        providers = self.providers_config
+        if provider_name in providers:
+            model_ids = [item["id"] for item in provider_entry.get("models", [])]
+            providers[provider_name]["models"] = model_ids
+            self._config["providers"] = providers
+        if provider_name == "openai_compatible":
+            legacy = deepcopy(self._config.get("openai_compatible", {}))
+            legacy["model"] = str(provider_entry.get("default_model", "") or "").strip()
+            self._config["openai_compatible"] = legacy
+
+    def add_provider_model(
+        self,
+        provider_name: str,
+        model_id: str,
+        label: Optional[str] = None,
+        capabilities: Optional[Dict[str, Any]] = None,
+        *,
+        source: str = "user",
+    ) -> bool:
+        provider_name = str(provider_name or "").strip().lower()
+        model_id = str(model_id or "").strip()
+        if not provider_name or not model_id:
+            return False
+
+        catalog = self.provider_model_catalog
+        providers = catalog.get("providers", {})
+        if provider_name not in providers:
+            return False
+
+        entry = providers[provider_name]
+        models = entry.get("models", [])
+        if any(item.get("id") == model_id for item in models):
+            return False
+
+        models.append(
+            {
+                "id": model_id,
+                "label": str(label or model_id).strip() or model_id,
+                "enabled": True,
+                "source": str(source or "user").strip() or "user",
+                "capabilities": _normalize_catalog_capabilities(capabilities),
+            }
+        )
+        if not entry.get("default_model"):
+            entry["default_model"] = model_id
+        self.provider_model_catalog = catalog
+
+        if provider_name == "gemini":
+            timeout = next((item.get("timeout", 10) for item in DEFAULT_MODELS if item["model_id"] == model_id), 10)
+            self.add_model(model_id, is_active=True, timeout=int(timeout or 10))
+            self._config["provider_model_catalog"] = self._normalize_provider_model_catalog(self._config.get("provider_model_catalog"))
+
+        self._sync_provider_catalog_to_legacy_fields(provider_name)
+        return True
+
+    def remove_provider_model(self, provider_name: str, model_id: str) -> bool:
+        provider_name = str(provider_name or "").strip().lower()
+        model_id = str(model_id or "").strip()
+        if not provider_name or not model_id:
+            return False
+
+        catalog = self.provider_model_catalog
+        providers = catalog.get("providers", {})
+        entry = providers.get(provider_name)
+        if not entry:
+            return False
+
+        models = entry.get("models", [])
+        next_models = [item for item in models if item.get("id") != model_id]
+        if len(next_models) == len(models):
+            return False
+
+        entry["models"] = next_models
+        if entry.get("default_model") == model_id:
+            entry["default_model"] = next((item["id"] for item in next_models if item.get("enabled", True)), next_models[0]["id"] if next_models else "")
+        self.provider_model_catalog = catalog
+
+        if provider_name == "gemini":
+            self.remove_model(model_id)
+            self._config["provider_model_catalog"] = self._normalize_provider_model_catalog(self._config.get("provider_model_catalog"))
+
+        self._sync_provider_catalog_to_legacy_fields(provider_name)
+        return True
+
+    def set_provider_model_enabled(self, provider_name: str, model_id: str, enabled: bool) -> bool:
+        provider_name = str(provider_name or "").strip().lower()
+        model_id = str(model_id or "").strip()
+        catalog = self.provider_model_catalog
+        entry = catalog.get("providers", {}).get(provider_name)
+        if not entry:
+            return False
+
+        for model_entry in entry.get("models", []):
+            if model_entry.get("id") == model_id:
+                model_entry["enabled"] = bool(enabled)
+                if not enabled and entry.get("default_model") == model_id:
+                    entry["default_model"] = next(
+                        (item["id"] for item in entry.get("models", []) if item.get("id") != model_id and item.get("enabled", True)),
+                        "",
+                    )
+                elif enabled and not entry.get("default_model"):
+                    entry["default_model"] = model_id
+                self.provider_model_catalog = catalog
+                if provider_name == "gemini":
+                    for strategy_entry in self._config.get("waterfall_strategy", []):
+                        if strategy_entry.get("model_id") == model_id:
+                            strategy_entry["is_active"] = bool(enabled)
+                            break
+                    self._config["provider_model_catalog"] = self._normalize_provider_model_catalog(self._config.get("provider_model_catalog"))
+                self._sync_provider_catalog_to_legacy_fields(provider_name)
+                return True
+        return False
+
+    def set_provider_default_model(self, provider_name: str, model_id: str) -> bool:
+        provider_name = str(provider_name or "").strip().lower()
+        model_id = str(model_id or "").strip()
+        catalog = self.provider_model_catalog
+        entry = catalog.get("providers", {}).get(provider_name)
+        if not entry:
+            return False
+        if not any(item.get("id") == model_id for item in entry.get("models", [])):
+            return False
+        entry["default_model"] = model_id
+        self.provider_model_catalog = catalog
+        self._sync_provider_catalog_to_legacy_fields(provider_name)
+        return True
+
+    def export_provider_model_catalog(self, path: str) -> bool:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(self.get_provider_model_catalog_public(), handle, indent=2, ensure_ascii=False)
+        return True
+
+    def import_provider_model_catalog(self, path: str) -> Dict[str, Any]:
+        with open(path, "r", encoding="utf-8") as handle:
+            imported = json.load(handle)
+        self.provider_model_catalog = imported
+        for provider_name in self.provider_model_catalog.get("providers", {}):
+            self._sync_provider_catalog_to_legacy_fields(provider_name)
+        return self.get_provider_model_catalog_public()
+
+    def refresh_provider_models(self, provider_name: str) -> list[str]:
+        provider_name = str(provider_name or "").strip().lower()
+        providers = self.providers_config
+        provider_cfg = providers.get(provider_name, {})
+        provider_type = str(provider_cfg.get("type", provider_name) or provider_name).strip().lower()
+        if provider_type != "openai_compatible":
+            raise ValueError(f"Provider '{provider_name}' does not support dynamic model refresh.")
+
+        base_url = str(provider_cfg.get("base_url", "") or "").strip()
+        if not base_url:
+            raise ValueError(f"Provider '{provider_name}' does not have a configured base URL.")
+
+        api_keys = provider_cfg.get("api_keys", [])
+        api_key = str(api_keys[0] if isinstance(api_keys, list) and api_keys else "").strip()
+        endpoint = f"{base_url.rstrip('/')}/models" if base_url.rstrip("/").endswith("/v1") else f"{base_url.rstrip('/')}/v1/models"
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        request = urllib.request.Request(endpoint, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=int(provider_cfg.get("timeout", 15) or 15)) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = str(exc)
+            clean = _sanitize_catalog_error_detail(detail or str(exc), api_key)
+            raise RuntimeError(f"Model refresh failed for {provider_name}: {clean}") from exc
+        except Exception as exc:
+            clean = _sanitize_catalog_error_detail(str(exc), api_key)
+            raise RuntimeError(f"Model refresh failed for {provider_name}: {clean}") from exc
+
+        data = payload.get("data", payload if isinstance(payload, list) else [])
+        if not isinstance(data, list):
+            raise RuntimeError(f"Model refresh failed for {provider_name}: unsupported /models response.")
+
+        discovered: list[str] = []
+        for item in data:
+            if isinstance(item, dict):
+                model_id = str(item.get("id") or item.get("model") or "").strip()
+            else:
+                model_id = str(item or "").strip()
+            if not model_id:
+                continue
+            discovered.append(model_id)
+            self.add_provider_model(provider_name, model_id, source="probed")
+
+        if not discovered:
+            raise RuntimeError(f"Model refresh failed for {provider_name}: no models returned.")
+
+        current_catalog = self.provider_model_catalog
+        provider_entry = current_catalog.get("providers", {}).get(provider_name, {})
+        if not provider_entry.get("default_model") and discovered:
+            provider_entry["default_model"] = discovered[0]
+            self.provider_model_catalog = current_catalog
+            self._sync_provider_catalog_to_legacy_fields(provider_name)
+
+        return discovered
+
     def update_provider_enabled(self, provider_name: str, enabled: bool):
         """Update enabled state of a provider."""
         providers = self.providers_config
@@ -682,13 +1190,7 @@ class AIConfigManager:
 
     def update_provider_default_model(self, provider_name: str, model: str):
         """Update default model pool of a provider."""
-        model = str(model or "").strip()
-        if not model:
-            return
-        providers = self.providers_config
-        if provider_name in providers:
-            providers[provider_name]["models"] = [model]
-            self.providers_config = providers
+        self.set_provider_default_model(provider_name, model)
 
     def update_provider_base_url(self, provider_name: str, base_url: str):
         """Update base URL of custom/OpenAI compatible providers."""
