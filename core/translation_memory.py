@@ -198,6 +198,90 @@ class TranslationMemoryManager:
             
         return False
 
+    def search_segments(self, query: str = "", source_lang: Optional[str] = None, target_lang: Optional[str] = None, limit: int = 100) -> list[dict]:
+        """
+        Search segments in the translation memory database.
+        Returns preview-safe dictionary list.
+        """
+        sql = "SELECT id, source_lang, target_lang, source_text, translated_text, provider, model, hit_count, updated_at FROM segments WHERE 1=1"
+        params = []
+        
+        if query:
+            sql += " AND (source_text LIKE ? OR translated_text LIKE ?)"
+            params.append(f"%{query}%")
+            params.append(f"%{query}%")
+        if source_lang and source_lang.lower() != 'auto':
+            sql += " AND source_lang = ?"
+            params.append(source_lang.strip().lower())
+        if target_lang:
+            sql += " AND target_lang = ?"
+            params.append(target_lang.strip().lower())
+            
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        
+        results = []
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, params)
+                rows = cursor.fetchall()
+                for r in rows:
+                    results.append({
+                        "id": r[0],
+                        "source_lang": r[1],
+                        "target_lang": r[2],
+                        "source_text": r[3],
+                        "translated_text": r[4],
+                        "provider": r[5],
+                        "model": r[6],
+                        "hit_count": r[7],
+                        "updated_at": r[8]
+                    })
+        except Exception as e:
+            logger.error(f"❌ Failed to search TM segments: {e}")
+        return results
+
+    def delete_segment(self, segment_id: int) -> bool:
+        """Delete a segment from the translation memory by ID."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
+                conn.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"💾 TM Segment Removed: id={segment_id}")
+                    return True
+        except Exception as e:
+            logger.error(f"❌ Failed to delete TM segment: {e}")
+        return False
+
+    def get_segment(self, segment_id: int) -> Optional[dict]:
+        """Get a single TM segment by ID."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, source_lang, target_lang, source_text, translated_text, provider, model, hit_count, updated_at FROM segments WHERE id = ?",
+                    (segment_id,)
+                )
+                r = cursor.fetchone()
+                if r:
+                    return {
+                        "id": r[0],
+                        "source_lang": r[1],
+                        "target_lang": r[2],
+                        "source_text": r[3],
+                        "translated_text": r[4],
+                        "provider": r[5],
+                        "model": r[6],
+                        "hit_count": r[7],
+                        "updated_at": r[8]
+                    }
+        except Exception as e:
+            logger.error(f"❌ Failed to get TM segment: {e}")
+        return None
+
     # =========================================================================
     # GLOSSARY MANAGEMENT APIs
     # =========================================================================
