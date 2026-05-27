@@ -457,40 +457,96 @@ def test_provider_specific_auth_error_classification():
 def test_openai_compatible_provider_classifies_quota_http_error():
     secret = "sk-quota-secret-456"
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            payload = json.dumps({"error": f"429 quota exceeded for {secret}"}).encode("utf-8")
-            self.send_response(429)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=secret,
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
 
-        def log_message(self, format, *args):
-            return
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-
-    try:
-        provider = OpenAICompatibleProvider(
-            enabled=True,
-            base_url=f"http://127.0.0.1:{server.server_port}/v1",
-            api_key=secret,
-            model="gpt-mock",
-            provider_name="mock-openai",
-            timeout=5,
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": f"429 quota exceeded for {secret}"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(payload),
         )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    try:
         result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        monkeypatch.undo()
 
     assert result.status == "error"
     assert result.error_type == "quota_rate_limit"
     assert secret not in result.error_message
+
+
+def test_generic_exception_with_response_429_classifies_quota():
+    class FakeResponse:
+        status_code = 429
+        text = '{"error":"rate limit exceeded"}'
+
+    class FakeError(Exception):
+        def __init__(self):
+            super().__init__("request failed")
+            self.response = FakeResponse()
+
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key="sk-generic-429",
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(FakeError()))
+    try:
+        result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+    finally:
+        monkeypatch.undo()
+
+    assert result.status == "error"
+    assert result.error_type == "quota_rate_limit"
+
+
+def test_quota_error_sanitizes_authorization_header(monkeypatch):
+    secret = "sk-quota-secret-auth-999"
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_key=secret,
+        model="gpt-mock",
+        provider_name="mock-openai",
+        timeout=5,
+    )
+
+    def raise_http_error(*args, **kwargs):
+        payload = json.dumps({"error": f"Authorization: Bearer {secret} quota exceeded"}).encode("utf-8")
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8080/v1/chat/completions",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(payload),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    result = provider.translate(TranslationRequest(text="Hello", source_lang="en", target_lang="vi"))
+
+    assert result.status == "error"
+    assert result.error_type == "quota_rate_limit"
+    assert secret not in result.error_message
+    assert "Authorization: Bearer" not in result.error_message
+    assert "Authorization: [REDACTED_API_KEY]" in result.error_message
 
 
 def test_provider_specific_quota_error_classification():
