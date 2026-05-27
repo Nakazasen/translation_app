@@ -2,6 +2,7 @@
 Excel file handler for translation
 """
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import Font
 from openpyxl_image_loader import SheetImageLoader
 from openpyxl.drawing.image import Image as OpenpyxlImage
@@ -38,6 +39,33 @@ class ExcelHandler:
     def _make_segment_id(self, sheet_name: str, cell_coordinate: str) -> str:
         return f"{sheet_name}!{cell_coordinate}"
 
+    def _is_formula_cell(self, cell) -> bool:
+        value = getattr(cell, "value", None)
+        if getattr(cell, "data_type", None) == "f":
+            return True
+        return isinstance(value, str) and value.startswith("=")
+
+    def _is_translatable_cell(self, cell) -> bool:
+        if isinstance(cell, MergedCell):
+            return False
+
+        value = getattr(cell, "value", None)
+        if value is None:
+            return False
+        if self._is_formula_cell(cell):
+            return False
+        if not isinstance(value, str):
+            return False
+        return bool(value.strip())
+
+    def _get_translatable_cells(self, sheet) -> list:
+        return [
+            cell
+            for row in sheet.iter_rows()
+            for cell in row
+            if self._is_translatable_cell(cell)
+        ]
+
     def _create_job_observer(self, job_manager, job_id: str):
         def observer(event: str, metadata: Dict[str, Any]) -> None:
             if event == "tm_hit":
@@ -71,7 +99,7 @@ class ExcelHandler:
         if sheet.title in self._images_backup:
             self._restore_sheet_images_from_backup(sheet, self._images_backup[sheet.title])
 
-        cells_to_translate = [cell for row in sheet.iter_rows() for cell in row if cell.value]
+        cells_to_translate = self._get_translatable_cells(sheet)
         if not cells_to_translate:
             return
 
@@ -105,7 +133,6 @@ class ExcelHandler:
             try:
                 translated_text = task.result(timeout=self.translation_service.timeout)
                 cell.value = translated_text
-                cell.font = self.font
                 job_manager.record_checkpoint(
                     job_id,
                     "segment_completed",
@@ -118,7 +145,6 @@ class ExcelHandler:
                 job_manager.update_progress(job_id, completed_delta=1)
             except Exception as exc:
                 logger.warning(f"Error translating cell {cell.coordinate}: {exc}, keeping original")
-                cell.font = self.font
                 job_manager.record_failed_item(
                     job_id,
                     file=input_file,
@@ -274,18 +300,18 @@ class ExcelHandler:
             logger.info(f"Found {total_images_before} images in workbook before processing")
             
             self._images_backup = images_backup
-            total_segments = sum(1 for sheet in wb.worksheets for row in sheet.iter_rows() for cell in row if cell.value)
+            total_segments = sum(
+                1
+                for sheet in wb.worksheets
+                for cell in self._get_translatable_cells(sheet)
+            )
             job_manager.update_progress(job_id, total_segments=total_segments, current_file=input_file)
 
             # Process all sheets
             for sheet in wb.worksheets:
                 self._translate_sheet_with_job(sheet, input_file, src_lang, dest_lang, job_manager, job_id)
                 
-                # OCR and translate images in sheet (this doesn't remove images, just adds text)
-                if self.ocr_handler.is_installed():
-                    self._process_images_in_sheet(sheet, src_lang, dest_lang)
-                else:
-                    logger.info("Skipping image OCR: Tesseract OCR not installed")
+                logger.info("Skipping Excel image OCR/write-back to preserve layout during hardening phase")
                 
                 # Re-ensure images are present after processing (in case they were lost)
                 if sheet.title in images_backup:

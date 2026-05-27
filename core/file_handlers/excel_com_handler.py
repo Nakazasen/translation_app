@@ -52,6 +52,51 @@ class ExcelComHandler:
 
     def _make_segment_id(self, sheet_name: str, row: int, col: int) -> str:
         return f"{sheet_name}!R{row}C{col}"
+
+    def _cell_is_formula(self, cell) -> bool:
+        try:
+            if bool(cell.HasFormula):
+                return True
+        except Exception:
+            pass
+
+        try:
+            formula = cell.Formula
+            if isinstance(formula, str) and formula.startswith("="):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _is_translatable_cell(self, cell) -> tuple[bool, Optional[str]]:
+        try:
+            if self._cell_is_formula(cell):
+                return False, None
+        except Exception:
+            return False, None
+
+        try:
+            if bool(cell.MergeCells):
+                top_left = cell.MergeArea.Cells(1, 1)
+                if str(cell.Address) != str(top_left.Address):
+                    return False, None
+        except Exception:
+            pass
+
+        try:
+            value = cell.Value
+        except Exception:
+            return False, None
+
+        if not isinstance(value, str):
+            return False, None
+
+        text = value.strip()
+        if not text:
+            return False, None
+
+        return True, text
     
     def translate(self, input_file: str, output_file: str, src_lang: str, dest_lang: str) -> None:
         """
@@ -180,16 +225,9 @@ class ExcelComHandler:
                     # Translate cells (batch translation for performance)
                     self._translate_sheet(sheet, src_lang, dest_lang)
                     
-                    # Translate textboxes and shapes with text
-                    self._translate_textboxes_in_sheet(sheet, src_lang, dest_lang)
-                    
-                    # Process images if OCR is available
-                    # Note: Images and textboxes are automatically preserved by Excel COM
-                    # We only OCR to add translated text below images
-                    if self.ocr_handler.is_installed():
-                        self._process_images_in_sheet_com(sheet, src_lang, dest_lang)
-                    else:
-                        logger.info("Skipping image OCR: Tesseract OCR not installed")
+                    logger.info(
+                        "Skipping textbox and image OCR/write-back in COM path during Excel hardening"
+                    )
                     
                     # Small delay to let Excel process
                     time.sleep(0.1)
@@ -298,7 +336,8 @@ class ExcelComHandler:
                 logger.debug(f"Sheet '{sheet_name}' has no used range")
                 return
             
-            # Collect all cells with text - optimized batch collection
+            # Collect only translatable text cells. Formulas, non-text values,
+            # and non-top-left merged cells are preserved as-is.
             cells_data = []  # List of (row, col, original_text)
             try:
                 # Get values as array for faster access (single COM call)
@@ -331,32 +370,34 @@ class ExcelComHandler:
                                 for col_idx in range(max_cols):
                                     cell_value = row_data[col_idx]
                                     if cell_value is not None:
-                                        cell_str = str(cell_value).strip()
-                                        if cell_str:
-                                            excel_row = start_row + row_idx
-                                            excel_col = start_col + col_idx
-                                            cells_data.append((excel_row, excel_col, cell_str))
+                                        excel_row = start_row + row_idx
+                                        excel_col = start_col + col_idx
+                                        cell = sheet.Cells(excel_row, excel_col)
+                                        should_translate, cell_text = self._is_translatable_cell(cell)
+                                        if should_translate:
+                                            cells_data.append((excel_row, excel_col, cell_text))
                         else:
                             # 1D array (single row or column)
                             max_items = min(len(values_array), 10000)
                             for idx in range(max_items):
                                 cell_value = values_array[idx]
                                 if cell_value is not None:
-                                    cell_str = str(cell_value).strip()
-                                    if cell_str:
-                                        # Assume single row if used_range has 1 row
-                                        if used_range.Rows.Count == 1:
-                                            excel_row = start_row
-                                            excel_col = start_col + idx
-                                        else:
-                                            excel_row = start_row + idx
-                                            excel_col = start_col
-                                        cells_data.append((excel_row, excel_col, cell_str))
+                                    if used_range.Rows.Count == 1:
+                                        excel_row = start_row
+                                        excel_col = start_col + idx
+                                    else:
+                                        excel_row = start_row + idx
+                                        excel_col = start_col
+                                    cell = sheet.Cells(excel_row, excel_col)
+                                    should_translate, cell_text = self._is_translatable_cell(cell)
+                                    if should_translate:
+                                        cells_data.append((excel_row, excel_col, cell_text))
                     else:
                         # Single value
-                        cell_str = str(values_array).strip()
-                        if cell_str:
-                            cells_data.append((start_row, start_col, cell_str))
+                        cell = sheet.Cells(start_row, start_col)
+                        should_translate, cell_text = self._is_translatable_cell(cell)
+                        if should_translate:
+                            cells_data.append((start_row, start_col, cell_text))
                 
                 except Exception as array_error:
                     # Fallback: iterate cells one by one (slower but more reliable)
@@ -373,12 +414,12 @@ class ExcelComHandler:
                             for col in range(1, col_count + 1):
                                 try:
                                     cell = used_range.Cells(row, col)
-                                    cell_value = cell.Value
-                                    
-                                    if cell_value is not None:
-                                        cell_str = str(cell_value).strip()
-                                        if cell_str:
-                                            cells_data.append((row, col, cell_str))
+                                    excel_row = start_row + row - 1
+                                    excel_col = start_col + col - 1
+                                    cell = sheet.Cells(excel_row, excel_col)
+                                    should_translate, cell_text = self._is_translatable_cell(cell)
+                                    if should_translate:
+                                        cells_data.append((excel_row, excel_col, cell_text))
                                 except pythoncom.com_error as e:
                                     if e.args[0] == -2147417846:  # Application is busy
                                         time.sleep(0.1)
@@ -450,9 +491,8 @@ class ExcelComHandler:
                         translated_text = future.result(timeout=self.translation_service.timeout)
                         
                         # Get cell and update (minimal COM calls)
-                        cell = used_range.Cells(row, col)
+                        cell = sheet.Cells(row, col)
                         cell.Value = translated_text
-                        cell.Font.Name = "Times New Roman"
                         
                         translated_count += 1
                         if self.job_manager and self.job_id:
@@ -473,9 +513,8 @@ class ExcelComHandler:
                             time.sleep(0.5)
                             try:
                                 translated_text = future.result(timeout=self.translation_service.timeout)
-                                cell = used_range.Cells(row, col)
+                                cell = sheet.Cells(row, col)
                                 cell.Value = translated_text
-                                cell.Font.Name = "Times New Roman"
                                 translated_count += 1
                                 if self.job_manager and self.job_id:
                                     self.job_manager.record_checkpoint(
