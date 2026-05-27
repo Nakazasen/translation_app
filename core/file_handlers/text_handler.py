@@ -4,6 +4,7 @@ Text file handler for translation
 from translation_app.core.translator import TranslationService
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
+from translation_app.core.encoding_utils import safe_read_text, safe_write_text
 
 
 class TextHandler:
@@ -34,18 +35,16 @@ class TextHandler:
         try:
             logger.info(f"Starting text file translation: {input_file}")
             
-            # Read input file
-            with open(input_file, 'r', encoding='utf-8') as f:
-                input_text = f.read()
+            # Read input file safely
+            input_text = safe_read_text(input_file)
             
             # Translate text
             translated_text = self.translation_service.translate_long_text(
                 input_text, src_lang, dest_lang
             )
             
-            # Write output file
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(translated_text)
+            # Write output file safely
+            safe_write_text(output_file, translated_text)
             
             logger.info(f"Text file translation completed: {output_file}")
         
@@ -53,4 +52,5 @@ class TextHandler:
             error_msg = f"Error translating text file: {e}"
             logger.error(error_msg)
             raise FileProcessingError(error_msg, original_error=e) from e
+
 

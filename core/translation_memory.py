@@ -13,6 +13,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Optional, Tuple
+from translation_app.core.encoding_utils import safe_read_text, safe_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +470,7 @@ class TranslationMemoryManager:
         Returns: (success_count, fail_count)
         """
         import csv
+        import io
         success_count = 0
         fail_count = 0
         
@@ -477,41 +479,43 @@ class TranslationMemoryManager:
             return 0, 0
             
         try:
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                headers = {h.strip().lower(): h for h in reader.fieldnames or []}
-                
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.cursor()
-                    for row in reader:
-                        try:
-                            # Map columns case-insensitively with defaults
-                            source_term = row.get(headers.get('source_term', 'source_term'), '').strip()
-                            target_term = row.get(headers.get('target_term', 'target_term'), '').strip()
-                            source_lang = row.get(headers.get('source_lang', 'source_lang'), '').strip().lower()
-                            target_lang = row.get(headers.get('target_lang', 'target_lang'), '').strip().lower()
-                            domain = row.get(headers.get('domain', 'domain'), '').strip()
-                            note = row.get(headers.get('note', 'note'), '').strip()
-                            
-                            is_active_val = row.get(headers.get('is_active', 'is_active'), '1').strip().lower()
-                            is_active = 0 if is_active_val in ('0', 'false', 'no', 'f') else 1
-                            
-                            if not source_term or not target_term or not source_lang or not target_lang:
-                                fail_count += 1
-                                continue
-                                
-                            cursor.execute(
-                                """
-                                INSERT INTO glossary (source_term, target_term, source_lang, target_lang, domain, note, is_active)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (source_term, target_term, source_lang, target_lang, domain, note, is_active)
-                            )
-                            success_count += 1
-                        except Exception as row_err:
-                            logger.error(f"Error importing row {row}: {row_err}")
+            # Read safely via our encoding utilities
+            content = safe_read_text(csv_path)
+            f = io.StringIO(content)
+            reader = csv.DictReader(f)
+            headers = {h.strip().lower(): h for h in reader.fieldnames or []}
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                for row in reader:
+                    try:
+                        # Map columns case-insensitively with defaults
+                        source_term = row.get(headers.get('source_term', 'source_term'), '').strip()
+                        target_term = row.get(headers.get('target_term', 'target_term'), '').strip()
+                        source_lang = row.get(headers.get('source_lang', 'source_lang'), '').strip().lower()
+                        target_lang = row.get(headers.get('target_lang', 'target_lang'), '').strip().lower()
+                        domain = row.get(headers.get('domain', 'domain'), '').strip()
+                        note = row.get(headers.get('note', 'note'), '').strip()
+                        
+                        is_active_val = row.get(headers.get('is_active', 'is_active'), '1').strip().lower()
+                        is_active = 0 if is_active_val in ('0', 'false', 'no', 'f') else 1
+                        
+                        if not source_term or not target_term or not source_lang or not target_lang:
                             fail_count += 1
-                    conn.commit()
+                            continue
+                            
+                        cursor.execute(
+                            """
+                            INSERT INTO glossary (source_term, target_term, source_lang, target_lang, domain, note, is_active)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (source_term, target_term, source_lang, target_lang, domain, note, is_active)
+                        )
+                        success_count += 1
+                    except Exception as row_err:
+                        logger.error(f"Error importing row {row}: {row_err}")
+                        fail_count += 1
+                conn.commit()
             logger.info(f"📋 Glossary Import complete: {success_count} success, {fail_count} failed")
         except Exception as e:
             logger.error(f"❌ Failed to import glossary CSV: {e}")
@@ -523,22 +527,26 @@ class TranslationMemoryManager:
         Export glossary terms from database to a CSV file.
         """
         import csv
+        import io
         try:
             terms = self.list_glossary_terms(active_only=False)
-            with open(csv_path, 'w', encoding='utf-8', newline='') as f:
-                writer = csv.writer(f)
-                # Write header
-                writer.writerow(['source_term', 'target_term', 'source_lang', 'target_lang', 'domain', 'note', 'is_active'])
-                for term in terms:
-                    writer.writerow([
-                        term['source_term'],
-                        term['target_term'],
-                        term['source_lang'],
-                        term['target_lang'],
-                        term['domain'],
-                        term['note'],
-                        1 if term['is_active'] else 0
-                    ])
+            f = io.StringIO()
+            writer = csv.writer(f, lineterminator='\n')
+            # Write header
+            writer.writerow(['source_term', 'target_term', 'source_lang', 'target_lang', 'domain', 'note', 'is_active'])
+            for term in terms:
+                writer.writerow([
+                    term['source_term'],
+                    term['target_term'],
+                    term['source_lang'],
+                    term['target_lang'],
+                    term['domain'],
+                    term['note'],
+                    1 if term['is_active'] else 0
+                ])
+            
+            # Write safely via our encoding utilities
+            safe_write_text(csv_path, f.getvalue())
             logger.info(f"📋 Glossary Export complete: saved {len(terms)} terms to {csv_path}")
             return True
         except Exception as e:
