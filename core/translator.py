@@ -40,6 +40,10 @@ class TranslationService:
             "google translate -> gemini ai": "waterfall",
             "google -> gemini (waterfall)": "waterfall",
             "gemini ai -> google translate": "ai_waterfall",
+            "tự động chọn ai tốt nhất": "waterfall",
+            "chỉ dùng gemini": "ai",
+            "chỉ dùng google translate": "google",
+            "nâng cao": "ai_waterfall",
         }
         self.strategy = mapping.get(str(strategy or "").lower(), "waterfall")
         logger.info(f"Translation strategy changed to: {self.strategy}")

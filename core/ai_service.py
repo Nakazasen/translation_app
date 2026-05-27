@@ -623,6 +623,81 @@ class AIConfigManager:
                 return True
         return False
 
+    def get_provider_profiles_public(self) -> Dict[str, Dict[str, Any]]:
+        """Get public view of provider profiles for UI display without exposing raw keys."""
+        from translation_app.core.providers.profiles import build_provider_profiles
+        profiles = build_provider_profiles(self)
+        return {name: profile.to_public_dict() for name, profile in profiles.items()}
+
+    def update_provider_enabled(self, provider_name: str, enabled: bool):
+        """Update enabled state of a provider."""
+        providers = self.providers_config
+        if provider_name in providers:
+            providers[provider_name]["enabled"] = bool(enabled)
+            self.providers_config = providers
+
+    def add_provider_api_key(self, provider_name: str, api_key: str) -> bool:
+        """Add API Key to a specific provider's pool."""
+        api_key = str(api_key or "").strip()
+        if not api_key:
+            return False
+            
+        # Legacy Gemini compatibility
+        if provider_name == "gemini":
+            keys = list(self.api_keys)
+            if api_key not in keys:
+                keys.append(api_key)
+                self.api_keys = keys
+                
+        providers = self.providers_config
+        if provider_name in providers:
+            keys = providers[provider_name].get("api_keys", [])
+            if not isinstance(keys, list):
+                keys = []
+            if api_key not in keys:
+                keys.append(api_key)
+                providers[provider_name]["api_keys"] = keys
+                self.providers_config = providers
+                return True
+        return False
+
+    def remove_provider_api_key(self, provider_name: str, key_index: int) -> bool:
+        """Remove API key at index from a specific provider's pool."""
+        # Legacy Gemini compatibility
+        if provider_name == "gemini":
+            keys = list(self.api_keys)
+            if 0 <= key_index < len(keys):
+                keys.pop(key_index)
+                self.api_keys = keys
+
+        providers = self.providers_config
+        if provider_name in providers:
+            keys = providers[provider_name].get("api_keys", [])
+            if isinstance(keys, list) and 0 <= key_index < len(keys):
+                keys.pop(key_index)
+                providers[provider_name]["api_keys"] = keys
+                self.providers_config = providers
+                return True
+        return False
+
+    def update_provider_default_model(self, provider_name: str, model: str):
+        """Update default model pool of a provider."""
+        model = str(model or "").strip()
+        if not model:
+            return
+        providers = self.providers_config
+        if provider_name in providers:
+            providers[provider_name]["models"] = [model]
+            self.providers_config = providers
+
+    def update_provider_base_url(self, provider_name: str, base_url: str):
+        """Update base URL of custom/OpenAI compatible providers."""
+        base_url = str(base_url or "").strip()
+        providers = self.providers_config
+        if provider_name in providers:
+            providers[provider_name]["base_url"] = base_url
+            self.providers_config = providers
+
 
 class WaterfallGeminiService:
     """

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Main application window for translation application
 """
 import tkinter as tk
@@ -70,7 +70,7 @@ class MainWindow(tk.Tk):
         # Clipboard image for paste functionality
         self.clipboard_image: Optional[Image.Image] = None
         self.preview_photo: Optional[ImageTk.PhotoImage] = None
-        self._preview_photo_refs: list = []  # Lﾆｰu references ﾄ黛ｻ・trﾃ｡nh garbage collection
+        self._preview_photo_refs: list = []  # Lưu references để tránh garbage collection
         self.last_ocr_text: str = "" # To store OCR result for analysis
 
         # Setup UI
@@ -83,7 +83,7 @@ class MainWindow(tk.Tk):
     def setup_window(self):
         """Setup window properties"""
         from translation_app import __version__
-        self.title(f"D盻議h t盻ｱ ﾄ黛ｻ冢g v{__version__}_Bﾃｹi ﾄ雪ｻｩc Vinh_Phﾃｲng phﾃ｡t tri盻ハ h盻・th盻創g ch蘯ｿ t蘯｡o")
+        self.title(f"Dịch tự động v{__version__} - Bùi Đức Vinh - Phòng phát triển hệ thống chế tạo")
         self.geometry("720x750")
 
     
@@ -102,21 +102,19 @@ class MainWindow(tk.Tk):
         self.tab_paragraph = tk.Frame(self.notebook, bg=self.colors['gray_light'])
         self.tab_email = tk.Frame(self.notebook, bg=self.colors['gray_light'])
         self.tab_image = tk.Frame(self.notebook, bg=self.colors['gray_light'])
-        self.tab_ai = tk.Frame(self.notebook, bg=self.colors['gray_light']) # NEW AI TAB
         self.tab_jobs = tk.Frame(self.notebook, bg=self.colors['gray_light'])
         self.tab_glossary = tk.Frame(self.notebook, bg=self.colors['gray_light'])
         self.tab_tm = tk.Frame(self.notebook, bg=self.colors['gray_light'])
-        self.tab_router = tk.Frame(self.notebook, bg=self.colors['gray_light'])
+        self.tab_ai = tk.Frame(self.notebook, bg=self.colors['gray_light'])
         
-        self.notebook.add(self.tab_file, text="D盻議h File")
-        self.notebook.add(self.tab_paragraph, text="D盻議h ﾄ塵蘯｡n Vﾄハ")
-        self.notebook.add(self.tab_email, text="D盻議h Email")
-        self.notebook.add(self.tab_image, text="D盻議h 蘯｢nh")
-        self.notebook.add(self.tab_ai, text="C蘯･u hﾃｬnh AI") # ADD TO NOTEBOOK
-        self.notebook.add(self.tab_jobs, text="Jobs")
-        self.notebook.add(self.tab_glossary, text="Glossary")
-        self.notebook.add(self.tab_tm, text="Translation Memory")
-        self.notebook.add(self.tab_router, text="Provider Router")
+        self.notebook.add(self.tab_file, text="Dịch file")
+        self.notebook.add(self.tab_paragraph, text="Dịch văn bản")
+        self.notebook.add(self.tab_email, text="Dịch email")
+        self.notebook.add(self.tab_image, text="Dịch ảnh")
+        self.notebook.add(self.tab_jobs, text="Công việc")
+        self.notebook.add(self.tab_glossary, text="Thuật ngữ")
+        self.notebook.add(self.tab_tm, text="Bộ nhớ dịch")
+        self.notebook.add(self.tab_ai, text="Cấu hình AI")
         
         self.notebook.pack(expand=True, fill="both", padx=5, pady=5)
         
@@ -129,7 +127,6 @@ class MainWindow(tk.Tk):
         self.setup_jobs_tab()
         self.setup_glossary_tab()
         self.setup_tm_tab()
-        self.setup_router_tab()
 
         # Connect Strategy ComboBox to Translation Service
         self.strat_var.trace_add("write", self._on_strategy_changed)
@@ -140,8 +137,8 @@ class MainWindow(tk.Tk):
         self.translation_service.set_strategy(new_strat)
     
     def setup_ai_tab(self):
-        """Setup the AI Configuration tab."""
-        # Main Scrollable content
+        """Setup the AI Configuration tab with Unified Provider settings."""
+        # Main Canvas + Scrollbar
         canvas = tk.Canvas(self.tab_ai, bg=self.colors['gray_light'], highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.tab_ai, orient="vertical", command=canvas.yview)
         scrollable_frame = tk.Frame(canvas, bg=self.colors['gray_light'])
@@ -159,137 +156,271 @@ class MainWindow(tk.Tk):
         
         # Header
         label_title = tk.Label(
-            scrollable_frame, text="､・C蘯･u hﾃｬnh D盻議h thu蘯ｭt & AI",
+            scrollable_frame, text="⚙️ Cấu hình Dịch thuật & AI",
             bg=self.colors['gray_light'], fg=self.colors['navy'],
             font=('Segoe UI', 16, 'bold')
         )
-        label_title.pack(pady=(20, 10))
-        
-        # 1. Google Translate Section
-        google_frame = tk.LabelFrame(scrollable_frame, text="倹 Google Translate (D盻議h v盻･ chﾃｭnh)", 
-                                    bg=self.colors['gray_light'], fg=self.colors['navy'],
-                                    font=('Segoe UI', 10, 'bold'), padx=10, pady=10)
-        google_frame.pack(fill=tk.X, padx=20, pady=10)
-        
-        tk.Label(google_frame, text="ﾄ静｢y lﾃ d盻議h v盻･ d盻議h thu蘯ｭt mi盻・ phﾃｭ m蘯ｷc ﾄ黛ｻ杵h c盻ｧa 盻ｩng d盻･ng.", 
-                 bg=self.colors['gray_light'], fg=self.colors['gray_dark']).pack(anchor=tk.W)
-        
-        tk.Label(google_frame, text="Tr蘯｡ng thﾃ｡i: 笨・ﾄ紳ng ho蘯｡t ﾄ黛ｻ冢g", 
-                 bg=self.colors['gray_light'], fg="green", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W, pady=5)
-        
-        # 2. Gemini AI Waterfall Section
-        gemini_frame = tk.LabelFrame(scrollable_frame, text="笞｡ Gemini AI", 
-                                     bg=self.colors['gray_light'], fg=self.colors['navy'],
-                                     font=('Segoe UI', 10, 'bold'), padx=10, pady=10)
-        gemini_frame.pack(fill=tk.X, padx=20, pady=10)
-        
-        info_text = (
-            "H盻・th盻創g s蘯ｽ t盻ｱ ﾄ黛ｻ冢g kﾃｭch ho蘯｡t Gemini n蘯ｿu Google Translate b盻・quﾃ｡ t蘯｣i\n"
-            "ho蘯ｷc tr蘯｣ v盻・l盻擁. ﾄ進盻「 nﾃy giﾃｺp quﾃ｡ trﾃｬnh d盻議h khﾃｴng b盻・giﾃ｡n ﾄ双蘯｡n."
-        )
-        tk.Label(gemini_frame, text=info_text, bg=self.colors['gray_light'], 
-                 fg=self.colors['gray_dark'], justify=tk.LEFT).pack(anchor=tk.W)
-        
-        btn_open = create_styled_button(
-            gemini_frame, text="笞呻ｸ・C蘯･u hﾃｬnh API Key & Qu蘯｣n lﾃｽ Model Gemini",
-            command=self._open_ai_settings, colors=self.colors
-        )
-        btn_open.pack(pady=10)
-        
-        # API Key Link Section
-        link_frame = tk.Frame(gemini_frame, bg=self.colors['gray_light'])
-        link_frame.pack(fill=tk.X, pady=(5, 0))
-        
-        tk.Label(link_frame, text="泊 Chﾆｰa cﾃｳ API Key?", 
-                 bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
-                 font=('Segoe UI', 9)).pack(side=tk.LEFT)
-        
-        # Create clickable link label
-        link_label = tk.Label(
-            link_frame, 
-            text="Lay API Key mien phi tu Google AI Studio",
-            bg=self.colors['gray_light'], 
-            fg="#0066CC",  # Link blue color
-            font=('Segoe UI', 9, 'underline'),
-            cursor="hand2"  # Hand cursor on hover
-        )
-        link_label.pack(side=tk.LEFT, padx=(5, 0))
-        
-        # Bind click event to open URL
-        def open_ai_studio_url(event=None):
-            import webbrowser
-            webbrowser.open("https://aistudio.google.com/app/apikey")
-        
-        link_label.bind("<Button-1>", open_ai_studio_url)
-        
-        # Add hover effect
-        def on_enter(event):
-            link_label.config(fg="#003399")  # Darker blue on hover
-        
-        def on_leave(event):
-            link_label.config(fg="#0066CC")  # Original blue
-        
-        link_label.bind("<Enter>", on_enter)
-        link_label.bind("<Leave>", on_leave)
-        
-        # 3. Strategy Setting
-        strat_frame = tk.LabelFrame(scrollable_frame, text="屏・・Cﾃi ﾄ黛ｺｷt mﾃ｡y d盻議h thu蘯ｭt", 
-                                    bg=self.colors['gray_light'], fg=self.colors['navy'],
-                                    font=('Segoe UI', 10, 'bold'), padx=10, pady=10)
-        strat_frame.pack(fill=tk.X, padx=20, pady=10)
-        
-        tk.Label(strat_frame, text="ﾆｯu tiﾃｪn d盻議h thu蘯ｭt:", 
-                 bg=self.colors['gray_light']).pack(side=tk.LEFT)
-        
-        self.strat_var = tk.StringVar(value="Google Translate (M蘯ｷc ﾄ黛ｻ杵h)")
-        strat_combo = ttk.Combobox(strat_frame, textvariable=self.strat_var, values=[
-            "Google Translate (M蘯ｷc ﾄ黛ｻ杵h)",
-            "Gemini AI (Ch盻・dﾃｹng AI)",
-            "Google Translate -> Gemini AI",
-            "Gemini AI -> Google Translate"
-        ], state="readonly", width=30)
-        strat_combo.pack(side=tk.LEFT, padx=10)
-        
-        tk.Label(strat_frame, text="庁 Khuy蘯ｿn ngh盻・dﾃｹng: Google Translate -> Gemini AI", 
-                 bg=self.colors['gray_light'], fg=self.colors['gray_medium'], font=('Segoe UI', 8, 'italic')).pack(side=tk.LEFT)
+        label_title.pack(pady=(15, 10))
 
-        # 4. Advanced Settings (TM / Glossary / Router)
-        adv_frame = tk.LabelFrame(scrollable_frame, text="笞呻ｸ・Cﾃi ﾄ黛ｺｷt nﾃ｢ng cao (TM / Glossary / Router)", 
-                                  bg=self.colors['gray_light'], fg=self.colors['navy'],
-                                  font=('Segoe UI', 10, 'bold'), padx=10, pady=10)
-        adv_frame.pack(fill=tk.X, padx=20, pady=10)
+        # --- PHẦN A: CẤU HÌNH NHANH ---
+        frame_quick = tk.LabelFrame(
+            scrollable_frame, text="⚡ Cấu hình nhanh",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 10, 'bold'), padx=15, pady=10
+        )
+        frame_quick.pack(fill=tk.X, padx=20, pady=5)
+
+        # Smart Router Checkbox
+        chk_router = tk.Checkbutton(
+            frame_quick, text="Bật bộ định tuyến AI thông minh (Smart Router)",
+            variable=self.use_router_var, bg=self.colors['gray_light'],
+            fg=self.colors['gray_dark'], font=('Segoe UI', 9, 'bold'),
+            activebackground=self.colors['gray_light'],
+            command=self._on_quick_router_toggled
+        )
+        chk_router.pack(anchor=tk.W, pady=(0, 5))
+        
+        lbl_router_desc = tk.Label(
+            frame_quick, text="💡 Tự động chọn AI dịch tốt nhất tại thời điểm dịch, tối ưu tốc độ và chi phí.",
+            bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
+            font=('Segoe UI', 8, 'italic')
+        )
+        lbl_router_desc.pack(anchor=tk.W, pady=(0, 10))
+
+        # Mode Selection Combobox
+        frame_mode_row = tk.Frame(frame_quick, bg=self.colors['gray_light'])
+        frame_mode_row.pack(fill=tk.X, pady=5)
+        
+        tk.Label(frame_mode_row, text="Chế độ dịch:", bg=self.colors['gray_light'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
+        
+        # Map current strategy to display string
+        current_strategy = self.translation_service.strategy
+        strategy_display_map = {
+            "google": "Chỉ dùng Google Translate",
+            "ai": "Chỉ dùng Gemini",
+            "waterfall": "Tự động chọn AI tốt nhất",
+            "ai_waterfall": "Nâng cao"
+        }
+        initial_display_val = strategy_display_map.get(current_strategy, "Tự động chọn AI tốt nhất")
+        
+        self.strat_var = tk.StringVar(value=initial_display_val)
+        self.strat_combo = ttk.Combobox(
+            frame_mode_row, textvariable=self.strat_var, values=[
+                "Tự động chọn AI tốt nhất",
+                "Chỉ dùng Gemini",
+                "Chỉ dùng Google Translate",
+                "Nâng cao"
+            ], state="readonly", width=25
+        )
+        self.strat_combo.pack(side=tk.LEFT, padx=10)
+        
+        lbl_mode_rec = tk.Label(
+            frame_mode_row, text="💡 Khuyến nghị: Tự động chọn AI tốt nhất",
+            bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
+            font=('Segoe UI', 8, 'italic')
+        )
+        lbl_mode_rec.pack(side=tk.LEFT)
+
+        # Configured Status Summary
+        frame_summary = tk.Frame(frame_quick, bg=self.colors['gray_light'])
+        frame_summary.pack(fill=tk.X, pady=(10, 0))
+        
+        tk.Label(frame_summary, text="Trạng thái cấu hình các nguồn AI:", bg=self.colors['gray_light'], font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W)
+        
+        self.lbl_quick_summary = tk.Label(
+            frame_summary, text="Đang tải...",
+            bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
+            font=('Segoe UI', 9), justify=tk.LEFT, wraplength=620
+        )
+        self.lbl_quick_summary.pack(fill=tk.X, anchor=tk.W, pady=2)
+
+        # --- PHẦN B: DANH SÁCH NHÀ CUNG CẤP ---
+        frame_providers = tk.LabelFrame(
+            scrollable_frame, text="🤖 Các nhà cung cấp AI hiện khả dụng",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 10, 'bold'), padx=15, pady=10
+        )
+        frame_providers.pack(fill=tk.X, padx=20, pady=5)
+
+        columns = ("name", "enabled", "api_key_status", "key_count", "default_model")
+        self.prov_tree = ttk.Treeview(frame_providers, columns=columns, show="headings", height=6)
+        self.prov_tree.heading("name", text="Nhà cung cấp")
+        self.prov_tree.heading("enabled", text="Trạng thái")
+        self.prov_tree.heading("api_key_status", text="API Key")
+        self.prov_tree.heading("key_count", text="Số Key")
+        self.prov_tree.heading("default_model", text="Model mặc định")
+        
+        self.prov_tree.column("name", width=130)
+        self.prov_tree.column("enabled", width=90, anchor=tk.CENTER)
+        self.prov_tree.column("api_key_status", width=120, anchor=tk.CENTER)
+        self.prov_tree.column("key_count", width=80, anchor=tk.CENTER)
+        self.prov_tree.column("default_model", width=180)
+        self.prov_tree.pack(fill=tk.BOTH, expand=True)
+        self.prov_tree.bind("<<TreeviewSelect>>", self._on_provider_selected)
+
+        # --- PHẦN C: CHI TIẾT & CẤU HÌNH NHÀ CUNG CẤP ---
+        self.frame_detail = tk.LabelFrame(
+            scrollable_frame, text="🛠️ Chi tiết nhà cung cấp được chọn (Vui lòng chọn dòng ở trên)",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 10, 'bold'), padx=15, pady=10
+        )
+        self.frame_detail.pack(fill=tk.X, padx=20, pady=5)
+
+        # Instance vars for Section C controls
+        self.selected_provider = None
+        self.prov_enabled_var = tk.BooleanVar(value=False)
+        self.prov_base_url_var = tk.StringVar()
+        self.prov_new_key_var = tk.StringVar()
+        self.prov_default_model_var = tk.StringVar()
+
+        # Enabled Checkbox
+        self.chk_prov_enabled = tk.Checkbutton(
+            self.frame_detail, text="Bật nhà cung cấp này trong hệ thống",
+            variable=self.prov_enabled_var, bg=self.colors['gray_light'],
+            fg=self.colors['gray_dark'], font=('Segoe UI', 9, 'bold'),
+            state=tk.DISABLED
+        )
+        self.chk_prov_enabled.pack(anchor=tk.W, pady=2)
+
+        # Base URL Row
+        self.frame_base_url = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
+        self.frame_base_url.pack(fill=tk.X, pady=5)
+        tk.Label(self.frame_base_url, text="Base URL:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
+        self.entry_base_url = tk.Entry(self.frame_base_url, textvariable=self.prov_base_url_var, bg=self.colors['white'], state=tk.DISABLED)
+        self.entry_base_url.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # Key pool frame
+        self.frame_keys = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
+        self.frame_keys.pack(fill=tk.X, pady=5)
+        
+        tk.Label(self.frame_keys, text="API Keys:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, anchor=tk.N)
+        
+        self.frame_keys_list_buttons = tk.Frame(self.frame_keys, bg=self.colors['gray_light'])
+        self.frame_keys_list_buttons.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        self.listbox_keys = tk.Listbox(self.frame_keys_list_buttons, height=3, bg=self.colors['white'], font=('Consolas', 9), state=tk.DISABLED)
+        self.listbox_keys.pack(fill=tk.X, expand=True, pady=(0, 5))
+
+        self.frame_add_key = tk.Frame(self.frame_keys_list_buttons, bg=self.colors['gray_light'])
+        self.frame_add_key.pack(fill=tk.X)
+        
+        self.entry_new_key = tk.Entry(self.frame_add_key, textvariable=self.prov_new_key_var, bg=self.colors['white'], width=30, show="*", state=tk.DISABLED)
+        self.entry_new_key.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        self.btn_add_key = create_styled_button(
+            self.frame_add_key, text="Thêm Key", command=self._add_provider_key, colors=self.colors
+        )
+        self.btn_add_key.config(state=tk.DISABLED)
+        self.btn_add_key.pack(side=tk.LEFT, padx=2)
+        
+        self.btn_delete_key = create_styled_button(
+            self.frame_add_key, text="Xóa Key", command=self._delete_provider_key, colors=self.colors
+        )
+        self.btn_delete_key.config(state=tk.DISABLED)
+        self.btn_delete_key.pack(side=tk.LEFT, padx=2)
+
+        # Default model row
+        self.frame_model = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
+        self.frame_model.pack(fill=tk.X, pady=5)
+        tk.Label(self.frame_model, text="Model mặc định:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
+        
+        self.combo_model = ttk.Combobox(self.frame_model, textvariable=self.prov_default_model_var, state="disabled", width=30)
+        self.combo_model.pack(side=tk.LEFT, padx=5)
+
+        # Section C action buttons
+        self.frame_detail_actions = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
+        self.frame_detail_actions.pack(fill=tk.X, pady=(10, 0))
+        
+        self.btn_save_prov = create_styled_button(
+            self.frame_detail_actions, text="💾 Lưu cấu hình nhà cung cấp", command=self._save_provider_detail, colors=self.colors
+        )
+        self.btn_save_prov.config(state=tk.DISABLED)
+        self.btn_save_prov.pack(side=tk.LEFT, padx=(0, 10))
+
+        # --- PHẦN D: THÔNG TIN KỸ THUẬT / NÂNG CAO ---
+        self.frame_advanced_router = tk.LabelFrame(
+            scrollable_frame, text="📊 Trạng thái hoạt động nâng cao (Debug/Router Health)",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 10, 'bold'), padx=15, pady=10
+        )
+        self.frame_advanced_router.pack(fill=tk.X, padx=20, pady=5)
+
+        # Router stats row
+        frame_router_stats = tk.Frame(self.frame_advanced_router, bg=self.colors['gray_light'])
+        frame_router_stats.pack(fill=tk.X, pady=(0, 5))
+        
+        self.lbl_router_status = tk.Label(
+            frame_router_stats, text="Trạng thái Smart Router: Đang kiểm tra...",
+            font=('Segoe UI', 9, 'bold'), bg=self.colors['gray_light'], anchor=tk.W
+        )
+        self.lbl_router_status.pack(fill=tk.X, side=tk.TOP, anchor=tk.W, pady=(0, 5))
+
+        frame_router_buttons = tk.Frame(frame_router_stats, bg=self.colors['gray_light'])
+        frame_router_buttons.pack(fill=tk.X)
+
+        create_styled_button(
+            frame_router_buttons, text="Làm mới trạng thái", command=self._refresh_router_health, colors=self.colors
+        ).pack(side=tk.RIGHT, padx=5)
+
+        create_styled_button(
+            frame_router_buttons, text="Reset Cooldowns (Khôi phục)", command=self._reset_router_cooldowns, colors=self.colors
+        ).pack(side=tk.RIGHT, padx=5)
+
+        # Health table Treeview
+        r_cols = ("provider", "model", "available", "cooldown", "failures", "last_error", "latency")
+        self.router_tree = ttk.Treeview(self.frame_advanced_router, columns=r_cols, show="headings", height=4)
+        self.router_tree.heading("provider", text="Provider")
+        self.router_tree.heading("model", text="Model ID")
+        self.router_tree.heading("available", text="Khả dụng")
+        self.router_tree.heading("cooldown", text="Cooldown")
+        self.router_tree.heading("failures", text="Lỗi liên tiếp")
+        self.router_tree.heading("last_error", text="Lỗi gần nhất")
+        self.router_tree.heading("latency", text="Latency (ms)")
+        
+        self.router_tree.column("provider", width=100)
+        self.router_tree.column("model", width=140)
+        self.router_tree.column("available", width=70, anchor=tk.CENTER)
+        self.router_tree.column("cooldown", width=90)
+        self.router_tree.column("failures", width=80, anchor=tk.CENTER)
+        self.router_tree.column("last_error", width=150)
+        self.router_tree.column("latency", width=80, anchor=tk.CENTER)
+        self.router_tree.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Save general settings row (Legacy section 4 TM/Glossary integration)
+        frame_general_save = tk.LabelFrame(
+            scrollable_frame, text="⚙️ Cài đặt nâng cao (Bộ nhớ & Thuật ngữ)",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 10, 'bold'), padx=15, pady=10
+        )
+        frame_general_save.pack(fill=tk.X, padx=20, pady=(5, 20))
 
         # Row 1: Translation Memory Settings
-        tm_row = tk.Frame(adv_frame, bg=self.colors['gray_light'])
-        tm_row.pack(fill=tk.X, pady=5)
-        
+        tm_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
+        tm_row.pack(fill=tk.X, pady=2)
         tk.Checkbutton(
-            tm_row, text="B蘯ｭt B盻・nh盻・d盻議h (Translation Memory)", 
+            tm_row, text="Bật Bộ nhớ dịch (Translation Memory)", 
             variable=self.use_tm_var, bg=self.colors['gray_light'],
             fg=self.colors['gray_dark'], activebackground=self.colors['gray_light']
         ).pack(side=tk.LEFT)
-        
-        tk.Label(tm_row, text="ﾄ雪ｻ・dﾃi t盻訴 thi盻ブ segment lﾆｰu cache:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
+        tk.Label(tm_row, text="Độ dài tối thiểu segment lưu cache:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
         tk.Entry(tm_row, textvariable=self.min_seg_len_var, width=5, bg=self.colors['white']).pack(side=tk.LEFT)
 
         # Row 2: Glossary Settings
-        glossary_row = tk.Frame(adv_frame, bg=self.colors['gray_light'])
-        glossary_row.pack(fill=tk.X, pady=5)
-        
+        glossary_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
+        glossary_row.pack(fill=tk.X, pady=2)
         tk.Checkbutton(
-            glossary_row, text="B蘯ｭt Thu蘯ｭt ng盻ｯ (Glossary)", 
+            glossary_row, text="Bật Thuật ngữ (Glossary)", 
             variable=self.use_glossary_var, bg=self.colors['gray_light'],
             fg=self.colors['gray_dark'], activebackground=self.colors['gray_light']
         ).pack(side=tk.LEFT)
-        
-        tk.Label(glossary_row, text="C蘯･p ﾄ黛ｻ・th盻ｱc thi:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
+        tk.Label(glossary_row, text="Cấp độ thực thi:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
         
         def _on_glossary_level_changed(*args):
             level = self.glossary_level_var.get()
             if level == "validate":
-                self.glossary_note_label.config(text="庁 Note: 'validate' ﾄ柁ｰ盻｣c dﾃnh riﾃｪng cho cﾃ｡c tﾃｭnh nﾄハg tﾆｰﾆ｡ng lai.", fg="orange")
+                self.glossary_note_label.config(text="💡 Note: 'validate' được dành riêng cho các tính năng tương lai.", fg="orange")
             else:
-                self.glossary_note_label.config(text="庁 Cﾃi ﾄ黛ｺｷt th盻ｱc thi thu蘯ｭt ng盻ｯ thﾃnh cﾃｴng.", fg="green")
+                self.glossary_note_label.config(text="💡 Cài đặt thực thi thuật ngữ thành công.", fg="green")
 
         self.glossary_level_var.trace_add("write", _on_glossary_level_changed)
         glossary_level_combo = ttk.Combobox(
@@ -297,47 +428,252 @@ class MainWindow(tk.Tk):
             values=["off", "prompt", "validate"], state="readonly", width=10
         )
         glossary_level_combo.pack(side=tk.LEFT)
-
         tk.Label(glossary_row, text="Max terms/segment:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
         tk.Spinbox(
-            glossary_row,
-            from_=1,
-            to=999,
-            textvariable=self.max_glossary_terms_var,
-            width=5,
-            bg=self.colors['white']
+            glossary_row, from_=1, to=999, textvariable=self.max_glossary_terms_var, width=5, bg=self.colors['white']
         ).pack(side=tk.LEFT)
 
         self.glossary_note_label = tk.Label(
-            adv_frame, text="庁 Thu蘯ｭt ng盻ｯ giﾃｺp chu蘯ｩn hﾃｳa cﾃ｡c c盻･m t盻ｫ chuyﾃｪn ngﾃnh.", 
+            frame_general_save, text="💡 Thuật ngữ giúp chuẩn hóa các cụm từ chuyên ngành.", 
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'], font=('Segoe UI', 8, 'italic')
         )
         self.glossary_note_label.pack(anchor=tk.W, pady=(2, 5))
 
-        # Row 3: Provider Router Settings
-        router_row = tk.Frame(adv_frame, bg=self.colors['gray_light'])
-        router_row.pack(fill=tk.X, pady=5)
-        
-        tk.Checkbutton(
-            router_row, text="B蘯ｭt B盻・ﾄ黛ｻ杵h tuy蘯ｿn thﾃｴng minh (Provider Router)", 
-            variable=self.use_router_var, bg=self.colors['gray_light'],
-            fg=self.colors['gray_dark'], activebackground=self.colors['gray_light']
-        ).pack(side=tk.LEFT)
-        
-        tk.Label(router_row, text="Policy ﾄ黛ｻ杵h tuy蘯ｿn:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
-        router_policy_combo = ttk.Combobox(
-            router_row, textvariable=self.router_policy_var, 
-            values=["ai_first", "ai_waterfall", "google_first"], state="readonly", width=12
-        )
-        router_policy_combo.pack(side=tk.LEFT)
-
-        # Row 4: Save Settings Button
-        save_btn_row = tk.Frame(adv_frame, bg=self.colors['gray_light'])
-        save_btn_row.pack(fill=tk.X, pady=(10, 0))
+        # Row 3: Save button
+        save_btn_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
+        save_btn_row.pack(fill=tk.X, pady=(5, 0))
         create_styled_button(
-            save_btn_row, text="沈 Lﾆｰu cﾃi ﾄ黛ｺｷt nﾃ｢ng cao", 
+            save_btn_row, text="💾 Lưu cài đặt nâng cao", 
             command=self._save_advanced_settings, colors=self.colors
         ).pack(side=tk.LEFT)
+
+        # Initial data loading
+        self._refresh_quick_config_summary()
+        self._refresh_providers_tree()
+        self._refresh_router_health()
+
+    def _on_quick_router_toggled(self):
+        """Handle toggle of Smart Router checkbox in Section A."""
+        val = self.use_router_var.get()
+        self.config_manager.use_provider_router = val
+        self.config_manager.save_config()
+        self._refresh_router_health()
+        
+    def _refresh_quick_config_summary(self):
+        """Update the quick status label in Section A based on configured keys."""
+        try:
+            pub_data = self.config_manager.get_provider_profiles_public()
+            summaries = []
+            
+            # Helper for displaying configured/not configured
+            def get_status(p_name, display_name):
+                p_cfg = pub_data.get(p_name, {})
+                keys_count = len(p_cfg.get("api_keys", []))
+                # For Gemini, also check legacy key just in case
+                if p_name == "gemini" and not keys_count:
+                    legacy_exists = bool(self.config_manager.api_key or self.config_manager.api_keys)
+                    keys_count = len(self.config_manager.api_keys) or (1 if legacy_exists else 0)
+                
+                if keys_count > 0:
+                    return f"{display_name}: 🟢 Đã cấu hình ({keys_count} key)"
+                else:
+                    return f"{display_name}: 🔴 Chưa cấu hình"
+
+            summaries.append(get_status("gemini", "Gemini"))
+            summaries.append(get_status("chatanywhere", "ChatAnyWhere"))
+            summaries.append(get_status("deepseek", "DeepSeek"))
+            summaries.append(get_status("nvidia_nim", "NVIDIA NIM"))
+            summaries.append(get_status("openai_compatible", "OpenAI tùy chỉnh"))
+            
+            self.lbl_quick_summary.config(text="  |  ".join(summaries))
+        except Exception as e:
+            logger.error(f"Error updating quick summary: {e}")
+            self.lbl_quick_summary.config(text="Lỗi tải trạng thái")
+
+    def _refresh_providers_tree(self):
+        """Reload providers Treeview in Section B."""
+        for item in self.prov_tree.get_children():
+            self.prov_tree.delete(item)
+            
+        try:
+            pub_data = self.config_manager.get_provider_profiles_public()
+            provider_display_names = {
+                "gemini": "Gemini AI",
+                "chatanywhere": "ChatAnyWhere",
+                "deepseek": "DeepSeek",
+                "nvidia_nim": "NVIDIA NIM",
+                "openai_compatible": "OpenAI tùy chỉnh",
+                "google": "Google Translate"
+            }
+            
+            for p_name, display in provider_display_names.items():
+                p_cfg = pub_data.get(p_name, {})
+                enabled = "🟢 Bật" if p_cfg.get("enabled", False) else "🔴 Tắt"
+                
+                # Check api keys
+                api_keys = p_cfg.get("api_keys", [])
+                keys_count = len(api_keys)
+                if p_name == "gemini" and not keys_count:
+                    legacy_exists = bool(self.config_manager.api_key or self.config_manager.api_keys)
+                    keys_count = len(self.config_manager.api_keys) or (1 if legacy_exists else 0)
+
+                api_key_status = "Đã cấu hình" if keys_count > 0 else "Chưa cấu hình"
+                if p_name == "google":
+                    enabled = "🟢 Hoạt động"
+                    api_key_status = "Không yêu cầu key"
+                    keys_count = 0
+                
+                # Models
+                models = p_cfg.get("models", [])
+                default_model = models[0] if models else "Chưa cài đặt"
+                if p_name == "gemini" and not models:
+                    default_model = "gemini-3.5-flash (Waterfall)"
+                
+                self.prov_tree.insert(
+                    "", tk.END, iid=p_name,
+                    values=(display, enabled, api_key_status, f"{keys_count} key" if keys_count else "-", default_model)
+                )
+        except Exception as e:
+            logger.error(f"Error loading providers list in Treeview: {e}")
+
+    def _on_provider_selected(self, event=None):
+        """Update Section C fields when a provider is selected in Section B."""
+        selection = self.prov_tree.selection()
+        if not selection:
+            self.selected_provider = None
+            self.chk_prov_enabled.config(state=tk.DISABLED)
+            self.entry_base_url.config(state=tk.DISABLED)
+            self.listbox_keys.config(state=tk.DISABLED)
+            self.entry_new_key.config(state=tk.DISABLED)
+            self.btn_add_key.config(state=tk.DISABLED)
+            self.btn_delete_key.config(state=tk.DISABLED)
+            self.combo_model.config(state="disabled")
+            self.btn_save_prov.config(state=tk.DISABLED)
+            return
+
+        p_name = selection[0]
+        self.selected_provider = p_name
+        
+        # Load profile data
+        pub_data = self.config_manager.get_provider_profiles_public()
+        p_cfg = pub_data.get(p_name, {})
+        
+        # Update enabled
+        self.prov_enabled_var.set(p_cfg.get("enabled", False))
+        self.chk_prov_enabled.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        
+        # Update base url
+        self.prov_base_url_var.set(p_cfg.get("base_url", ""))
+        self.entry_base_url.config(state=tk.NORMAL if p_name in ("chatanywhere", "deepseek", "nvidia_nim", "openai_compatible") else tk.DISABLED)
+        
+        # Update listbox keys (masked representation)
+        self.listbox_keys.config(state=tk.NORMAL)
+        self.listbox_keys.delete(0, tk.END)
+        
+        keys_count = len(p_cfg.get("api_keys", []))
+        if p_name == "gemini" and not keys_count:
+            keys_count = len(self.config_manager.api_keys) or (1 if self.config_manager.api_key else 0)
+
+        for i in range(keys_count):
+            self.listbox_keys.insert(tk.END, f"Key {i+1}: đã cấu hình")
+            
+        self.prov_new_key_var.set("")
+        self.entry_new_key.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        self.btn_add_key.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        self.btn_delete_key.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        
+        # Update models dropdown
+        self.combo_model.config(state="readonly")
+        
+        model_options = {
+            "gemini": ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview"],
+            "chatanywhere": ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
+            "deepseek": ["deepseek-chat", "deepseek-coder"],
+            "nvidia_nim": ["meta/llama-3.1-8b-instruct", "meta/llama-3.1-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-405b-instruct"],
+            "openai_compatible": [],
+            "google": ["google-translate"]
+        }
+        
+        opts = model_options.get(p_name, [])
+        self.combo_model.config(values=opts)
+        
+        models = p_cfg.get("models", [])
+        if p_name == "gemini" and not models:
+            models = ["gemini-3.5-flash"]
+            
+        default_model = models[0] if models else (opts[0] if opts else "")
+        self.prov_default_model_var.set(default_model)
+        
+        if p_name == "google":
+            self.combo_model.config(state="disabled")
+            
+        self.btn_save_prov.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        
+        self.frame_detail.config(text=f"🛠️ Chi tiết nhà cung cấp được chọn: {p_name.upper()}")
+
+    def _add_provider_key(self):
+        """Add new API Key to current selected provider."""
+        if not self.selected_provider:
+            return
+            
+        new_key = self.prov_new_key_var.get().strip()
+        if not new_key:
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập API Key trước khi nhấn thêm.")
+            return
+            
+        success = self.config_manager.add_provider_api_key(self.selected_provider, new_key)
+        if success:
+            self.config_manager.save_config()
+            self._refresh_quick_config_summary()
+            self._refresh_providers_tree()
+            self._on_provider_selected() # Refresh detail pane
+            messagebox.showinfo("Thành công", f"Đã thêm key mới cho nhà cung cấp {self.selected_provider} thành công.")
+        else:
+            messagebox.showerror("Lỗi", "Không thể thêm key mới. Kiểm tra xem key có bị trùng lặp không.")
+
+    def _delete_provider_key(self):
+        """Delete selected key from key pool."""
+        if not self.selected_provider:
+            return
+            
+        sel_key_idx = self.listbox_keys.curselection()
+        if not sel_key_idx:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một key trong danh sách API Keys ở trên để xóa.")
+            return
+            
+        idx = sel_key_idx[0]
+        if messagebox.askyesno("Xác nhận", f"Bạn có chắc muốn xóa Key {idx+1} của nhà cung cấp {self.selected_provider}?"):
+            success = self.config_manager.remove_provider_api_key(self.selected_provider, idx)
+            if success:
+                self.config_manager.save_config()
+                self._refresh_quick_config_summary()
+                self._refresh_providers_tree()
+                self._on_provider_selected() # Refresh detail pane
+                messagebox.showinfo("Thành công", "Đã xóa API key thành công.")
+            else:
+                messagebox.showerror("Lỗi", "Không thể xóa API key.")
+
+    def _save_provider_detail(self):
+        """Save base_url, enabled state and default model for current provider."""
+        if not self.selected_provider:
+            return
+            
+        enabled = self.prov_enabled_var.get()
+        base_url = self.prov_base_url_var.get().strip()
+        default_model = self.prov_default_model_var.get().strip()
+        
+        self.config_manager.update_provider_enabled(self.selected_provider, enabled)
+        if self.selected_provider in ("chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"):
+            self.config_manager.update_provider_base_url(self.selected_provider, base_url)
+            
+        self.config_manager.update_provider_default_model(self.selected_provider, default_model)
+        self.config_manager.save_config()
+        
+        self._refresh_quick_config_summary()
+        self._refresh_providers_tree()
+        self._on_provider_selected() # Refresh detail pane
+        self._refresh_router_health() # Sync to router snapshot
+        messagebox.showinfo("Thành công", f"Đã lưu các cài đặt cho {self.selected_provider} thành công.")
 
     def setup_file_tab(self):
         """Setup file translation tab"""
@@ -346,7 +682,7 @@ class MainWindow(tk.Tk):
         frame_file_select.pack(fill=tk.X, padx=15, pady=10)
         
         label_file_path = tk.Label(
-            frame_file_select, text="Ch盻肱 File:",
+            frame_file_select, text="Chọn File:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -363,7 +699,7 @@ class MainWindow(tk.Tk):
         self.entry_file_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
         button_browse = create_styled_button(
-            frame_file_entry, text="Duy盻㏄...", command=self.browse_file, colors=self.colors
+            frame_file_entry, text="Duyệt...", command=self.browse_file, colors=self.colors
         )
         button_browse.pack(side=tk.LEFT)
         
@@ -379,7 +715,7 @@ class MainWindow(tk.Tk):
         frame_src_lang.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         label_src_lang_file = tk.Label(
-            frame_src_lang, text="Ngﾃｴn ng盻ｯ ngu盻渡:",
+            frame_src_lang, text="Ngôn ngữ nguồn:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -397,7 +733,7 @@ class MainWindow(tk.Tk):
         frame_dest_lang.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
         
         label_dest_lang_file = tk.Label(
-            frame_dest_lang, text="Ngﾃｴn ng盻ｯ ﾄ妥ｭch:",
+            frame_dest_lang, text="Ngôn ngữ đích:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -413,7 +749,12 @@ class MainWindow(tk.Tk):
         # Info label
         label_info_file = tk.Label(
             self.tab_file,
-            text="Chﾆｰﾆ｡ng trﾃｬnh t盻ｱ ﾄ黛ｻ冢g nh蘯ｭn di盻㌻ vﾃ d盻議h cﾃ｡c lo蘯｡i file:\nExcel (.xlsx, .xls), Word (.docx, .doc), PowerPoint (.pptx, .ppt), Text (.txt), PDF (.pdf)",
+            text="Chương trình hỗ trợ dịch các loại file:\n"
+                 "• Excel (.xlsx, .xls): Hỗ trợ tốt nhất hiện tại\n"
+                 "• Word (.docx, .doc): Cần kiểm chứng định dạng\n"
+                 "• PowerPoint (.pptx, .ppt): Cần kiểm chứng định dạng\n"
+                 "• PDF (.pdf): Cần audit layout\n"
+                 "• Text (.txt): Dịch thuần văn bản",
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
             font=('Segoe UI', 9), justify=tk.LEFT
         )
@@ -426,7 +767,7 @@ class MainWindow(tk.Tk):
         self.use_ai_vision_for_pdf = tk.BooleanVar(value=False)
         checkbox_ai_vision = tk.Checkbutton(
             frame_ai_option,
-            text="､・Dﾃｹng AI Vision cho PDF (m蘯｡nh nh蘯･t cho PDF scan, ti蘯ｿng Nh蘯ｭt/Trung)",
+            text="🤖 Dùng AI Vision cho PDF (mạnh nhất cho PDF scan, tiếng Nhật/Trung)",
             variable=self.use_ai_vision_for_pdf,
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 9),
@@ -441,7 +782,7 @@ class MainWindow(tk.Tk):
         
         label_batch = tk.Label(
             frame_batch_option,
-            text="    S盻・trang/batch:",
+            text="    Số trang/batch:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 8)
         )
@@ -460,7 +801,7 @@ class MainWindow(tk.Tk):
         
         label_batch_info = tk.Label(
             frame_batch_option,
-            text="(4 trang = ti蘯ｿt ki盻㍊ 75% request)",
+            text="(4 trang = tiết kiệm 75% request)",
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
             font=('Segoe UI', 8, 'italic')
         )
@@ -469,7 +810,7 @@ class MainWindow(tk.Tk):
         # Info tooltip for AI Vision
         label_ai_info = tk.Label(
             frame_ai_option,
-            text="    庁 G盻冪 nhi盻「 trang thﾃnh 1 蘯｣nh grid 竊・1 request AI (ti蘯ｿt ki盻㍊ RPD)",
+            text="    💡 Ghép nhiều trang thành 1 ảnh grid = tiết kiệm 75% requests AI (giảm RPD)",
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
             font=('Segoe UI', 8, 'italic')
         )
@@ -481,7 +822,7 @@ class MainWindow(tk.Tk):
         frame_buttons.pack(fill=tk.X, padx=15, pady=15)
         
         button_translate_file = create_styled_button(
-            frame_buttons, text="D盻議h File ﾄ妥｣ ch盻肱",
+            frame_buttons, text="Dịch File",
             command=self.translate_file, colors=self.colors
         )
         button_translate_file.pack(fill=tk.X, pady=5)
@@ -514,7 +855,7 @@ class MainWindow(tk.Tk):
         frame_input.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
         
         label_paragraph_input = tk.Label(
-            frame_input, text="Nh蘯ｭp ﾄ塵蘯｡n Vﾄハ:",
+            frame_input, text="Nhập nội dung cần dịch:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -540,7 +881,7 @@ class MainWindow(tk.Tk):
         frame_src_lang_para.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         label_src_lang_paragraph = tk.Label(
-            frame_src_lang_para, text="Ngﾃｴn ng盻ｯ ngu盻渡:",
+            frame_src_lang_para, text="Ngôn ngữ nguồn:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -558,7 +899,7 @@ class MainWindow(tk.Tk):
         frame_dest_lang_para.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
         
         label_dest_lang_paragraph = tk.Label(
-            frame_dest_lang_para, text="Ngﾃｴn ng盻ｯ ﾄ妥ｭch:",
+            frame_dest_lang_para, text="Ngôn ngữ đích:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -576,20 +917,20 @@ class MainWindow(tk.Tk):
         frame_buttons_para.pack(fill=tk.X, pady=10)
         
         button_translate_paragraph = create_styled_button(
-            frame_buttons_para, text="D盻議h ﾄ双蘯｡n vﾄハ ﾄ妥｣ nh蘯ｭp",
+            frame_buttons_para, text="Dịch nội dung",
             command=self.translate_paragraph, colors=self.colors
         )
         button_translate_paragraph.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
         button_clear_paragraph = create_styled_button(
-            frame_buttons_para, text="Xﾃｳa ﾄ双蘯｡n vﾄハ ﾄ妥｣ nh蘯ｭp",
+            frame_buttons_para, text="Xóa nội dung",
             command=self.clear_input_paragraph, colors=self.colors
         )
         button_clear_paragraph.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
 
         # NEW: Analyze button
         button_analyze_paragraph = create_styled_button(
-            frame_buttons_para, text="剥 Phﾃ｢n tﾃｭch ﾃｽ nghﾄｩa cﾃ｢u (AI)",
+            frame_buttons_para, text="🔍 Phân tích ý nghĩa câu (AI)",
             command=self.analyze_paragraph, colors=self.colors
         )
         # Use a slightly different color or highlight if possible, but keep style consistent
@@ -599,7 +940,7 @@ class MainWindow(tk.Tk):
         frame_context = tk.Frame(self.tab_paragraph, bg=self.colors['gray_light'])
         frame_context.pack(fill=tk.X, padx=15, pady=(5, 0))
         
-        tk.Label(frame_context, text="B盻訴 c蘯｣nh/Ghi chﾃｺ thﾃｪm (Tﾃｹy ch盻肱):", 
+        tk.Label(frame_context, text="Bối cảnh/Ghi chú thêm (Tùy chọn):", 
                  bg=self.colors['gray_light'], font=('Segoe UI', 9, 'italic')).pack(side=tk.LEFT)
         self.entry_paragraph_context = tk.Entry(frame_context, font=('Segoe UI', 10), bg=self.colors['white'])
         self.entry_paragraph_context.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
@@ -609,7 +950,7 @@ class MainWindow(tk.Tk):
         frame_output.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
         
         label_paragraph_output = tk.Label(
-            frame_output, text="ﾄ塵蘯｡n Vﾄハ D盻議h:",
+            frame_output, text="Bản dịch:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -624,7 +965,7 @@ class MainWindow(tk.Tk):
         self.entry_paragraph_output.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         button_copy_paragraph = create_styled_button(
-            frame_output, text="Sao chﾃｩp ﾄ双蘯｡n vﾄハ ﾄ妥｣ d盻議h",
+            frame_output, text="Sao chép đoạn văn đã dịch",
             command=self.copy_output_paragraph, colors=self.colors
         )
         button_copy_paragraph.pack(fill=tk.X)
@@ -636,7 +977,7 @@ class MainWindow(tk.Tk):
         frame_folder.pack(fill=tk.X, padx=15, pady=15)
         
         label_folder_name = tk.Label(
-            frame_folder, text="Nh蘯ｭp tﾃｪn thﾆｰ m盻･c trong hﾃｲm thﾆｰ c蘯ｧn d盻議h:",
+            frame_folder, text="Nhập tên thư mục trong hòm thư cần dịch:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -661,7 +1002,7 @@ class MainWindow(tk.Tk):
         frame_src_lang_email.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         label_src_lang_email = tk.Label(
-            frame_src_lang_email, text="Ngﾃｴn ng盻ｯ ngu盻渡:",
+            frame_src_lang_email, text="Ngôn ngữ nguồn:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -679,7 +1020,7 @@ class MainWindow(tk.Tk):
         frame_dest_lang_email.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
         
         label_dest_lang_email = tk.Label(
-            frame_dest_lang_email, text="Ngﾃｴn ng盻ｯ ﾄ妥ｭch:",
+            frame_dest_lang_email, text="Ngôn ngữ đích:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -695,7 +1036,7 @@ class MainWindow(tk.Tk):
         # Info label
         label_info = tk.Label(
             self.tab_email,
-            text=f"Chﾆｰﾆ｡ng trﾃｬnh cﾃｳ th盻・d盻議h ﾄ柁ｰ盻｣c {config.max_emails_to_translate} mail m盻嬖 nh蘯･t chﾆｰa ﾄ黛ｻ皇 trong thﾆｰ m盻･c ﾄ柁ｰ盻｣c ch盻・ﾄ黛ｻ杵h",
+            text=f"Chương trình có thể dịch được {config.max_emails_to_translate} mail mới nhất chứa bộ lọc trong thư mục được cấu hình",
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
             font=('Segoe UI', 9), justify=tk.LEFT
         )
@@ -706,7 +1047,7 @@ class MainWindow(tk.Tk):
         frame_button_email.pack(fill=tk.X, padx=15, pady=15)
         
         button_translate_email = create_styled_button(
-            frame_button_email, text="D盻議h Email",
+            frame_button_email, text="Dịch Email",
             command=self.translate_email, colors=self.colors
         )
         button_translate_email.pack(fill=tk.X)
@@ -718,7 +1059,7 @@ class MainWindow(tk.Tk):
         frame_image_select.pack(fill=tk.X, padx=15, pady=10)
         
         label_image_path = tk.Label(
-            frame_image_select, text="Ch盻肱 File 蘯｢nh:",
+            frame_image_select, text="Chọn File ảnh:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -735,7 +1076,7 @@ class MainWindow(tk.Tk):
         self.entry_image_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
         button_browse_image = create_styled_button(
-            frame_image_entry, text="Duy盻㏄...",
+            frame_image_entry, text="Duyệt...",
             command=self.browse_image, colors=self.colors
         )
         button_browse_image.pack(side=tk.LEFT)
@@ -745,14 +1086,14 @@ class MainWindow(tk.Tk):
         frame_paste_clipboard.pack(fill=tk.X, padx=15, pady=10)
         
         button_paste_clipboard = create_styled_button(
-            frame_paste_clipboard, text="Paste t盻ｫ Clipboard (B蘯･m vﾃo nﾃｺt ﾄ黛ｻ・paste 蘯｣nh)",
+            frame_paste_clipboard, text="Dán từ Clipboard (Bấm vào nút để dán ảnh)",
             command=self.paste_image_from_clipboard, colors=self.colors
         )
         button_paste_clipboard.pack(side=tk.LEFT, padx=(0, 10))
         
         self.label_clipboard_status = tk.Label(
             frame_paste_clipboard,
-            text="Chﾆｰa cﾃｳ 蘯｣nh t盻ｫ clipboard",
+            text="Chưa có ảnh từ clipboard",
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
             font=('Segoe UI', 9)
         )
@@ -763,7 +1104,7 @@ class MainWindow(tk.Tk):
         frame_preview.pack(fill=tk.X, padx=15, pady=10)
         
         label_preview_title = tk.Label(
-            frame_preview, text="Preview 蘯｢nh:",
+            frame_preview, text="Preview ảnh:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -791,7 +1132,7 @@ class MainWindow(tk.Tk):
         frame_src_lang_image.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         
         label_src_lang_image = tk.Label(
-            frame_src_lang_image, text="Ngﾃｴn ng盻ｯ ngu盻渡:",
+            frame_src_lang_image, text="Ngôn ngữ nguồn:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -809,7 +1150,7 @@ class MainWindow(tk.Tk):
         frame_dest_lang_image.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
         
         label_dest_lang_image = tk.Label(
-            frame_dest_lang_image, text="Ngﾃｴn ng盻ｯ ﾄ妥ｭch:",
+            frame_dest_lang_image, text="Ngôn ngữ đích:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -825,7 +1166,7 @@ class MainWindow(tk.Tk):
         # Info label
         label_info_image = tk.Label(
             self.tab_image,
-            text="Chﾆｰﾆ｡ng trﾃｬnh s蘯ｽ OCR text trong 蘯｣nh vﾃ d盻議h sang ngﾃｴn ng盻ｯ ﾄ妥ｭch",
+            text="Chương trình sẽ OCR text trong ảnh và dịch sang ngôn ngữ đích",
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
             font=('Segoe UI', 9), justify=tk.LEFT
         )
@@ -836,7 +1177,7 @@ class MainWindow(tk.Tk):
         frame_button_image.pack(fill=tk.X, padx=15, pady=10)
         
         button_translate_image = create_styled_button(
-            frame_button_image, text="OCR vﾃ D盻議h 蘯｢nh",
+            frame_button_image, text="OCR và Dịch ảnh",
             command=self.translate_image, colors=self.colors
         )
         button_translate_image.pack(fill=tk.X, pady=(0, 10))
@@ -849,13 +1190,13 @@ class MainWindow(tk.Tk):
         frame_image_context = tk.Frame(frame_result, bg=self.colors['gray_light'])
         frame_image_context.pack(fill=tk.X, pady=(0, 5))
         
-        tk.Label(frame_image_context, text="B盻訴 c蘯｣nh/Ghi chﾃｺ thﾃｪm (AI):", 
+        tk.Label(frame_image_context, text="Bối cảnh/Ghi chú thêm (AI):", 
                  bg=self.colors['gray_light'], font=('Segoe UI', 9, 'italic')).pack(side=tk.LEFT)
         self.entry_image_context = tk.Entry(frame_image_context, font=('Segoe UI', 10), bg=self.colors['white'])
         self.entry_image_context.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         
         button_analyze_image = create_styled_button(
-            frame_image_context, text="剥 Phﾃ｢n tﾃｭch AI",
+            frame_image_context, text="🔍 Phân tích AI",
             command=self.analyze_image_text, colors=self.colors
         )
         button_analyze_image.pack(side=tk.RIGHT)
@@ -863,7 +1204,7 @@ class MainWindow(tk.Tk):
         # Output area
         
         label_text_output = tk.Label(
-            frame_result, text="K蘯ｿt qu蘯｣ OCR vﾃ D盻議h:",
+            frame_result, text="Kết quả OCR và Dịch:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
@@ -878,7 +1219,7 @@ class MainWindow(tk.Tk):
         self.text_output.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         button_save_image_text = create_styled_button(
-            frame_result, text="Lﾆｰu K蘯ｿt Qu蘯｣",
+            frame_result, text="Lưu Kết Quả",
             command=self.save_translated_image_text, colors=self.colors
         )
         button_save_image_text.pack(fill=tk.X)
@@ -912,7 +1253,7 @@ class MainWindow(tk.Tk):
             FileValidator.validate_file(file_path)
             LanguageValidator.validate_language_pair(src_lang, dest_lang)
         except Exception as e:
-            messagebox.showerror("L盻擁", str(e))
+            messagebox.showerror("Lỗi", str(e))
             return
         
         # Determine file type and output
@@ -943,9 +1284,9 @@ class MainWindow(tk.Tk):
         
         if ext_lower not in handlers_map:
             messagebox.showerror(
-                "L盻擁",
-                f"Lo蘯｡i file '{ext}' khﾃｴng ﾄ柁ｰ盻｣c h盻・tr盻｣.\n\n"
-                f"Cﾃ｡c ﾄ黛ｻ杵h d蘯｡ng ﾄ柁ｰ盻｣c h盻・tr盻｣:\n"
+                "Lỗi",
+                f"Loại file '{ext}' không được hỗ trợ.\n\n"
+                f"Các định dạng được hỗ trợ:\n"
                 f"- Excel: .xlsx, .xls\n"
                 f"- Word: .docx, .doc\n"
                 f"- PowerPoint: .pptx, .ppt\n"
@@ -977,9 +1318,9 @@ class MainWindow(tk.Tk):
         self.progress_file.config(mode='determinate', value=0)
         
         if use_ai_vision:
-            update_progress(f"､・ﾄ紳ng chu蘯ｩn b盻・d盻議h AI Vision ({pages_per_batch} trang/batch)...", 2)
+            update_progress(f"⚙️ Đang chuẩn bị dịch AI Vision ({pages_per_batch} trang/batch)...", 2)
         else:
-            update_progress(f"ﾄ紳ng chu蘯ｩn b盻・d盻議h '{os.path.basename(file_path)}'...", 2)
+            update_progress(f"Đang chuẩn bị dịch '{os.path.basename(file_path)}'...", 2)
         
         # Translate in thread to avoid blocking UI
         def translate_thread():
@@ -1002,11 +1343,11 @@ class MainWindow(tk.Tk):
                 def _on_success():
                     self.progress_file['value'] = 100
                     method_info = " (AI Vision)" if use_ai_vision else ""
-                    self.label_file_status.config(text="笨・Hoﾃn t蘯･t!")
+                    self.label_file_status.config(text="🟢 Hoàn tất!")
                     messagebox.showinfo(
-                        "Thﾃnh cﾃｴng",
-                        f"File '{os.path.basename(file_path)}' ﾄ妥｣ ﾄ柁ｰ盻｣c d盻議h{method_info}.\n\n"
-                        f"ﾄ静｣ lﾆｰu k蘯ｿt qu蘯｣ t蘯｡i:\n{output_file}"
+"Thành công",
+                        f"File '{os.path.basename(file_path)}' đã được dịch{method_info}.\n\n"
+                        f"Đã lưu kết quả tại:\n{output_file}"
                     )
                     self.label_file_status.config(text="")
                     self.progress_file.config(mode='indeterminate')
@@ -1020,8 +1361,8 @@ class MainWindow(tk.Tk):
                     self.progress_file.config(mode='indeterminate')
                     self.progress_file.stop()
                     self.label_file_status.config(text="")
-                    error_msg = handle_translation_error(e, "D盻議h file")
-                    messagebox.showerror("L盻擁", error_msg)
+                    error_msg = handle_translation_error(e, "Dịch file")
+                    messagebox.showerror("Lỗi", error_msg)
                 
                 self.after(0, _on_error)
         
@@ -1033,7 +1374,7 @@ class MainWindow(tk.Tk):
         """Translate paragraph"""
         input_text = self.entry_paragraph_input.get("1.0", tk.END).strip()
         if not input_text:
-            messagebox.showwarning("C蘯｣nh bﾃ｡o", "Vui lﾃｲng nh蘯ｭp ﾄ双蘯｡n vﾄハ ﾄ黛ｻ・d盻議h.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập đoạn văn để dịch.")
             return
         
         src_lang = self.src_lang_paragraph.get()
@@ -1045,8 +1386,8 @@ class MainWindow(tk.Tk):
             self.entry_paragraph_output.delete("1.0", tk.END)
             self.entry_paragraph_output.insert(tk.END, translated_text)
         except Exception as e:
-            error_msg = handle_translation_error(e, "D盻議h ﾄ双蘯｡n vﾄハ")
-            messagebox.showerror("L盻擁", error_msg)
+            error_msg = handle_translation_error(e, "Dịch đoạn văn")
+            messagebox.showerror("Lỗi", error_msg)
 
     def analyze_paragraph(self):
         """Analyze paragraph meaning using AI"""
@@ -1054,7 +1395,7 @@ class MainWindow(tk.Tk):
         context = self.entry_paragraph_context.get().strip()
         
         if not input_text:
-            messagebox.showwarning("C蘯｣nh bﾃ｡o", "Vui lﾃｲng nh蘯ｭp ﾄ双蘯｡n vﾄハ ﾄ黛ｻ・phﾃ｢n tﾃｭch.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập đoạn văn để phân tích.")
             return
         
         src_lang = self.src_lang_paragraph.get()
@@ -1062,7 +1403,7 @@ class MainWindow(tk.Tk):
         
         # Show waiting status
         self.entry_paragraph_output.delete("1.0", tk.END)
-        self.entry_paragraph_output.insert(tk.END, "売 ﾄ紳ng phﾃ｢n tﾃｭch chuyﾃｪn sﾃ｢u... Vui lﾃｲng ﾄ黛ｻ｣i trong giﾃ｢y lﾃ｡t...")
+        self.entry_paragraph_output.insert(tk.END, "⏳ Đang phân tích chuyên sâu... Vui lòng đợi trong giây lát...")
         self.update()
 
         def run_analysis():
@@ -1071,7 +1412,7 @@ class MainWindow(tk.Tk):
                 ai_service = get_ai_service()
                 
                 if not ai_service.is_available():
-                    self.after(0, lambda: messagebox.showwarning("Yﾃｪu c蘯ｧu c蘯･u hﾃｬnh", "Vui lﾃｲng c蘯･u hﾃｬnh Gemini API Key trong tab 'C蘯･u hﾃｬnh AI' ﾄ黛ｻ・s盻ｭ d盻･ng tﾃｭnh nﾄハg nﾃy."))
+                    self.after(0, lambda: messagebox.showwarning("Yêu cầu cấu hình", "Vui lòng cấu hình Gemini API Key trong tab 'Cấu hình AI' để sử dụng tính năng này."))
                     self.after(0, lambda: self.entry_paragraph_output.delete("1.0", tk.END))
                     return
 
@@ -1081,10 +1422,10 @@ class MainWindow(tk.Tk):
                     analysis_text = result["text"]
                     self.after(0, lambda: self._display_analysis(analysis_text))
                 else:
-                    self.after(0, lambda: messagebox.showerror("L盻擁 AI", f"Khﾃｴng th盻・phﾃ｢n tﾃｭch: {result.get('text')}"))
+                    self.after(0, lambda: messagebox.showerror("Lỗi AI", f"Không thể phân tích: {result.get('text')}"))
                     self.after(0, lambda: self.entry_paragraph_output.delete("1.0", tk.END))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("L盻擁", f"ﾄ静｣ x蘯｣y ra l盻擁 khi phﾃ｢n tﾃｭch: {str(e)}"))
+                self.after(0, lambda: messagebox.showerror("Lỗi", f"Đã xảy ra lỗi khi phân tích: {str(e)}"))
                 self.after(0, lambda: self.entry_paragraph_output.delete("1.0", tk.END))
 
         threading.Thread(target=run_analysis, daemon=True).start()
@@ -1111,7 +1452,7 @@ class MainWindow(tk.Tk):
         dest_lang = self.dest_lang_email.get()
         
         if not folder_name:
-            messagebox.showwarning("C蘯｣nh bﾃ｡o", "Vui lﾃｲng nh蘯ｭp tﾃｪn thﾆｰ m盻･c.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập tên thư mục.")
             return
         
         try:
@@ -1123,16 +1464,16 @@ class MainWindow(tk.Tk):
                         folder_name, src_lang, dest_lang
                     )
                     self.after(0, lambda: messagebox.showinfo(
-                        "Thﾃnh cﾃｴng",
-                        f"{count} email m盻嬖 nh蘯･t chﾆｰa ﾄ黛ｻ皇 ﾄ妥｣ ﾄ柁ｰ盻｣c d盻議h vﾃ g盻ｭi thﾃnh cﾃｴng."
+"Thành công",
+                        f"{count} email mới nhất chứa bộ lọc đã được dịch và gửi thành công."
                     ))
                 except Exception as e:
-                    error_msg = handle_translation_error(e, "D盻議h email")
-                    self.after(0, lambda: messagebox.showerror("L盻擁", error_msg))
+                    error_msg = handle_translation_error(e, "Dịch email")
+                    self.after(0, lambda: messagebox.showerror("Lỗi", error_msg))
             
             threading.Thread(target=translate_thread, daemon=True).start()
         except Exception as e:
-            messagebox.showerror("L盻擁", str(e))
+            messagebox.showerror("Lỗi", str(e))
     
     def browse_image(self):
         """Browse for image file"""
@@ -1144,7 +1485,7 @@ class MainWindow(tk.Tk):
             self.clipboard_image = None
             self.preview_photo = None
             self.label_image_preview.config(image='', text="Chua co anh de hien thi")
-            self.label_clipboard_status.config(text="Chﾆｰa cﾃｳ 蘯｣nh t盻ｫ clipboard")
+            self.label_clipboard_status.config(text="Chưa có ảnh từ clipboard")
             
             self.entry_image_path.delete(0, tk.END)
             self.entry_image_path.insert(0, file_path)
@@ -1157,18 +1498,18 @@ class MainWindow(tk.Tk):
             
             if clipboard_img is None:
                 messagebox.showwarning(
-                    "C蘯｣nh bﾃ｡o",
-                    "Clipboard khﾃｴng ch盻ｩa 蘯｣nh.\n\n"
-                    "Vui lﾃｲng copy 蘯｣nh vﾃo clipboard trﾆｰ盻嫩 (screenshot ho蘯ｷc copy 蘯｣nh t盻ｫ 盻ｩng d盻･ng khﾃ｡c)."
+                    "Cảnh báo",
+                    "Clipboard không chứa ảnh.\n\n"
+                    "Vui lòng copy ảnh vào clipboard trước (screenshot hoặc copy ảnh từ ứng dụng khác)."
                 )
                 return
             
             # Check if it's actually an image
             if not isinstance(clipboard_img, Image.Image):
                 messagebox.showwarning(
-                    "C蘯｣nh bﾃ｡o",
-                    "Clipboard khﾃｴng ch盻ｩa 蘯｣nh h盻｣p l盻・\n\n"
-                    "Vui lﾃｲng copy 蘯｣nh vﾃo clipboard trﾆｰ盻嫩."
+                    "Cảnh báo",
+                    "Clipboard không chứa ảnh hợp lệ.\n\n"
+                    "Vui lòng copy ảnh vào clipboard trước."
                 )
                 return
             
@@ -1186,7 +1527,7 @@ class MainWindow(tk.Tk):
             # Update status label
             width, height = clipboard_img.size
             self.label_clipboard_status.config(
-                text=f"ﾄ静｣ paste 蘯｣nh t盻ｫ clipboard ({width}x{height}px)",
+                text=f"Đã paste ảnh từ clipboard ({width}x{height}px)",
                 fg=self.colors['gray_dark']
             )
             
@@ -1196,9 +1537,9 @@ class MainWindow(tk.Tk):
             logger.info(f"Pasted image from clipboard: {width}x{height}px")
             
         except Exception as e:
-            error_msg = f"L盻擁 khi l蘯･y 蘯｣nh t盻ｫ clipboard: {str(e)}"
+            error_msg = f"Lỗi khi lấy ảnh từ clipboard: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            messagebox.showerror("L盻擁", error_msg)
+            messagebox.showerror("Lỗi", error_msg)
     
     def _update_image_preview(self, image: Image.Image):
         """Update image preview label"""
@@ -1216,11 +1557,11 @@ class MainWindow(tk.Tk):
                 preview_img = image.copy()
             
             # Convert to PhotoImage for Tkinter
-            # Lﾆｰu reference ﾄ黛ｻ・trﾃ｡nh garbage collection - Tkinter c蘯ｧn gi盻ｯ reference
+            # Lưu reference để tránh garbage collection - Tkinter cần giữ reference
             self.preview_photo = ImageTk.PhotoImage(preview_img)
-            self._preview_photo_refs.append(self.preview_photo)  # Gi盻ｯ reference thﾃｪm m盻冲 l蘯ｧn n盻ｯa
+            self._preview_photo_refs.append(self.preview_photo)  # Giữ reference thêm một lần nữa
             
-            # Gi盻嬖 h蘯｡n s盻・lﾆｰ盻｣ng references ﾄ黛ｻ・trﾃ｡nh memory leak
+            # Giới hạn số lượng references để tránh memory leak
             if len(self._preview_photo_refs) > 10:
                 self._preview_photo_refs.pop(0)
             
@@ -1234,7 +1575,7 @@ class MainWindow(tk.Tk):
             logger.error(f"Error updating image preview: {e}", exc_info=True)
             self.label_image_preview.config(
                 image='',
-                text=f"L盻擁 hi盻ハ th盻・preview: {str(e)}"
+                text=f"Lỗi hiển thị preview: {str(e)}"
             )
     
     def translate_image(self):
@@ -1252,11 +1593,11 @@ class MainWindow(tk.Tk):
             # Use file path
             image_path = self.entry_image_path.get()
             if not image_path or image_path == "[Clipboard]":
-                messagebox.showerror("L盻擁", "Vui lﾃｲng ch盻肱 file 蘯｣nh ho蘯ｷc paste 蘯｣nh t盻ｫ clipboard ﾄ黛ｻ・d盻議h.")
+                messagebox.showerror("Lỗi", "Vui lòng chọn file ảnh hoặc dán ảnh từ clipboard để dịch.")
                 return
             
             if not os.path.exists(image_path):
-                messagebox.showerror("L盻擁", "File 蘯｣nh khﾃｴng t盻渡 t蘯｡i.")
+                messagebox.showerror("Lỗi", "File ảnh không tồn tại.")
                 return
             
             # Read image from file
@@ -1264,24 +1605,24 @@ class MainWindow(tk.Tk):
                 img = Image.open(image_path)
                 image_source = image_path
             except Exception as e:
-                messagebox.showerror("L盻擁", f"Khﾃｴng th盻・ﾄ黛ｻ皇 file 蘯｣nh: {str(e)}")
+                messagebox.showerror("Lỗi", f"Không thể đọc file ảnh: {str(e)}")
                 return
         
         # Validate that we have an image
         if img is None:
-            messagebox.showerror("L盻擁", "Khﾃｴng th盻・t蘯｣i 蘯｣nh ﾄ黛ｻ・d盻議h.")
+            messagebox.showerror("Lỗi", "Không thể tải ảnh để dịch.")
             return
         
         if not self.ocr_handler.is_installed():
             messagebox.showerror(
-                "L盻擁",
-                "Tesseract OCR chﾆｰa ﾄ柁ｰ盻｣c cﾃi ﾄ黛ｺｷt!\n\n"
-                "ﾄ雪ｻ・d盻議h ﾄ柁ｰ盻｣c text trong 蘯｣nh, b蘯｡n c蘯ｧn:\n"
-                "1. T蘯｣i vﾃ cﾃi ﾄ黛ｺｷt Tesseract OCR t盻ｫ:\n"
+                "Lỗi",
+                "Tesseract OCR chưa được cài đặt!\n\n"
+                "Để dịch được text trong ảnh, bạn cần:\n"
+                "1. Tải và cài đặt Tesseract OCR từ:\n"
                 "   https://github.com/UB-Mannheim/tesseract/wiki\n"
-                "2. T蘯｣i language pack phﾃｹ h盻｣p t盻ｫ:\n"
+                "2. Tải language pack phù hợp từ:\n"
                 "   https://github.com/tesseract-ocr/tessdata\n"
-                "3. ﾄ雪ｺｷt file traineddata vﾃo thﾆｰ m盻･c tessdata c盻ｧa Tesseract"
+                "3. Đặt file traineddata vào thư mục tessdata của Tesseract"
             )
             return
         
@@ -1290,7 +1631,7 @@ class MainWindow(tk.Tk):
                 # Work with a local copy to avoid closure issues
                 working_img = img.copy() if img is not None else None
                 if working_img is None:
-                    self.after(0, lambda: messagebox.showerror("L盻擁", "Khﾃｴng th盻・t蘯｣i 蘯｣nh ﾄ黛ｻ・d盻議h."))
+                    self.after(0, lambda: messagebox.showerror("Lỗi", "Không thể tải ảnh để dịch."))
                     return
                 
                 # Ensure image is RGB
@@ -1299,7 +1640,7 @@ class MainWindow(tk.Tk):
                 
                 # OCR
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
-                self.after(0, lambda: self.text_output.insert(tk.END, "ﾄ紳ng OCR 蘯｣nh...\n"))
+                self.after(0, lambda: self.text_output.insert(tk.END, "Đang OCR ảnh...\n"))
                 self.after(0, lambda: self.update())
                 
                 ocr_lang = self.ocr_handler.get_ocr_language(src_lang)
@@ -1312,32 +1653,32 @@ class MainWindow(tk.Tk):
                 
                 if not text.strip():
                     self.after(0, lambda: self.text_output.delete("1.0", tk.END))
-                    self.after(0, lambda: self.text_output.insert(tk.END, "Khﾃｴng tﾃｬm th蘯･y text trong 蘯｣nh."))
-                    self.after(0, lambda: messagebox.showwarning("C蘯｣nh bﾃ｡o", "Khﾃｴng tﾃｬm th蘯･y text trong 蘯｣nh."))
+                    self.after(0, lambda: self.text_output.insert(tk.END, "Không tìm thấy text trong ảnh."))
+                    self.after(0, lambda: messagebox.showwarning("Cảnh báo", "Không tìm thấy text trong ảnh."))
                     return
                 
                 # Display original text
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
-                self.after(0, lambda: self.text_output.insert(tk.END, f"Text g盻祖 ({src_lang}):\n"))
+                self.after(0, lambda: self.text_output.insert(tk.END, f"Text gốc ({src_lang}):\n"))
                 self.after(0, lambda: self.text_output.insert(tk.END, "-" * 50 + "\n"))
                 self.after(0, lambda: self.text_output.insert(tk.END, text + "\n\n"))
                 
                 # Translate
-                self.after(0, lambda: self.text_output.insert(tk.END, "ﾄ紳ng d盻議h...\n"))
+                self.after(0, lambda: self.text_output.insert(tk.END, "Đang dịch...\n"))
                 self.after(0, lambda: self.update())
                 
                 translated_text = self.translation_service.translate_long_text(text, src_lang, dest_lang)
                 
                 # Display translated text
-                self.after(0, lambda: self.text_output.insert(tk.END, f"Text d盻議h ({dest_lang}):\n"))
+                self.after(0, lambda: self.text_output.insert(tk.END, f"Text dịch ({dest_lang}):\n"))
                 self.after(0, lambda: self.text_output.insert(tk.END, "-" * 50 + "\n"))
                 self.after(0, lambda: self.text_output.insert(tk.END, translated_text))
-                self.after(0, lambda: messagebox.showinfo("Thﾃnh cﾃｴng", "ﾄ静｣ OCR vﾃ d盻議h 蘯｣nh thﾃnh cﾃｴng!"))
+                self.after(0, lambda: messagebox.showinfo("Thành công", "Đã OCR và dịch ảnh thành công!"))
             except Exception as e:
-                error_msg = handle_translation_error(e, "OCR vﾃ d盻議h 蘯｣nh")
+                error_msg = handle_translation_error(e, "OCR và dịch ảnh")
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
                 self.after(0, lambda: self.text_output.insert(tk.END, error_msg))
-                self.after(0, lambda: messagebox.showerror("L盻擁", error_msg))
+                self.after(0, lambda: messagebox.showerror("Lỗi", error_msg))
         
         threading.Thread(target=translate_thread, daemon=True).start()
     
@@ -1345,7 +1686,7 @@ class MainWindow(tk.Tk):
         """Save translated image text to file"""
         text = self.text_output.get("1.0", tk.END).strip()
         if not text:
-            messagebox.showwarning("C蘯｣nh bﾃ｡o", "Khﾃｴng cﾃｳ n盻冓 dung ﾄ黛ｻ・lﾆｰu.")
+            messagebox.showwarning("Cảnh báo", "Không có nội dung để lưu.")
             return
         
         # Determine output file name
@@ -1375,9 +1716,9 @@ class MainWindow(tk.Tk):
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(text)
-            messagebox.showinfo("Thﾃnh cﾃｴng", f"ﾄ静｣ lﾆｰu k蘯ｿt qu蘯｣ t蘯｡i:\n{output_file}")
+            messagebox.showinfo("Thành công", f"Đã lưu kết quả tại:\n{output_file}")
         except Exception as e:
-            messagebox.showerror("L盻擁", f"Khﾃｴng th盻・lﾆｰu file: {str(e)}")
+            messagebox.showerror("Lỗi", f"Không thể lưu file: {str(e)}")
     
     def _open_ai_settings(self):
         """Open the AI Settings dialog."""
@@ -1390,7 +1731,7 @@ class MainWindow(tk.Tk):
         context = self.entry_image_context.get().strip()
         
         if not input_text:
-            messagebox.showwarning("C蘯｣nh bﾃ｡o", "Vui lﾃｲng 'OCR vﾃ D盻議h 蘯｢nh' trﾆｰ盻嫩 khi yﾃｪu c蘯ｧu phﾃ｢n tﾃｭch.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng 'OCR và Dịch ảnh' trước khi yêu cầu phân tích.")
             return
         
         src_lang = self.src_lang_image.get()
@@ -1398,7 +1739,7 @@ class MainWindow(tk.Tk):
         
         # Show waiting status
         self.text_output.delete("1.0", tk.END)
-        self.text_output.insert(tk.END, "売 ﾄ紳ng phﾃ｢n tﾃｭch chuyﾃｪn sﾃ｢u n盻冓 dung 蘯｣nh... Vui lﾃｲng ﾄ黛ｻ｣i trong giﾃ｢y lﾃ｡t...")
+        self.text_output.insert(tk.END, "⏳ Đang phân tích chuyên sâu nội dung ảnh... Vui lòng đợi trong giây lát...")
         self.update()
 
         def run_analysis():
@@ -1407,7 +1748,7 @@ class MainWindow(tk.Tk):
                 ai_service = get_ai_service()
                 
                 if not ai_service.is_available():
-                    self.after(0, lambda: messagebox.showwarning("Yﾃｪu c蘯ｧu c蘯･u hﾃｬnh", "Vui lﾃｲng c蘯･u hﾃｬnh Gemini API Key trong tab 'C蘯･u hﾃｬnh AI' ﾄ黛ｻ・s盻ｭ d盻･ng tﾃｭnh nﾄハg nﾃy."))
+                    self.after(0, lambda: messagebox.showwarning("Yêu cầu cấu hình", "Vui lòng cấu hình Gemini API Key trong tab 'Cấu hình AI' để sử dụng tính năng này."))
                     self.after(0, lambda: self.text_output.delete("1.0", tk.END))
                     return
 
@@ -1417,17 +1758,17 @@ class MainWindow(tk.Tk):
                     analysis_text = result["text"]
                     self.after(0, lambda: self._display_image_analysis(analysis_text))
                 else:
-                    self.after(0, lambda: messagebox.showerror("L盻擁 AI", f"Khﾃｴng th盻・phﾃ｢n tﾃｭch: {result.get('text')}"))
+                    self.after(0, lambda: messagebox.showerror("Lỗi AI", f"Không thể phân tích: {result.get('text')}"))
                     self.after(0, lambda: self.text_output.delete("1.0", tk.END))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("L盻擁", f"ﾄ静｣ x蘯｣y ra l盻擁 khi phﾃ｢n tﾃｭch: {str(e)}"))
+                self.after(0, lambda: messagebox.showerror("Lỗi", f"Đã xảy ra lỗi khi phân tích: {str(e)}"))
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
 
         threading.Thread(target=run_analysis, daemon=True).start()
 
     def _display_image_analysis(self, text):
         self.text_output.delete("1.0", tk.END)
-        self.text_output.insert(tk.END, "=== B蘯｢N PHﾃ・ Tﾃ垢H ﾃ・NGHﾄｨA CHUYﾃ劾 Sﾃ６ (AI) ===\n\n")
+        self.text_output.insert(tk.END, "=== BẢN PHÂN TÍCH NGHĨA CHUYÊN SÂU (AI) ===\n\n")
         self.text_output.insert(tk.END, text)
     
     def _show_pdf_ai_guide_and_wait(self):
@@ -1454,7 +1795,7 @@ class MainWindow(tk.Tk):
         
         # Create guide dialog
         guide_dialog = tk.Toplevel(self)
-        guide_dialog.title("庁 G盻｣i ﾃｽ: D盻議h PDF t盻奏 hﾆ｡n v盻嬖 AI Vision")
+        guide_dialog.title("💡 Gợi ý: Dịch PDF tốt hơn với AI Vision")
         guide_dialog.geometry("650x580")
         guide_dialog.configure(bg=self.colors['white'])
         guide_dialog.transient(self)
@@ -1480,7 +1821,7 @@ class MainWindow(tk.Tk):
         # Title
         title_label = tk.Label(
             main_frame,
-            text="､・B蘯｡n ﾄ疎ng d盻議h file PDF",
+            text="🤖 Bạn đang dịch file PDF",
             font=('Segoe UI', 14, 'bold'),
             bg=self.colors['white'], fg=self.colors['gray_dark']
         )
@@ -1489,17 +1830,16 @@ class MainWindow(tk.Tk):
         # Why AI Vision is better
         why_frame = tk.LabelFrame(
             main_frame,
-            text="東 T蘯｡i sao nﾃｪn dﾃｹng AI Vision?",
+            text="📊 Tại sao nên dùng AI Vision?",
             font=('Segoe UI', 10, 'bold'),
             bg=self.colors['white'], fg=self.colors['gray_dark'],
             padx=10, pady=10
         )
         why_frame.pack(fill=tk.X, pady=(0, 10))
         
-        why_text = """- PDF thuong rat kho dich chinh xac (bang bi vo, mat format, thieu noi dung)
-- AI Vision co the ho tro doc noi dung PDF dang anh hoac scan tot hon OCR thuong trong mot so truong hop
-- AI hieu ngu canh va co the giup dich thuat ngu ky thuat tot hon trong mot so tinh huong
-- Kha nang giu nguyen layout/format PDF chua duoc audit day du. Vui long kiem tra file dau ra truoc khi su dung chinh thuc."""
+        why_text = """- PDF thường rất khó dịch chính xác (bảng bị vỡ, mất format, thiếu nội dung).
+- AI Vision có thể hỗ trợ đọc PDF scan/ảnh tốt hơn OCR thường trong một số trường hợp. Tuy nhiên, khả năng giữ nguyên layout/format PDF chưa được audit đầy đủ. Vui lòng kiểm tra file đầu ra trước khi dùng chính thức.
+- AI hiểu ngữ cảnh và có thể giúp dịch thuật ngữ kỹ thuật tốt hơn trong một số tình huống."""
 
         tk.Label(
             why_frame, text=why_text,
@@ -1513,11 +1853,11 @@ class MainWindow(tk.Tk):
         
         if ai_configured:
             status_icon = "[OK]"
-            status_text = "API Gemini ﾄ妥｣ ﾄ柁ｰ盻｣c c蘯･u hﾃｬnh! B蘯｡n cﾃｳ th盻・s盻ｭ d盻･ng AI Vision ngay."
+            status_text = "API Gemini đã được cấu hình! Bạn có thể sử dụng AI Vision ngay."
             status_color = "green"
         else:
             status_icon = "[WARN]"
-            status_text = "Chﾆｰa c蘯･u hﾃｬnh API Gemini. Lﾃm theo hﾆｰ盻嬾g d蘯ｫn bﾃｪn dﾆｰ盻嬖 ﾄ黛ｻ・b蘯ｯt ﾄ黛ｺｧu."
+            status_text = "Chưa cấu hình API Gemini. Làm theo hướng dẫn bên dưới để bắt đầu."
             status_color = "orange"
         
         tk.Label(
@@ -1530,38 +1870,38 @@ class MainWindow(tk.Tk):
         if not ai_configured:
             guide_frame = tk.LabelFrame(
                 main_frame,
-                text="当 Hﾆｰ盻嬾g d蘯ｫn t盻ｫng bﾆｰ盻嫩 (CHI TI蘯ｾT)",
+                text="📖 Hướng dẫn từng bước (CHI TIẾT)",
                 font=('Segoe UI', 10, 'bold'),
                 bg=self.colors['white'], fg=self.colors['gray_dark'],
                 padx=10, pady=10
             )
             guide_frame.pack(fill=tk.X, pady=(0, 10))
             
-            steps_text = """Bﾆｯ盻咾 1: L蘯･y API Key t盻ｫ Google AI Studio (MI盻Н PHﾃ・
-   笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
-   1.1  Nh蘯･n nﾃｺt "迫 M盻・Google AI Studio" bﾃｪn dﾆｰ盻嬖
-   1.2  ﾄ斉ハg nh蘯ｭp b蘯ｱng tﾃi kho蘯｣n Google c盻ｧa b蘯｡n
-   1.3  Nh蘯･n nﾃｺt "Get API Key" (L蘯･y API Key)
-   1.4  Nh蘯･n "Create API key" (T蘯｡o API key m盻嬖)
-   1.5  Ch盻肱 m盻冲 d盻ｱ ﾃ｡n b蘯･t k盻ｳ ho蘯ｷc t蘯｡o m盻嬖
-   1.6  COPY mﾃ｣ API key (chu盻擁 dﾃi b蘯ｯt ﾄ黛ｺｧu b蘯ｱng "AIza...")
+            steps_text = """Bước 1: Lấy API Key từ Google AI Studio (MIỄN PHÍ)
+   ----------------------------------------------------------------------
+   1.1  Nhấn nút "🔗 Mở Google AI Studio" bên dưới
+   1.2  Đăng nhập bằng tài khoản Google của bạn
+   1.3  Nhấn nút "Get API Key" (Lấy API Key)
+   1.4  Nhấn "Create API key" (Tạo API key mới)
+   1.5  Chọn một dự án bất kỳ hoặc tạo mới
+   1.6  COPY mã API key (chuỗi dài bắt đầu bằng "AIza...")
 
-Bﾆｯ盻咾 2: C蘯･u hﾃｬnh trong 盻ｩng d盻･ng
-   笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
-   2.1  Quay l蘯｡i 盻ｩng d盻･ng nﾃy
-   2.2  Ch盻肱 tab "C蘯･u hﾃｬnh AI" (ho蘯ｷc nh蘯･n nﾃｺt bﾃｪn dﾆｰ盻嬖)
-   2.3  Dﾃ｡n API key vﾃo ﾃｴ "Thﾃｪm API Key"
-   2.4  Nh蘯･n nﾃｺt "Thﾃｪm Key" ﾄ黛ｻ・lﾆｰu
-   2.5  ﾄ静ｳng c盻ｭa s盻・c蘯･u hﾃｬnh
+Bước 2: Cấu hình trong ứng dụng
+   ----------------------------------------------------------------------
+   2.1  Quay lại ứng dụng này
+   2.2  Chọn tab "Cấu hình AI" (hoặc nhấn nút bên dưới)
+   2.3  Dán API key vào ô "Thêm API Key"
+   2.4  Nhấn nút "Thêm Key" để lưu
+   2.5  Đóng cửa sổ cấu hình
 
-Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
-   笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
-   3.1  Quay l蘯｡i tab "D盻議h File"
-   3.2  Tﾃｭch ch盻肱 "､・Dﾃｹng AI Vision cho PDF"
-   3.3  Ch盻肱 s盻・trang/batch (4 = ti蘯ｿt ki盻㍊ 75% request)
-   3.4  Nh蘯･n "D盻議h File ﾄ妥｣ ch盻肱"
+Bước 3: Sử dụng AI Vision
+   ----------------------------------------------------------------------
+   3.1  Quay lại tab "Dịch file"
+   3.2  Tích chọn "🤖 Dùng AI Vision cho PDF"
+   3.3  Chọn số trang/batch (4 = tiết kiệm 75% request)
+   3.4  Nhấn "Dịch File"
    
-庁 M蘯ｸO: B蘯｡n cﾃｳ th盻・thﾃｪm NHI盻U API key ﾄ黛ｻ・xoay vﾃｲng khi h蘯ｿt quota!"""
+💡 MẸO: Bạn có thể thêm NHIỀU API key để xoay vòng khi hết quota!"""
             
             steps_label = tk.Label(
                 guide_frame, text=steps_text,
@@ -1600,7 +1940,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         
         if not ai_configured:
             btn_ai_studio = tk.Button(
-                btn_row1, text="迫 M盻・Google AI Studio",
+                btn_row1, text="🔗 Mở Google AI Studio",
                 font=('Segoe UI', 10, 'bold'),
                 bg="#4285F4", fg="white",
                 command=open_ai_studio,
@@ -1610,7 +1950,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
             btn_ai_studio.pack(side=tk.LEFT, padx=(0, 10))
             
             btn_settings = tk.Button(
-                btn_row1, text="笞呻ｸ・M盻・C蘯･u hﾃｬnh AI",
+                btn_row1, text="⚙️ Mở Cấu hình AI",
                 font=('Segoe UI', 10),
                 bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
                 command=open_ai_settings,
@@ -1625,7 +1965,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         
         if ai_configured:
             btn_use_ai = tk.Button(
-                btn_row2, text="笨・B蘯ｭt AI Vision vﾃ D盻議h",
+                btn_row2, text="🚀 Bật AI Vision và Dịch",
                 font=('Segoe UI', 11, 'bold'),
                 bg="#34A853", fg="white",
                 command=use_ai_vision,
@@ -1636,7 +1976,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         
         btn_continue = tk.Button(
             btn_row2, 
-            text="Ti蘯ｿp t盻･c d盻議h thﾆｰ盻拵g" if not ai_configured else "D盻議h thﾆｰ盻拵g (khﾃｴng dﾃｹng AI)",
+            text="Tiếp tục dịch thường" if not ai_configured else "Dịch thường (không dùng AI)",
             font=('Segoe UI', 10),
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             command=use_normal_translation,  # Changed: now properly sets choice to False
@@ -1650,10 +1990,10 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         dont_show_frame.pack(fill=tk.X, pady=(15, 0))
         
         # Note about request limits
-        note_text = """投 Lﾆｰu ﾃｽ v盻・gi盻嬖 h蘯｡n API (mi盻・ phﾃｭ):
-窶｢ Gemini 2.5 Flash: ~1500 requests/ngﾃy (RPD)
-窶｢ G盻冪 4 trang/batch = ti蘯ｿt ki盻㍊ 75% requests
-窶｢ Thﾃｪm nhi盻「 API key ﾄ黛ｻ・tﾄハg gi盻嬖 h蘯｡n"""
+        note_text = """📊 Lưu ý về giới hạn API (miễn phí):
+• Gemini 2.5 Flash: ~1500 requests/ngày (RPD)
+• Gửi 4 trang/batch = tiết kiệm 75% requests
+• Thêm nhiều API key để tăng giới hạn"""
         
         tk.Label(
             dont_show_frame, text=note_text,
@@ -1712,25 +2052,25 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         title_row.pack(fill=tk.X, pady=(0, 10))
         
         tk.Label(
-            title_row, text="搭 Danh sach cac translation jobs", 
+            title_row, text="📋 Danh sách các công việc dịch thuật (Jobs)", 
             font=('Segoe UI', 12, 'bold'), bg=self.colors['gray_light'], fg=self.colors['navy']
         ).pack(side=tk.LEFT)
         
         create_styled_button(
-            title_row, text="Refresh", command=self._refresh_jobs_list, colors=self.colors
+            title_row, text="Làm mới", command=self._refresh_jobs_list, colors=self.colors
         ).pack(side=tk.RIGHT)
 
         # Treeview for jobs list
         columns = ("job_id", "job_type", "status", "progress", "created_at")
         self.jobs_tree = ttk.Treeview(main_frame, columns=columns, show="headings", height=8)
-        self.jobs_tree.heading("job_id", text="Job ID")
-        self.jobs_tree.heading("job_type", text="Loai")
-        self.jobs_tree.heading("status", text="Trang thai")
-        self.jobs_tree.heading("progress", text="Tien do (%)")
-        self.jobs_tree.heading("created_at", text="Ngay tao")
+        self.jobs_tree.heading("job_id", text="Mã công việc (Job ID)")
+        self.jobs_tree.heading("job_type", text="Loại công việc")
+        self.jobs_tree.heading("status", text="Trạng thái")
+        self.jobs_tree.heading("progress", text="Tiến độ (%)")
+        self.jobs_tree.heading("created_at", text="Ngày tạo")
         
         self.jobs_tree.column("job_id", width=180)
-        self.jobs_tree.column("job_type", width=80)
+        self.jobs_tree.column("job_type", width=100)
         self.jobs_tree.column("status", width=100)
         self.jobs_tree.column("progress", width=100, anchor=tk.CENTER)
         self.jobs_tree.column("created_at", width=160)
@@ -1738,7 +2078,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
 
         # Detail Panel (LabelFrame)
         self.job_detail_frame = tk.LabelFrame(
-            main_frame, text="剥 Chi tiet Job duoc chon", 
+            main_frame, text="🔍 Chi tiết công việc được chọn", 
             bg=self.colors['gray_light'], fg=self.colors['navy'], font=('Segoe UI', 10, 'bold'),
             padx=10, pady=10
         )
@@ -1756,21 +2096,21 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         action_row.pack(fill=tk.X)
 
         create_styled_button(
-            action_row, text="Open Folder (Thu muc)", command=self._open_selected_job_folder, colors=self.colors
+            action_row, text="Mở thư mục công việc", command=self._open_selected_job_folder, colors=self.colors
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         create_styled_button(
-            action_row, text="View Errors (Xem cau loi)", command=self._view_selected_job_errors, colors=self.colors
+            action_row, text="Xem lỗi phân đoạn", command=self._view_selected_job_errors, colors=self.colors
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         resume_btn = create_styled_button(
-            action_row, text="Resume Job (Disabled)", command=self._resume_selected_job, colors=self.colors
+            action_row, text="Khôi phục công việc (Đang phát triển)", command=self._resume_selected_job, colors=self.colors
         )
         resume_btn.config(state=tk.DISABLED)
         resume_btn.pack(side=tk.LEFT)
         
         tk.Label(
-            action_row, text="* Resume duoc danh rieng cho cac phien ban tuong lai.", 
+            action_row, text="* Tính năng khôi phục (Resume) được dành riêng cho các phiên bản tương lai.", 
             font=('Segoe UI', 8, 'italic'), bg=self.colors['gray_light'], fg=self.colors['gray_medium']
         ).pack(side=tk.LEFT, padx=10)
 
@@ -1820,11 +2160,11 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
             
             detail_info = (
                 f"Job ID: {job_id}\n"
-                f"Ngon ngu: {job.get('source_lang', 'auto')} -> {job.get('target_lang', 'vi')}  |  Strategy: {job.get('strategy', 'waterfall')}\n"
-                f"Tien do: {progress.get('percent', 0.0)}% ({progress.get('completed_segments', 0)} / {progress.get('total_segments', 0)} segments)  |  Loi: {progress.get('failed_segments', 0)} segments\n"
-                f"File dang dich: {progress.get('current_file', 'None')}\n"
-                f"Sheet/Tab dang dich: {progress.get('current_sheet', 'None')}\n"
-                f"Ghi chu: {job.get('notes', '')}"
+                f"Ngôn ngữ: {job.get('source_lang', 'auto')} -> {job.get('target_lang', 'vi')}  |  Chiến lược: {job.get('strategy', 'waterfall')}\n"
+                f"Tiến độ: {progress.get('percent', 0.0)}% ({progress.get('completed_segments', 0)} / {progress.get('total_segments', 0)} phân đoạn)  |  Lỗi: {progress.get('failed_segments', 0)} phân đoạn\n"
+                f"File đang dịch: {progress.get('current_file', 'None')}\n"
+                f"Sheet/Tab đang dịch: {progress.get('current_sheet', 'None')}\n"
+                f"Ghi chú: {job.get('notes', '')}"
             )
             
             self.job_detail_text.config(state=tk.NORMAL)
@@ -1837,7 +2177,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
     def _open_selected_job_folder(self):
         selection = self.jobs_tree.selection()
         if not selection:
-            messagebox.showwarning("Canh bao", "Vui long chon mot Job tu danh sach!")
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một Job từ danh sách!")
             return
             
         job_id = selection[0]
@@ -1846,26 +2186,26 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
             if job_dir.exists():
                 os.startfile(str(job_dir))
             else:
-                messagebox.showerror("Loi", "Thu muc luu tru cua Job nay khong ton tai.")
+                messagebox.showerror("Lỗi", "Thư mục lưu trữ của Job này không tồn tại.")
         except Exception as e:
-            messagebox.showerror("Loi", f"Khong the mo thu muc: {str(e)}")
+            messagebox.showerror("Lỗi", f"Không thể mở thư mục: {str(e)}")
 
     def _view_selected_job_errors(self):
         selection = self.jobs_tree.selection()
         if not selection:
-            messagebox.showwarning("Canh bao", "Vui long chon mot Job tu danh sach!")
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một Job từ danh sách!")
             return
             
         job_id = selection[0]
         try:
             failed_items = self.job_manager.load_failed_items(job_id)
             if not failed_items:
-                messagebox.showinfo("Thong tin", "Khong co segments bi loi nao duoc ghi nhan cho Job nay.")
+                messagebox.showinfo("Thông tin", "Không có phân đoạn bị lỗi nào được ghi nhận cho Job này.")
                 return
                 
             # Create sub window
             err_win = tk.Toplevel(self)
-            err_win.title(f"笶・Danh sach segments bi loi - Job: {job_id}")
+            err_win.title(f"⚠️ Danh sách phân đoạn bị lỗi - Job: {job_id}")
             err_win.geometry("750x450")
             err_win.transient(self)
             err_win.grab_set()
@@ -1900,7 +2240,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
                     )
                 )
         except Exception as e:
-            messagebox.showerror("Loi", f"Khong the tai failed items: {str(e)}")
+            messagebox.showerror("Lỗi", f"Không thể tải các phân đoạn lỗi: {str(e)}")
 
     def _resume_selected_job(self):
         # Reserved command placeholder
@@ -1915,7 +2255,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         top_row = tk.Frame(main_frame, bg=self.colors['gray_light'])
         top_row.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(top_row, text="Ngon ngu nguon:", bg=self.colors['gray_light']).pack(side=tk.LEFT)
+        tk.Label(top_row, text="Ngôn ngữ nguồn:", bg=self.colors['gray_light']).pack(side=tk.LEFT)
         self.glossary_filter_src = tk.StringVar(value="auto")
         glossary_filter_src_combo = ttk.Combobox(
             top_row, textvariable=self.glossary_filter_src, 
@@ -1923,7 +2263,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         )
         glossary_filter_src_combo.pack(side=tk.LEFT, padx=5)
 
-        tk.Label(top_row, text="Ngon ngu dich:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(top_row, text="Ngôn ngữ đích:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(10, 0))
         self.glossary_filter_tgt = tk.StringVar(value="vi")
         glossary_filter_tgt_combo = ttk.Combobox(
             top_row, textvariable=self.glossary_filter_tgt, 
@@ -1932,27 +2272,27 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         glossary_filter_tgt_combo.pack(side=tk.LEFT, padx=5)
 
         create_styled_button(
-            top_row, text="Loc", command=self._refresh_glossary_list, colors=self.colors
+            top_row, text="Lọc", command=self._refresh_glossary_list, colors=self.colors
         ).pack(side=tk.LEFT, padx=10)
 
         create_styled_button(
-            top_row, text="Import CSV", command=self._import_glossary_csv, colors=self.colors
+            top_row, text="Nhập từ CSV (Import)", command=self._import_glossary_csv, colors=self.colors
         ).pack(side=tk.RIGHT, padx=5)
 
         create_styled_button(
-            top_row, text="Export CSV", command=self._export_glossary_csv, colors=self.colors
+            top_row, text="Xuất ra CSV (Export)", command=self._export_glossary_csv, colors=self.colors
         ).pack(side=tk.RIGHT, padx=5)
 
         # Treeview for glossary
         columns = ("id", "source_term", "target_term", "source_lang", "target_lang", "domain", "note")
         self.glossary_tree = ttk.Treeview(main_frame, columns=columns, show="headings", height=8)
         self.glossary_tree.heading("id", text="ID")
-        self.glossary_tree.heading("source_term", text="Tu goc")
-        self.glossary_tree.heading("target_term", text="Tu dich")
-        self.glossary_tree.heading("source_lang", text="Lang goc")
-        self.glossary_tree.heading("target_lang", text="Lang dich")
-        self.glossary_tree.heading("domain", text="Domain")
-        self.glossary_tree.heading("note", text="Ghi chu")
+        self.glossary_tree.heading("source_term", text="Thuật ngữ gốc")
+        self.glossary_tree.heading("target_term", text="Thuật ngữ dịch")
+        self.glossary_tree.heading("source_lang", text="Mã nguồn")
+        self.glossary_tree.heading("target_lang", text="Mã đích")
+        self.glossary_tree.heading("domain", text="Chuyên ngành")
+        self.glossary_tree.heading("note", text="Ghi chú")
         
         self.glossary_tree.column("id", width=40, anchor=tk.CENTER)
         self.glossary_tree.column("source_term", width=150)
@@ -1965,7 +2305,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
 
         # Add Term Form (LabelFrame)
         add_frame = tk.LabelFrame(
-            main_frame, text="筐・Them thuat ngu moi", 
+            main_frame, text="➕ Thêm thuật ngữ mới", 
             bg=self.colors['gray_light'], fg=self.colors['navy'], font=('Segoe UI', 10, 'bold'),
             padx=10, pady=10
         )
@@ -1974,17 +2314,17 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         # Form fields
         f_row1 = tk.Frame(add_frame, bg=self.colors['gray_light'])
         f_row1.pack(fill=tk.X, pady=2)
-        tk.Label(f_row1, text="Tu goc *:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
+        tk.Label(f_row1, text="Thuật ngữ gốc *:", width=15, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
         self.glossary_add_src_term = tk.StringVar()
         tk.Entry(f_row1, textvariable=self.glossary_add_src_term, bg=self.colors['white'], width=30).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(f_row1, text="Tu dich *:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, padx=(20, 0))
+        tk.Label(f_row1, text="Thuật ngữ dịch *:", width=15, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, padx=(20, 0))
         self.glossary_add_tgt_term = tk.StringVar()
         tk.Entry(f_row1, textvariable=self.glossary_add_tgt_term, bg=self.colors['white'], width=30).pack(side=tk.LEFT, padx=5)
 
         f_row2 = tk.Frame(add_frame, bg=self.colors['gray_light'])
         f_row2.pack(fill=tk.X, pady=2)
-        tk.Label(f_row2, text="Lang goc *:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
+        tk.Label(f_row2, text="Ngôn ngữ nguồn *:", width=15, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
         self.glossary_add_src_lang = tk.StringVar(value="en")
         glossary_add_src_combo = ttk.Combobox(
             f_row2, textvariable=self.glossary_add_src_lang, 
@@ -1992,7 +2332,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         )
         glossary_add_src_combo.pack(side=tk.LEFT, padx=5)
 
-        tk.Label(f_row2, text="Lang dich *:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, padx=(20, 0))
+        tk.Label(f_row2, text="Ngôn ngữ đích *:", width=15, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, padx=(20, 0))
         self.glossary_add_tgt_lang = tk.StringVar(value="vi")
         glossary_add_tgt_combo = ttk.Combobox(
             f_row2, textvariable=self.glossary_add_tgt_lang, 
@@ -2002,11 +2342,11 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
 
         f_row3 = tk.Frame(add_frame, bg=self.colors['gray_light'])
         f_row3.pack(fill=tk.X, pady=2)
-        tk.Label(f_row3, text="Domain:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
+        tk.Label(f_row3, text="Chuyên ngành:", width=15, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT)
         self.glossary_add_domain = tk.StringVar()
         tk.Entry(f_row3, textvariable=self.glossary_add_domain, bg=self.colors['white'], width=20).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(f_row3, text="Ghi chu:", width=12, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, padx=(20, 0))
+        tk.Label(f_row3, text="Ghi chú:", width=15, bg=self.colors['gray_light'], anchor=tk.W).pack(side=tk.LEFT, padx=(20, 0))
         self.glossary_add_note = tk.StringVar()
         tk.Entry(f_row3, textvariable=self.glossary_add_note, bg=self.colors['white'], width=35).pack(side=tk.LEFT, padx=5)
 
@@ -2015,11 +2355,11 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         btn_form_row.pack(fill=tk.X, pady=5)
 
         create_styled_button(
-            btn_form_row, text="筐・Them thuat ngu", command=self._add_glossary_term, colors=self.colors
+            btn_form_row, text="➕ Thêm thuật ngữ", command=self._add_glossary_term, colors=self.colors
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         create_styled_button(
-            btn_form_row, text="卵・・Xoa thuat ngu da chon", command=self._delete_glossary_term, colors=self.colors
+            btn_form_row, text="🗑️ Xóa thuật ngữ đã chọn", command=self._delete_glossary_term, colors=self.colors
         ).pack(side=tk.LEFT)
 
         self._refresh_glossary_list()
@@ -2131,11 +2471,11 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         filter_row = tk.Frame(main_frame, bg=self.colors['gray_light'])
         filter_row.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(filter_row, text="Tim kiem:", bg=self.colors['gray_light']).pack(side=tk.LEFT)
+        tk.Label(filter_row, text="Tìm kiếm:", bg=self.colors['gray_light']).pack(side=tk.LEFT)
         self.tm_search_query = tk.StringVar()
         tk.Entry(filter_row, textvariable=self.tm_search_query, width=25, bg=self.colors['white']).pack(side=tk.LEFT, padx=5)
 
-        tk.Label(filter_row, text="Nguon:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(filter_row, text="Ngôn ngữ nguồn:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(10, 0))
         self.tm_filter_src = tk.StringVar(value="auto")
         tm_filter_src_combo = ttk.Combobox(
             filter_row, textvariable=self.tm_filter_src, 
@@ -2143,7 +2483,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         )
         tm_filter_src_combo.pack(side=tk.LEFT, padx=5)
 
-        tk.Label(filter_row, text="Dich:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(filter_row, text="Ngôn ngữ đích:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(10, 0))
         self.tm_filter_tgt = tk.StringVar(value="vi")
         tm_filter_tgt_combo = ttk.Combobox(
             filter_row, textvariable=self.tm_filter_tgt, 
@@ -2152,21 +2492,21 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         tm_filter_tgt_combo.pack(side=tk.LEFT, padx=5)
 
         create_styled_button(
-            filter_row, text="Tim kiem", command=self._refresh_tm_list, colors=self.colors
+            filter_row, text="Tìm kiếm", command=self._refresh_tm_list, colors=self.colors
         ).pack(side=tk.LEFT, padx=10)
 
         # Treeview for TM
         columns = ("id", "source_lang", "target_lang", "source_text", "translated_text", "provider", "model", "hit_count", "updated_at")
         self.tm_tree = ttk.Treeview(main_frame, columns=columns, show="headings", height=12)
         self.tm_tree.heading("id", text="ID")
-        self.tm_tree.heading("source_lang", text="Lang Nguon")
-        self.tm_tree.heading("target_lang", text="Lang Dich")
-        self.tm_tree.heading("source_text", text="Chuoi goc (Preview)")
-        self.tm_tree.heading("translated_text", text="Chuoi dich (Preview)")
-        self.tm_tree.heading("provider", text="Provider")
-        self.tm_tree.heading("model", text="Model")
-        self.tm_tree.heading("hit_count", text="Hits")
-        self.tm_tree.heading("updated_at", text="Cap nhat")
+        self.tm_tree.heading("source_lang", text="Mã nguồn")
+        self.tm_tree.heading("target_lang", text="Mã đích")
+        self.tm_tree.heading("source_text", text="Văn bản gốc (Xem trước)")
+        self.tm_tree.heading("translated_text", text="Bản dịch (Xem trước)")
+        self.tm_tree.heading("provider", text="Nhà cung cấp")
+        self.tm_tree.heading("model", text="Mô hình")
+        self.tm_tree.heading("hit_count", text="Số lần khớp")
+        self.tm_tree.heading("updated_at", text="Cập nhật")
 
         self.tm_tree.column("id", width=40, anchor=tk.CENTER)
         self.tm_tree.column("source_lang", width=70, anchor=tk.CENTER)
@@ -2175,7 +2515,7 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         self.tm_tree.column("translated_text", width=180)
         self.tm_tree.column("provider", width=80)
         self.tm_tree.column("model", width=90)
-        self.tm_tree.column("hit_count", width=40, anchor=tk.CENTER)
+        self.tm_tree.column("hit_count", width=80, anchor=tk.CENTER)
         self.tm_tree.column("updated_at", width=100)
         self.tm_tree.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
@@ -2184,11 +2524,11 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
         action_row.pack(fill=tk.X)
 
         create_styled_button(
-            action_row, text="Refresh", command=self._refresh_tm_list, colors=self.colors
+            action_row, text="Làm mới", command=self._refresh_tm_list, colors=self.colors
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         create_styled_button(
-            action_row, text="Xoa segment da chon", command=self._delete_tm_segment, colors=self.colors
+            action_row, text="Xóa bản ghi đã chọn", command=self._delete_tm_segment, colors=self.colors
         ).pack(side=tk.LEFT)
 
         self._refresh_tm_list()
@@ -2246,64 +2586,6 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
             except Exception as e:
                 messagebox.showerror("Loi", f"Loi khi xoa segment: {str(e)}")
 
-    def setup_router_tab(self):
-        """Setup the Provider Router tab."""
-        main_frame = tk.Frame(self.tab_router, bg=self.colors['gray_light'], padx=15, pady=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Status and Actions row
-        status_row = tk.Frame(main_frame, bg=self.colors['gray_light'])
-        status_row.pack(fill=tk.X, pady=(0, 10))
-
-        self.router_status_label = tk.Label(
-            status_row, text="Smart Router Status: CHECKING...", 
-            font=('Segoe UI', 11, 'bold'), bg=self.colors['gray_light']
-        )
-        self.router_status_label.pack(side=tk.LEFT)
-
-        create_styled_button(
-            status_row, text="Refresh Snapshot (Health)", command=self._refresh_router_health, colors=self.colors
-        ).pack(side=tk.RIGHT, padx=5)
-
-        create_styled_button(
-            status_row, text="Reset Cooldowns (Khoi phuc)", command=self._reset_router_cooldowns, colors=self.colors
-        ).pack(side=tk.RIGHT, padx=5)
-
-        # Health Snapshot Table (Treeview)
-        snapshot_frame = tk.LabelFrame(
-            main_frame, text="投 Dynamic Health Snapshot of AI Providers / Models", 
-            bg=self.colors['gray_light'], fg=self.colors['navy'], font=('Segoe UI', 10, 'bold'),
-            padx=10, pady=10
-        )
-        snapshot_frame.pack(fill=tk.BOTH, expand=True)
-
-        columns = ("provider", "model", "available", "cooldown", "failures", "last_error", "latency")
-        self.router_tree = ttk.Treeview(snapshot_frame, columns=columns, show="headings", height=12)
-        self.router_tree.heading("provider", text="Provider")
-        self.router_tree.heading("model", text="Model ID")
-        self.router_tree.heading("available", text="Kha dung")
-        self.router_tree.heading("cooldown", text="Cooldown")
-        self.router_tree.heading("failures", text="Loi lien tiep")
-        self.router_tree.heading("last_error", text="Last error type / sanitized error")
-        self.router_tree.heading("latency", text="Latency (ms)")
-
-        self.router_tree.column("provider", width=120)
-        self.router_tree.column("model", width=160)
-        self.router_tree.column("available", width=70, anchor=tk.CENTER)
-        self.router_tree.column("cooldown", width=110)
-        self.router_tree.column("failures", width=80, anchor=tk.CENTER)
-        self.router_tree.column("last_error", width=130)
-        self.router_tree.column("latency", width=90, anchor=tk.CENTER)
-        self.router_tree.pack(fill=tk.BOTH, expand=True)
-
-        # Bottom warning
-        tk.Label(
-            main_frame, text="* Credentials editing is reserved and managed safely in 'Cau hinh AI' dialog.", 
-            font=('Segoe UI', 8, 'italic'), bg=self.colors['gray_light'], fg=self.colors['gray_medium']
-        ).pack(anchor=tk.W, pady=(5, 0))
-
-        self._refresh_router_health()
-
     def _sanitize_router_error_text(self, value: str) -> str:
         """Return a redacted, truncated provider-router error string for UI display."""
         sanitized = str(value or "").strip()
@@ -2324,12 +2606,11 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
 
     def _refresh_router_health(self):
         """Load health snapshot of providers from TranslationService's ProviderRouter."""
-        # Update status indicator
         router_enabled = self.config_manager.use_provider_router
         if router_enabled:
-            self.router_status_label.config(text="Smart Router Status: 泙 ACTIVE (AI Waterfall Enabled)", fg="green")
+            self.lbl_router_status.config(text="Trạng thái Smart Router: 🟢 HOẠT ĐỘNG (Tự động chọn AI tốt nhất)", fg="green")
         else:
-            self.router_status_label.config(text="Smart Router Status: 閥 DISABLED (Using Legacy Strategy)", fg="red")
+            self.lbl_router_status.config(text="Trạng thái Smart Router: 🔴 TẮT (Sử dụng cấu hình chế độ dịch cũ)", fg="red")
 
         for item in self.router_tree.get_children():
             self.router_tree.delete(item)
@@ -2345,23 +2626,34 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
                 provider = entry.get("provider_name", "")
                 model = entry.get("model", "")
                 
-                is_available = "泙 Yes" if entry.get("is_available", True) else "閥 No"
+                is_available = "🟢 Khả dụng" if entry.get("is_available", True) else "🔴 Không khả dụng"
                 
                 cooldown_val = entry.get("cooldown_until", 0.0)
-                cooldown = "None"
+                cooldown = "Không có"
                 if cooldown_val > 0:
                     cooldown_remaining = max(0, int(cooldown_val - time.time()))
                     if cooldown_remaining > 0:
-                        cooldown = f"Wait {cooldown_remaining}s"
-                        is_available = "泯 Cooldown"
+                        cooldown = f"Chờ {cooldown_remaining} giây"
+                        is_available = "🟡 Đang hồi chiêu"
                 
                 failures = entry.get("consecutive_failures", 0)
                 last_error = self._sanitize_router_error_text(entry.get("last_error_type", ""))
                 latency = entry.get("last_latency_ms", 0)
 
+                # Format provider display name
+                provider_display_names = {
+                    "gemini": "Gemini AI",
+                    "chatanywhere": "ChatAnyWhere",
+                    "deepseek": "DeepSeek",
+                    "nvidia_nim": "NVIDIA NIM",
+                    "openai_compatible": "OpenAI tùy chỉnh",
+                    "google": "Google Translate"
+                }
+                display_prov = provider_display_names.get(provider.lower(), provider)
+
                 self.router_tree.insert(
                     "", tk.END,
-                    values=(provider, model, is_available, cooldown, failures, last_error, latency)
+                    values=(display_prov, model, is_available, cooldown, failures, last_error, f"{latency} ms" if latency else "-")
                 )
         except Exception as e:
             logger.error(f"Error loading router health snapshot in UI: {e}")
@@ -2371,10 +2663,10 @@ Bﾆｯ盻咾 3: S盻ｭ d盻･ng AI Vision
             from translation_app.core.ai_service import get_ai_service
             router = self.translation_service._get_provider_router(get_ai_service())
             router.reset_cooldowns()
-            messagebox.showinfo("Thanh cong", "Da khoi phuc toan bo Providers cooldowns thanh cong!")
+            messagebox.showinfo("Thành công", "Đã khôi phục toàn bộ trạng thái hoạt động của các AI Providers thành công!")
             self._refresh_router_health()
         except Exception as e:
-            messagebox.showerror("Loi", f"Khong the reset cooldowns: {str(e)}")
+            messagebox.showerror("Lỗi", f"Không thể khôi phục trạng thái: {str(e)}")
 
     def on_closing(self):
         """Handle window closing"""
