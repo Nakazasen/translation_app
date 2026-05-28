@@ -145,10 +145,13 @@ def get_default_provider_model_catalog() -> dict[str, Any]:
 
 def _normalize_catalog_capabilities(value: Any) -> dict[str, bool]:
     if not isinstance(value, dict):
-        return {"text": True, "vision": False}
+        return {"text": True, "vision": False, "embedding": False, "rerank": False, "unknown": False}
     return {
         "text": bool(value.get("text", True)),
         "vision": bool(value.get("vision", False)),
+        "embedding": bool(value.get("embedding", False)),
+        "rerank": bool(value.get("rerank", False)),
+        "unknown": bool(value.get("unknown", False)),
     }
 
 
@@ -161,8 +164,14 @@ def _normalize_model_catalog_entry(value: Any, default_source: str = "user") -> 
             "id": model_id,
             "label": model_id,
             "enabled": True,
-            "source": default_source,
-            "capabilities": {"text": True, "vision": False},
+            "source": "seed" if default_source in ("default", "seed") else default_source,
+            "visibility": "unverified",
+            "capabilities": {"text": True, "vision": False, "embedding": False, "rerank": False, "unknown": False},
+            "discovered_at": None,
+            "last_validated_at": None,
+            "provider": None,
+            "display_name": model_id,
+            "raw_metadata": None,
         }
 
     if not isinstance(value, dict):
@@ -172,14 +181,25 @@ def _normalize_model_catalog_entry(value: Any, default_source: str = "user") -> 
     if not model_id:
         return None
 
-    label = str(value.get("label") or model_id).strip() or model_id
+    label = str(value.get("label") or value.get("display_name") or model_id).strip() or model_id
     source = str(value.get("source") or default_source).strip() or default_source
+    if source in ("default", "seed"):
+        source = "seed"
+
+    visibility = str(value.get("visibility") or "unverified").strip()
+
     return {
         "id": model_id,
         "label": label,
         "enabled": bool(value.get("enabled", True)),
         "source": source,
+        "visibility": visibility,
         "capabilities": _normalize_catalog_capabilities(value.get("capabilities")),
+        "discovered_at": value.get("discovered_at"),
+        "last_validated_at": value.get("last_validated_at"),
+        "provider": value.get("provider"),
+        "display_name": str(value.get("display_name") or label).strip() or label,
+        "raw_metadata": value.get("raw_metadata"),
     }
 
 
@@ -203,11 +223,47 @@ def _merge_model_catalog_lists(base: list[dict[str, Any]], incoming: list[dict[s
             current["label"] = incoming_label or current["label"]
         elif incoming_label and incoming_label != model_id:
             current["label"] = incoming_label
+
         current["enabled"] = bool(normalized.get("enabled", current["enabled"]))
-        current["source"] = normalized.get("source") or current["source"]
-        current["capabilities"] = _normalize_catalog_capabilities(
-            normalized.get("capabilities") or current.get("capabilities")
-        )
+
+        # Merge source based on priority: user > api_discovered > docs_known > seed / legacy
+        src_priority = {"user": 4, "api_discovered": 3, "docs_known": 2, "seed": 1, "legacy": 1}
+        curr_src = current.get("source", "seed")
+        in_src = normalized.get("source", "seed")
+        if src_priority.get(in_src, 0) >= src_priority.get(curr_src, 0):
+            current["source"] = in_src
+
+        # Merge visibility: live_validated > current_key_visible > unverified > unavailable
+        vis_priority = {"live_validated": 4, "current_key_visible": 3, "unverified": 2, "unavailable": 1}
+        curr_vis = current.get("visibility", "unverified")
+        in_vis = normalized.get("visibility", "unverified")
+        if vis_priority.get(in_vis, 0) >= vis_priority.get(curr_vis, 0):
+            current["visibility"] = in_vis
+
+        # Merge capabilities
+        curr_caps = current.get("capabilities") or {}
+        in_caps = normalized.get("capabilities") or {}
+        current["capabilities"] = {
+            "text": bool(curr_caps.get("text", True) or in_caps.get("text", True)),
+            "vision": bool(curr_caps.get("vision", False) or in_caps.get("vision", False)),
+            "embedding": bool(curr_caps.get("embedding", False) or in_caps.get("embedding", False)),
+            "rerank": bool(curr_caps.get("rerank", False) or in_caps.get("rerank", False)),
+            "unknown": bool(curr_caps.get("unknown", False) or in_caps.get("unknown", False)),
+        }
+
+        # Keep timestamps if available
+        if normalized.get("discovered_at"):
+            current["discovered_at"] = normalized["discovered_at"]
+        if normalized.get("last_validated_at"):
+            current["last_validated_at"] = normalized["last_validated_at"]
+
+        # Keep other fields
+        if normalized.get("provider"):
+            current["provider"] = normalized["provider"]
+        if normalized.get("display_name"):
+            current["display_name"] = normalized["display_name"]
+        if normalized.get("raw_metadata"):
+            current["raw_metadata"] = normalized["raw_metadata"]
 
     return [merged[model_id] for model_id in order]
 
@@ -1076,6 +1132,7 @@ class AIConfigManager:
         return self.get_provider_model_catalog_public()
 
     def refresh_provider_models(self, provider_name: str) -> list[str]:
+        from datetime import datetime
         provider_name = str(provider_name or "").strip().lower()
         providers = self.providers_config
         provider_cfg = providers.get(provider_name, {})
@@ -1114,28 +1171,87 @@ class AIConfigManager:
         if not isinstance(data, list):
             raise RuntimeError(f"Model refresh failed for {provider_name}: unsupported /models response.")
 
-        discovered: list[str] = []
+        discovered_records = []
+        now_iso = datetime.now().isoformat()
+
         for item in data:
             if isinstance(item, dict):
                 model_id = str(item.get("id") or item.get("model") or "").strip()
+                raw_meta = {k: v for k, v in item.items() if k not in ("api_key", "secret", "token")}
             else:
                 model_id = str(item or "").strip()
+                raw_meta = {}
+
             if not model_id:
                 continue
-            discovered.append(model_id)
-            self.add_provider_model(provider_name, model_id, source="probed")
 
-        if not discovered:
+            if provider_name == "nvidia_nim":
+                model_lower = model_id.lower()
+                # Block contaminated prefixes/namespaces
+                if model_lower.startswith(("models/gemini", "gemini-", "gpt-", "claude-")):
+                    continue
+                if model_id in ("deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"):
+                    continue
+
+            is_vision = any(kw in model_id.lower() for kw in ("vision", "vl", "multimodal", "gui"))
+            is_embedding = "embed" in model_id.lower()
+            is_rerank = "rerank" in model_id.lower()
+
+            record = {
+                "id": model_id,
+                "label": model_id,
+                "enabled": True,
+                "source": "api_discovered",
+                "visibility": "current_key_visible",
+                "capabilities": {
+                    "text": not (is_embedding or is_rerank),
+                    "vision": is_vision,
+                    "embedding": is_embedding,
+                    "rerank": is_rerank,
+                    "unknown": False
+                },
+                "discovered_at": now_iso,
+                "last_validated_at": now_iso,
+                "provider": provider_name,
+                "display_name": model_id,
+                "raw_metadata": raw_meta
+            }
+            discovered_records.append(record)
+
+        if not discovered_records:
             raise RuntimeError(f"Model refresh failed for {provider_name}: no models returned.")
 
         current_catalog = self.provider_model_catalog
-        provider_entry = current_catalog.get("providers", {}).get(provider_name, {})
-        if not provider_entry.get("default_model") and discovered:
-            provider_entry["default_model"] = discovered[0]
-            self.provider_model_catalog = current_catalog
-            self._sync_provider_catalog_to_legacy_fields(provider_name)
+        providers_sec = current_catalog.setdefault("providers", {})
+        entry = providers_sec.setdefault(provider_name, {"default_model": "", "models": []})
 
-        return discovered
+        existing_models = entry.get("models", [])
+        merged_models = _merge_model_catalog_lists(existing_models, discovered_records)
+
+        # Mark previous api_discovered models that are not returned as unavailable
+        discovered_ids = {r["id"] for r in discovered_records}
+        for m in merged_models:
+            if m["id"] not in discovered_ids:
+                if m.get("source") == "api_discovered":
+                    m["visibility"] = "unavailable"
+                else:
+                    m["visibility"] = "unverified"
+
+        entry["models"] = merged_models
+
+        # Set or preserve default model
+        default_model = entry.get("default_model", "")
+        if default_model and not any(m["id"] == default_model and m.get("enabled", True) for m in merged_models):
+            enabled_models = [m["id"] for m in merged_models if m.get("enabled", True)]
+            entry["default_model"] = enabled_models[0] if enabled_models else ""
+        elif not default_model:
+            enabled_models = [m["id"] for m in merged_models if m.get("enabled", True)]
+            entry["default_model"] = enabled_models[0] if enabled_models else ""
+
+        self.provider_model_catalog = current_catalog
+        self._sync_provider_catalog_to_legacy_fields(provider_name)
+
+        return [r["id"] for r in discovered_records]
 
     def update_provider_enabled(self, provider_name: str, enabled: bool):
         """Update enabled state of a provider."""
