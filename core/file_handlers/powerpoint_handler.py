@@ -15,7 +15,7 @@ from translation_app.utils.logger import logger
 class PowerPointHandler:
     """Handler for PowerPoint file translation."""
 
-    _URL_RE = re.compile(r"^(https?://|www\.)", re.IGNORECASE)
+    _URL_RE = re.compile(r"^(?:https?://|www\.)\S+$", re.IGNORECASE)
     _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     _FILE_PATH_RE = re.compile(r"^(?:[A-Za-z]:\\|\\\\|/)[^\r\n]+$")
     _FIELD_HINT_RE = re.compile(r"\b(?:HYPERLINK|MERGEFIELD|PAGE|NUMPAGES|TOC)\b", re.IGNORECASE)
