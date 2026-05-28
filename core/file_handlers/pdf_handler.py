@@ -23,13 +23,18 @@ from translation_app.core.file_handlers.pdf_model import PDFBlockModel, build_pd
 from translation_app.core.file_handlers.pdf_protection import (
     apply_protected_flags,
     detect_protected_regions,
-    get_translatable_blocks,
     model_to_protection_summary,
 )
 from translation_app.core.file_handlers.pdf_qa_report import (
     PDFQAReport,
     build_pdf_qa_report,
     report_to_public_dict,
+)
+from translation_app.core.file_handlers.pdf_translation_plan import (
+    PDFTranslationUnit,
+    build_pdf_translation_plan,
+    get_skipped_units,
+    get_translatable_units,
 )
 from translation_app.core.file_handlers.pdf_text_fit import PDFTextFitRequest, PDFTextFitResult, fit_text_to_bbox
 from translation_app.core.file_handlers.pdf_text_fit import summarize_fit_results
@@ -418,48 +423,59 @@ class PDFHandler:
 
                 regions = detect_protected_regions(model)
                 apply_protected_flags(model, regions)
-                page_blocks, selection_summary = self._collect_experimental_page_blocks(model, regions)
-                total_blocks = sum(len(blocks) for blocks in page_blocks)
+                plan = build_pdf_translation_plan(model, regions=regions)
+                page_units, selection_summary = self._collect_experimental_page_units(model, plan)
+                total_units = sum(len(units) for units in page_units)
                 protection_summary = model_to_protection_summary(model, regions)
-                scanned_only = any(region.kind == "scanned_page" for region in regions)
-                if scanned_only and total_blocks == 0:
+                scanned_only = "scanned_or_image_only_pdf" in plan.warnings
+                if scanned_only and total_units == 0:
                     self._set_last_pdf_qa_report(
                         build_pdf_qa_report(
                             input_file=input_file,
                             output_file=output_file,
                             mode="experimental_pdf",
                             page_count=page_count,
+                            translated_units=0,
+                            skipped_units=selection_summary["skipped_units"],
                             skipped_protected_blocks=selection_summary["skipped_protected_blocks"],
                             skipped_noisy_blocks=selection_summary["skipped_noisy_blocks"],
+                            warning_count=sum(selection_summary["warnings_by_type"].values()),
+                            warnings_by_type=selection_summary["warnings_by_type"],
+                            unit_types_by_kind=selection_summary["unit_types_by_kind"],
                             protected_regions_by_kind=protection_summary.get("counts_by_kind"),
                             rejected=True,
                             rejection_reason=(
                                 "Experimental PDF layout output found no supported text blocks. "
                                 "Scanned or image-only PDFs are not supported."
                             ),
-                            engine_version="phase_5h6",
+                            engine_version="phase_5h10",
                         )
                     )
                     raise FileProcessingError(
                         "Experimental PDF layout output found no supported text blocks. "
                         "Scanned or image-only PDFs are not supported."
                     )
-                if total_blocks == 0:
+                if total_units == 0:
                     self._set_last_pdf_qa_report(
                         build_pdf_qa_report(
                             input_file=input_file,
                             output_file=output_file,
                             mode="experimental_pdf",
                             page_count=page_count,
+                            translated_units=0,
+                            skipped_units=selection_summary["skipped_units"],
                             skipped_protected_blocks=selection_summary["skipped_protected_blocks"],
                             skipped_noisy_blocks=selection_summary["skipped_noisy_blocks"],
+                            warning_count=sum(selection_summary["warnings_by_type"].values()),
+                            warnings_by_type=selection_summary["warnings_by_type"],
+                            unit_types_by_kind=selection_summary["unit_types_by_kind"],
                             protected_regions_by_kind=protection_summary.get("counts_by_kind"),
                             rejected=True,
                             rejection_reason=(
                                 "Experimental PDF layout output found no supported text blocks. "
                                 "Blank, scanned, or layout-heavy PDFs are not supported."
                             ),
-                            engine_version="phase_5h6",
+                            engine_version="phase_5h10",
                         )
                     )
                     raise FileProcessingError(
@@ -469,10 +485,13 @@ class PDFHandler:
 
                 doc = fitz.open(input_file)
                 try:
+                    translated_units = 0
                     translated_blocks = 0
                     fit_results: List[PDFTextFitResult] = []
+                    overflow_blocks = 0
+                    overflow_units = 0
 
-                    for page_index, blocks in enumerate(page_blocks):
+                    for page_index, units in enumerate(page_units):
                         page = doc[page_index]
                         if self.progress_callback:
                             progress = 10 + int((page_index / max(page_count, 1)) * 70)
@@ -481,46 +500,56 @@ class PDFHandler:
                                 progress,
                             )
 
-                        for block in blocks:
+                        for unit in units:
                             translated_text = self.translation_service.translate_long_text(
-                                block["text"], src_lang, dest_lang
+                                unit["text"], src_lang, dest_lang
                             )
-                            block["translated_text"] = translated_text if translated_text else block["text"]
-                            translated_blocks += 1
-                            page.add_redact_annot(block["rect"], fill=(1, 1, 1))
+                            unit["translated_text"] = translated_text if translated_text else unit["text"]
+                            translated_units += 1
+                            translated_blocks += int(unit.get("source_block_count", 0) or 0)
+                            for rect in unit["redact_rects"]:
+                                page.add_redact_annot(rect, fill=(1, 1, 1))
 
-                        if blocks:
+                        if units:
                             page.apply_redactions(
                                 images=fitz.PDF_REDACT_IMAGE_NONE,
                                 graphics=fitz.PDF_REDACT_LINE_ART_NONE,
                                 text=fitz.PDF_REDACT_TEXT_REMOVE,
                             )
 
-                        for block in blocks:
-                            fit_result = self._insert_translated_block(page, block)
+                        for unit in units:
+                            fit_result = self._insert_translated_unit(page, unit)
                             fit_results.append(fit_result)
+                            if fit_result.overflow:
+                                overflow_units += 1
+                                overflow_blocks += int(unit.get("source_block_count", 0) or 0)
 
                     doc.save(output_file)
                 finally:
                     doc.close()
 
                 fit_summary = summarize_fit_results(fit_results)
+                warnings_by_type = dict(selection_summary["warnings_by_type"])
+                for warning, count in (fit_summary.get("warning_counts", {}) or {}).items():
+                    warnings_by_type[str(warning)] = warnings_by_type.get(str(warning), 0) + int(count)
                 report = build_pdf_qa_report(
                     input_file=input_file,
                     output_file=output_file,
                     mode="experimental_pdf",
                     page_count=page_count,
+                    translated_units=translated_units,
                     translated_blocks=translated_blocks,
+                    skipped_units=selection_summary["skipped_units"],
                     skipped_protected_blocks=selection_summary["skipped_protected_blocks"],
                     skipped_noisy_blocks=selection_summary["skipped_noisy_blocks"],
-                    overflow_blocks=int(fit_summary.get("overflow_count", 0) or 0),
-                    warning_count=sum(
-                        int(count) for count in (fit_summary.get("warning_counts", {}) or {}).values()
-                    ),
-                    warnings_by_type=fit_summary.get("warning_counts", {}),
+                    overflow_units=overflow_units,
+                    overflow_blocks=overflow_blocks,
+                    warning_count=sum(int(count) for count in warnings_by_type.values()),
+                    warnings_by_type=warnings_by_type,
+                    unit_types_by_kind=selection_summary["unit_types_by_kind"],
                     protected_regions_by_kind=protection_summary.get("counts_by_kind"),
                     rejected=False,
-                    engine_version="phase_5h6",
+                    engine_version="phase_5h10",
                 )
                 self._set_last_pdf_qa_report(report)
 
@@ -529,15 +558,18 @@ class PDFHandler:
 
                 logger.info(
                     "Experimental PDF layout translation completed: "
-                    f"{page_count} pages, {translated_blocks} blocks, "
+                    f"{page_count} pages, {translated_units} units, {translated_blocks} blocks, "
                     f"{selection_summary['skipped_protected_blocks']} protected skips, "
-                    f"{report.overflow_blocks} overflow fallbacks, {report.warning_count} fit warnings"
+                    f"{report.overflow_units} overflow unit fallbacks, {report.warning_count} warnings"
                 )
                 return {
                     "page_count": page_count,
+                    "translated_units": translated_units,
                     "translated_blocks": translated_blocks,
+                    "skipped_units": selection_summary["skipped_units"],
                     "skipped_protected_blocks": selection_summary["skipped_protected_blocks"],
                     "skipped_noisy_blocks": selection_summary["skipped_noisy_blocks"],
+                    "overflow_units": report.overflow_units,
                     "overflow_blocks": report.overflow_blocks,
                     "warning_count": report.warning_count,
                 }
@@ -1240,59 +1272,91 @@ class PDFHandler:
     def _set_last_pdf_qa_report(self, report: PDFQAReport) -> None:
         self.last_pdf_qa_report = report_to_public_dict(report)
 
-    def _collect_experimental_page_blocks(
-        self, model, regions
-    ) -> Tuple[List[List[Dict[str, Any]]], Dict[str, int]]:
-        page_blocks: List[List[Dict[str, Any]]] = [[] for _ in range(model.page_count)]
-        translatable_blocks = get_translatable_blocks(model, regions, exclude_protected=True)
-        skipped_protected_blocks = 0
-        skipped_noisy_blocks = 0
+    def _collect_experimental_page_units(
+        self, model, plan
+    ) -> Tuple[List[List[Dict[str, Any]]], Dict[str, Any]]:
+        page_units: List[List[Dict[str, Any]]] = [[] for _ in range(model.page_count)]
+        block_map = {
+            block.block_id: block
+            for page in model.pages
+            for block in page.blocks
+        }
+        translatable_units = get_translatable_units(plan)
+        skipped_units = get_skipped_units(plan)
 
-        translatable_ids = {block.block_id for block in translatable_blocks}
-        for page in model.pages:
-            for block in page.blocks:
-                if block.kind == "text" and "noisy" in block.flags and block.block_id not in translatable_ids:
-                    skipped_noisy_blocks += 1
-                has_protection_signal = (
-                    "protected" in block.flags
-                    or "non_translatable" in block.flags
-                    or "page_scanned" in block.flags
-                    or any(flag.startswith("protected_region:") for flag in block.flags)
-                )
-                if block.kind == "text" and has_protection_signal and block.block_id not in translatable_ids:
-                    skipped_protected_blocks += 1
+        for unit in translatable_units:
+            page_units[unit.page_index].append(self._build_experimental_unit_from_plan(unit, block_map))
 
-        for block in translatable_blocks:
-            page_blocks[block.page_index].append(self._build_experimental_block_from_model(block))
+        warnings_by_type: Dict[str, int] = {}
+        for warning in plan.warnings:
+            warnings_by_type[str(warning)] = warnings_by_type.get(str(warning), 0) + 1
 
-        return page_blocks, {
-            "skipped_protected_blocks": skipped_protected_blocks,
-            "skipped_noisy_blocks": skipped_noisy_blocks,
+        unit_types_by_kind: Dict[str, int] = {}
+        for unit in translatable_units:
+            unit_types_by_kind[unit.unit_type] = unit_types_by_kind.get(unit.unit_type, 0) + 1
+
+        return page_units, {
+            "skipped_units": len(skipped_units),
+            "skipped_protected_blocks": sum(
+                len(unit.source_block_ids) for unit in skipped_units if "protected_skipped" in unit.flags
+            ),
+            "skipped_noisy_blocks": sum(
+                len(unit.source_block_ids) for unit in skipped_units if "noisy_skipped" in unit.flags
+            ),
+            "warnings_by_type": warnings_by_type,
+            "unit_types_by_kind": unit_types_by_kind,
         }
 
-    def _build_experimental_block_from_model(self, block: PDFBlockModel) -> Dict[str, Any]:
+    def _build_experimental_unit_from_plan(
+        self, unit: PDFTranslationUnit, block_map: Dict[str, PDFBlockModel]
+    ) -> Dict[str, Any]:
+        source_blocks = [
+            block_map[block_id]
+            for block_id in unit.source_block_ids
+            if block_id in block_map
+        ]
         font_sizes = [
             float(span.size)
+            for block in source_blocks
             for line in block.lines
             for span in line.spans
             if getattr(span, "size", 0.0)
         ]
         font_names = [
             str(span.font)
+            for block in source_blocks
             for line in block.lines
             for span in line.spans
             if getattr(span, "font", "")
         ]
+        rect = fitz.Rect(unit.bbox)
+        if rect.width <= 0 or rect.height <= 0:
+            rect = fitz.Rect(self._unit_bbox_from_blocks(source_blocks))
+
         return {
-            "block_id": block.block_id,
-            "page_number": block.page_index + 1,
-            "page_index": block.page_index,
-            "rect": fitz.Rect(block.bbox),
-            "text": block.text,
+            "unit_id": unit.unit_id,
+            "unit_type": unit.unit_type,
+            "page_number": unit.page_index + 1,
+            "page_index": unit.page_index,
+            "rect": rect,
+            "redact_rects": [fitz.Rect(block.bbox) for block in source_blocks],
+            "text": unit.text,
             "font_size": max(8.0, min(font_sizes) if font_sizes else 11.0),
             "font_name": font_names[0] if font_names else "helv",
+            "source_block_count": len(unit.source_block_ids),
+            "source_block_ids": list(unit.source_block_ids),
             "language_hint": None,
         }
+
+    def _unit_bbox_from_blocks(self, blocks: List[PDFBlockModel]) -> Tuple[float, float, float, float]:
+        if not blocks:
+            return (0.0, 0.0, 0.0, 0.0)
+        return (
+            min(block.bbox[0] for block in blocks),
+            min(block.bbox[1] for block in blocks),
+            max(block.bbox[2] for block in blocks),
+            max(block.bbox[3] for block in blocks),
+        )
 
     def _extract_experimental_text_blocks(self, page, page_number: int) -> List[Dict[str, Any]]:
         """
@@ -1344,22 +1408,22 @@ class PDFHandler:
 
         return blocks
 
-    def _insert_translated_block(self, page, block: Dict[str, Any]) -> PDFTextFitResult:
+    def _insert_translated_unit(self, page, unit: Dict[str, Any]) -> PDFTextFitResult:
         """
         Insert translated text back into a page rectangle using the text fitting
         engine. Returns the fit result used for insertion.
         """
-        rect = block["rect"]
-        translated_text = block.get("translated_text", block.get("text", ""))
-        font_size = float(block.get("font_size", 11.0))
+        rect = unit["rect"]
+        translated_text = unit.get("translated_text", unit.get("text", ""))
+        font_size = float(unit.get("font_size", 11.0))
         fit_result = fit_text_to_bbox(
             PDFTextFitRequest(
                 text=translated_text,
                 bbox=(rect.x0, rect.y0, rect.x1, rect.y1),
-                font_name=block.get("font_name"),
+                font_name=unit.get("font_name"),
                 font_size=font_size,
                 min_font_size=6.0,
-                language_hint=block.get("language_hint"),
+                language_hint=unit.get("language_hint"),
             )
         )
 
@@ -1373,8 +1437,8 @@ class PDFHandler:
                 overlay=True,
             )
             logger.warning(
-                "Experimental PDF block overflow fallback used on "
-                f"page {block.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
+                "Experimental PDF unit overflow fallback used on "
+                f"page {unit.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
             )
             return fit_result
 
@@ -1401,10 +1465,13 @@ class PDFHandler:
                 overlay=True,
             )
             logger.warning(
-                "Experimental PDF block overflow fallback used on "
-                f"page {block.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
+                "Experimental PDF unit overflow fallback used on "
+                f"page {unit.get('page_number', '?')} at bbox={tuple(round(v, 2) for v in rect)}"
             )
         return fit_result
+
+    def _insert_translated_block(self, page, block: Dict[str, Any]) -> PDFTextFitResult:
+        return self._insert_translated_unit(page, block)
 
     def _translate_simple_extraction(self, input_file: str, output_file: str, src_lang: str, dest_lang: str) -> None:
         """
