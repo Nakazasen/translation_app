@@ -41,6 +41,11 @@ class PDFQAReport:
     warnings_by_type: dict[str, int] = field(default_factory=dict)
     unit_types_by_kind: dict[str, int] = field(default_factory=dict)
     protected_regions_by_kind: dict[str, int] = field(default_factory=dict)
+    visual_status: str | None = None
+    visual_warnings: list[str] = field(default_factory=list)
+    visual_failures: list[str] = field(default_factory=list)
+    visual_mean_diff_ratio: float | None = None
+    visual_max_diff_ratio: float | None = None
     rejected: bool = False
     rejection_reason: str | None = None
     engine_version: str | None = None
@@ -64,6 +69,11 @@ def build_pdf_qa_report(
     warnings_by_type: dict[str, int] | None = None,
     unit_types_by_kind: dict[str, int] | None = None,
     protected_regions_by_kind: dict[str, int] | None = None,
+    visual_status: str | None = None,
+    visual_warnings: list[str] | None = None,
+    visual_failures: list[str] | None = None,
+    visual_mean_diff_ratio: float | None = None,
+    visual_max_diff_ratio: float | None = None,
     rejected: bool = False,
     rejection_reason: str | None = None,
     engine_version: str | None = None,
@@ -84,6 +94,11 @@ def build_pdf_qa_report(
         warnings_by_type=dict(warnings_by_type or {}),
         unit_types_by_kind=dict(unit_types_by_kind or {}),
         protected_regions_by_kind=dict(protected_regions_by_kind or {}),
+        visual_status=_sanitize_text_value(visual_status),
+        visual_warnings=[_sanitize_text_value(str(item)) or "[redacted]" for item in (visual_warnings or [])],
+        visual_failures=[_sanitize_text_value(str(item)) or "[redacted]" for item in (visual_failures or [])],
+        visual_mean_diff_ratio=float(visual_mean_diff_ratio) if visual_mean_diff_ratio is not None else None,
+        visual_max_diff_ratio=float(visual_max_diff_ratio) if visual_max_diff_ratio is not None else None,
         rejected=rejected,
         rejection_reason=_sanitize_text_value(rejection_reason),
         engine_version=engine_version,
@@ -152,6 +167,13 @@ def sanitize_pdf_qa_report(report: PDFQAReport) -> PDFQAReport:
     for kind, count in report.protected_regions_by_kind.items():
         sanitized_regions[_sanitize_text_value(str(kind)) or "[redacted]"] = int(count)
     report.protected_regions_by_kind = sanitized_regions
+    report.visual_status = _sanitize_text_value(report.visual_status)
+    report.visual_warnings = [
+        _sanitize_text_value(str(item)) or "[redacted]" for item in report.visual_warnings
+    ]
+    report.visual_failures = [
+        _sanitize_text_value(str(item)) or "[redacted]" for item in report.visual_failures
+    ]
     return report
 
 
@@ -177,6 +199,11 @@ def summarize_pdf_processing(
     warnings_by_type: dict[str, int] | None = None,
     unit_types_by_kind: dict[str, int] | None = None,
     protected_regions_by_kind: dict[str, int] | None = None,
+    visual_status: str | None = None,
+    visual_warnings: list[str] | None = None,
+    visual_failures: list[str] | None = None,
+    visual_mean_diff_ratio: float | None = None,
+    visual_max_diff_ratio: float | None = None,
     rejected: bool = False,
     rejection_reason: str | None = None,
     engine_version: str | None = None,
@@ -197,6 +224,11 @@ def summarize_pdf_processing(
         warnings_by_type=warnings_by_type,
         unit_types_by_kind=unit_types_by_kind,
         protected_regions_by_kind=protected_regions_by_kind,
+        visual_status=visual_status,
+        visual_warnings=visual_warnings,
+        visual_failures=visual_failures,
+        visual_mean_diff_ratio=visual_mean_diff_ratio,
+        visual_max_diff_ratio=visual_max_diff_ratio,
         rejected=rejected,
         rejection_reason=rejection_reason,
         engine_version=engine_version,
