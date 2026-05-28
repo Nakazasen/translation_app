@@ -703,8 +703,34 @@ class MainWindow(tk.Tk):
             if not model_id:
                 continue
             status = "Bật" if model_entry.get("enabled", True) else "Tắt"
-            source = str(model_entry.get("source", "user")).strip() or "user"
-            self.listbox_models.insert(tk.END, f"{model_id} [{status} | {source}]")
+            
+            # Map source to premium tag
+            src_val = model_entry.get("source", "user")
+            if src_val == "api_discovered":
+                src_tag = "API-discovered"
+            elif src_val == "user":
+                src_tag = "configured/user"
+            elif src_val in ("seed", "default", "legacy"):
+                src_tag = "legacy/seed"
+            elif src_val == "docs_known":
+                src_tag = "configured/docs-known"
+            else:
+                src_tag = str(src_val)
+
+            # Map visibility to premium tag
+            vis_val = model_entry.get("visibility", "unverified")
+            if vis_val == "current_key_visible":
+                vis_tag = "current-key-visible"
+            elif vis_val == "live_validated":
+                vis_tag = "live-validated"
+            elif vis_val == "unverified":
+                vis_tag = "unverified"
+            elif vis_val == "unavailable":
+                vis_tag = "unavailable"
+            else:
+                vis_tag = str(vis_val)
+
+            self.listbox_models.insert(tk.END, f"{model_id} [{status} | {src_tag} | {vis_tag}]")
             if model_entry.get("enabled", True):
                 enabled_models.append(model_id)
 
@@ -814,18 +840,66 @@ class MainWindow(tk.Tk):
         messagebox.showinfo("Thành công", f"Đã xóa model '{model_id}'.")
 
     def _refresh_provider_models_catalog(self):
-        """Refresh models from a provider /models endpoint when supported."""
+        """Refresh models from a provider /models endpoint on a background thread to keep UI active."""
         if not self.selected_provider:
             return
 
-        try:
-            discovered = self.config_manager.refresh_provider_models(self.selected_provider)
-            self.config_manager.save_config()
-            self._refresh_providers_tree()
-            self._on_provider_selected()
-            messagebox.showinfo("Thành công", f"Đã làm mới {len(discovered)} model cho {self.selected_provider}.")
-        except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể làm mới model: {e}")
+        provider_name = self.selected_provider
+
+        # Visual feedback
+        self.btn_refresh_models.config(state=tk.DISABLED, text="Đang quét model...")
+        self.listbox_models.config(state=tk.DISABLED)
+
+        def worker():
+            try:
+                discovered = self.config_manager.refresh_provider_models(provider_name)
+                self.config_manager.save_config()
+
+                def on_success():
+                    try:
+                        if not self.winfo_exists():
+                            return
+                        self._refresh_providers_tree()
+                        self._on_provider_selected()
+                        # Restore UI state
+                        self.btn_refresh_models.config(state=tk.NORMAL, text="Làm mới model")
+                        self.listbox_models.config(state=tk.NORMAL)
+                        messagebox.showinfo(
+                            "Thành công",
+                            f"Đã làm mới và phát hiện {len(discovered)} model từ API cho {provider_name}."
+                        )
+                    except Exception:
+                        pass
+                
+                try:
+                    if self.winfo_exists():
+                        self.after(0, on_success)
+                except Exception:
+                    pass
+
+            except Exception as e:
+                def on_failure():
+                    try:
+                        if not self.winfo_exists():
+                            return
+                        # Restore UI state
+                        self.btn_refresh_models.config(state=tk.NORMAL, text="Làm mới model")
+                        self.listbox_models.config(state=tk.NORMAL)
+                        self._on_provider_selected()
+                        messagebox.showerror(
+                            "Lỗi",
+                            f"Không thể làm mới model: {e}"
+                        )
+                    except Exception:
+                        pass
+                
+                try:
+                    if self.winfo_exists():
+                        self.after(0, on_failure)
+                except Exception:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _save_provider_detail(self):
         """Save base_url, enabled state and default model for current provider."""
