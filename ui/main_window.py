@@ -16,6 +16,11 @@ from translation_app.core.file_handlers.excel_handler import ExcelHandler
 from translation_app.core.file_handlers.word_handler import WordHandler
 from translation_app.core.file_handlers.powerpoint_handler import PowerPointHandler
 from translation_app.core.file_handlers.pdf_handler import PDFHandler
+from translation_app.core.file_handlers.pdf_regression_report import (
+    build_pdf_regression_report_bundle,
+    export_pdf_regression_report_html,
+    export_pdf_regression_report_json,
+)
 from translation_app.core.file_handlers.text_handler import TextHandler
 from translation_app.core.email_handler import EmailHandler
 from translation_app.core.ocr_handler import get_ocr_handler
@@ -72,6 +77,8 @@ class MainWindow(tk.Tk):
         self.preview_photo: Optional[ImageTk.PhotoImage] = None
         self._preview_photo_refs: list = []  # Lưu references để tránh garbage collection
         self.last_ocr_text: str = "" # To store OCR result for analysis
+        self.last_pdf_report_input_file: Optional[str] = None
+        self.last_pdf_report_output_file: Optional[str] = None
 
         # Setup UI
         self.setup_window()
@@ -918,7 +925,52 @@ class MainWindow(tk.Tk):
             wraplength=760
         )
         label_pdf_experimental_warning.pack(anchor=tk.W, pady=(2, 0))
-        
+
+        frame_pdf_report = tk.LabelFrame(
+            self.tab_file,
+            text="Báo cáo PDF thử nghiệm",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 10, 'bold'), padx=12, pady=10
+        )
+        frame_pdf_report.pack(fill=tk.X, padx=15, pady=(8, 0))
+
+        self.label_pdf_report_hint = tk.Label(
+            frame_pdf_report,
+            text=self._get_pdf_report_export_hint(),
+            bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
+            font=('Segoe UI', 9), justify=tk.LEFT, wraplength=760
+        )
+        self.label_pdf_report_hint.pack(anchor=tk.W)
+
+        self.label_pdf_report_notice = tk.Label(
+            frame_pdf_report,
+            text=self._get_pdf_report_export_notice(),
+            bg=self.colors['gray_light'], fg=self.colors['gray_medium'],
+            font=('Segoe UI', 8, 'italic'), justify=tk.LEFT, wraplength=760
+        )
+        self.label_pdf_report_notice.pack(anchor=tk.W, pady=(4, 8))
+
+        frame_pdf_report_buttons = tk.Frame(frame_pdf_report, bg=self.colors['gray_light'])
+        frame_pdf_report_buttons.pack(fill=tk.X)
+
+        self.btn_export_pdf_report_json = create_styled_button(
+            frame_pdf_report_buttons,
+            text="Xuất báo cáo JSON",
+            command=self.export_pdf_report_json,
+            colors=self.colors
+        )
+        self.btn_export_pdf_report_json.config(state=tk.DISABLED)
+        self.btn_export_pdf_report_json.pack(side=tk.LEFT, padx=(0, 8))
+
+        self.btn_export_pdf_report_html = create_styled_button(
+            frame_pdf_report_buttons,
+            text="Xuất báo cáo HTML",
+            command=self.export_pdf_report_html,
+            colors=self.colors
+        )
+        self.btn_export_pdf_report_html.config(state=tk.DISABLED)
+        self.btn_export_pdf_report_html.pack(side=tk.LEFT)
+
         # Pages per batch option (to save API requests)
         frame_batch_option = tk.Frame(frame_ai_option, bg=self.colors['gray_light'])
         frame_batch_option.pack(anchor=tk.W, pady=(2, 0))
@@ -1489,6 +1541,7 @@ class MainWindow(tk.Tk):
                     self.pdf_handler.translate_to_pdf_experimental(
                         file_path, output_file, src_lang, dest_lang
                     )
+                    self._remember_pdf_report_context(file_path, output_file)
                 else:
                     handler.translate(file_path, output_file, src_lang, dest_lang)
 
@@ -1502,6 +1555,8 @@ class MainWindow(tk.Tk):
                     else:
                         method_info = ""
                     self.label_file_status.config(text="🟢 Hoàn tất!")
+                    if use_pdf_experimental:
+                        self._update_pdf_report_export_state()
                     messagebox.showinfo(
 "Thành công",
                         f"File '{os.path.basename(file_path)}' đã được dịch{method_info}.\n\n"
@@ -1519,6 +1574,9 @@ class MainWindow(tk.Tk):
                     self.progress_file.config(mode='indeterminate')
                     self.progress_file.stop()
                     self.label_file_status.config(text="")
+                    if use_pdf_experimental and self.pdf_handler.last_pdf_qa_report:
+                        self._remember_pdf_report_context(file_path, output_file)
+                        self._update_pdf_report_export_state()
                     if use_pdf_experimental and isinstance(e, FileProcessingError):
                         error_msg = "PDF này không phù hợp với chế độ thử nghiệm. Vui lòng dùng chế độ DOCX ổn định."
                     else:
@@ -1528,6 +1586,106 @@ class MainWindow(tk.Tk):
                 self.after(0, _on_error)
         
         threading.Thread(target=translate_thread, daemon=True).start()
+
+    @staticmethod
+    def _get_pdf_report_export_notice() -> str:
+        return (
+            "Báo cáo này giúp kiểm tra số block dịch, vùng được bảo vệ, cảnh báo overflow "
+            "và visual diff. Đây không phải chứng nhận giữ layout tuyệt đối."
+        )
+
+    @staticmethod
+    def _get_pdf_report_export_hint() -> str:
+        return "Chưa có báo cáo PDF thử nghiệm. Hãy chạy dịch PDF thử nghiệm trước."
+
+    def _remember_pdf_report_context(self, input_file: str, output_file: str) -> None:
+        self.last_pdf_report_input_file = input_file
+        self.last_pdf_report_output_file = output_file
+
+    def _has_exportable_pdf_report(self) -> bool:
+        return bool(self.pdf_handler.last_pdf_qa_report)
+
+    def _update_pdf_report_export_state(self) -> None:
+        has_report = self._has_exportable_pdf_report()
+        button_state = tk.NORMAL if has_report else tk.DISABLED
+        self.btn_export_pdf_report_json.config(state=button_state)
+        self.btn_export_pdf_report_html.config(state=button_state)
+        hint_text = (
+            "Đã có báo cáo PDF thử nghiệm công khai an toàn. Bạn có thể xuất JSON hoặc HTML."
+            if has_report
+            else self._get_pdf_report_export_hint()
+        )
+        self.label_pdf_report_hint.config(text=hint_text)
+
+    def _build_pdf_report_bundle(self):
+        if not self._has_exportable_pdf_report():
+            return None
+        return build_pdf_regression_report_bundle(
+            qa_report=dict(self.pdf_handler.last_pdf_qa_report or {}),
+            metadata={
+                "input_file": self.last_pdf_report_input_file,
+                "output_file": self.last_pdf_report_output_file,
+            },
+        )
+
+    def _export_pdf_report(self, report_type: str) -> Optional[str]:
+        if not self._has_exportable_pdf_report():
+            messagebox.showwarning("Cảnh báo", self._get_pdf_report_export_hint())
+            self._update_pdf_report_export_state()
+            return None
+
+        report_config = {
+            "json": {
+                "title": "Xuất báo cáo PDF thử nghiệm dạng JSON",
+                "extension": ".json",
+                "filename": "pdf_regression_report.json",
+                "filetypes": [("JSON Files", "*.json"), ("All Files", "*.*")],
+                "exporter": export_pdf_regression_report_json,
+                "success": "Đã xuất báo cáo PDF thử nghiệm dạng JSON tại:\n{path}",
+            },
+            "html": {
+                "title": "Xuất báo cáo PDF thử nghiệm dạng HTML",
+                "extension": ".html",
+                "filename": "pdf_regression_report.html",
+                "filetypes": [("HTML Files", "*.html"), ("All Files", "*.*")],
+                "exporter": export_pdf_regression_report_html,
+                "success": "Đã xuất báo cáo PDF thử nghiệm dạng HTML tại:\n{path}",
+            },
+        }
+        config = report_config[report_type]
+        output_path = filedialog.asksaveasfilename(
+            title=config["title"],
+            defaultextension=config["extension"],
+            initialfile=config["filename"],
+            filetypes=config["filetypes"],
+        )
+        if not output_path:
+            return None
+
+        bundle = self._build_pdf_report_bundle()
+        if bundle is None:
+            messagebox.showwarning("Cảnh báo", self._get_pdf_report_export_hint())
+            self._update_pdf_report_export_state()
+            return None
+
+        try:
+            config["exporter"](bundle, output_path)
+        except Exception as exc:
+            logger.error("Failed to export PDF regression report: %s", exc)
+            messagebox.showerror(
+                "Lỗi",
+                "Không thể xuất báo cáo PDF thử nghiệm. Vui lòng kiểm tra đường dẫn lưu và thử lại.",
+            )
+            return None
+
+        messagebox.showinfo("Thành công", config["success"].format(path=output_path))
+        return output_path
+
+    def export_pdf_report_json(self) -> Optional[str]:
+        return self._export_pdf_report("json")
+
+    def export_pdf_report_html(self) -> Optional[str]:
+        return self._export_pdf_report("html")
 
 
     
