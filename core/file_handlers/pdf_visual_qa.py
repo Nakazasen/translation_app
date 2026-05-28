@@ -11,7 +11,6 @@ import fitz
 
 
 DEFAULT_RENDER_DPI = 72
-HIGH_DIFF_RATIO_THRESHOLD = 0.12
 WHITE_PIXEL_THRESHOLD = 250
 
 
@@ -36,6 +35,28 @@ class PDFVisualDiffResult:
     pages_compared: int
     warnings: list[str] = field(default_factory=list)
     safe_summary: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PDFVisualQAThresholds:
+    warning_mean_diff_ratio: float = 0.15
+    fail_mean_diff_ratio: float = 0.35
+    warning_max_diff_ratio: float = 0.30
+    fail_max_diff_ratio: float = 0.60
+    allow_page_count_mismatch: bool = False
+    allow_dimension_mismatch: bool = False
+
+
+@dataclass
+class PDFVisualQAEvaluation:
+    status: str
+    warnings: list[str] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+    mean_diff_ratio: float = 0.0
+    max_diff_ratio: float = 0.0
+    page_count_match: bool = True
+    dimension_mismatches: int = 0
+    public_summary: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -163,8 +184,6 @@ def compare_pdf_visual_snapshots(
         if dimension_mismatches:
             warnings.append("page_dimension_mismatch")
         max_diff_ratio = max(diff_ratios, default=0.0)
-        if max_diff_ratio >= HIGH_DIFF_RATIO_THRESHOLD:
-            warnings.append("high_visual_diff")
 
         return PDFVisualDiffResult(
             page_count_before=before_count,
@@ -211,3 +230,99 @@ def result_to_public_dict(result: PDFVisualDiffResult) -> dict[str, Any]:
     public = asdict(result)
     public["warnings"] = [str(warning) for warning in result.warnings]
     return public
+
+
+def evaluate_visual_diff(
+    result: PDFVisualDiffResult,
+    thresholds: PDFVisualQAThresholds | None = None,
+) -> PDFVisualQAEvaluation:
+    resolved = thresholds or PDFVisualQAThresholds()
+    warnings: list[str] = []
+    failures: list[str] = []
+
+    if "render_failed" in result.warnings:
+        failures.append("render_failed")
+
+    if not result.page_count_match:
+        if resolved.allow_page_count_mismatch:
+            warnings.append("page_count_mismatch")
+        else:
+            failures.append("page_count_mismatch")
+
+    if result.dimension_mismatches > 0:
+        if resolved.allow_dimension_mismatch:
+            warnings.append("page_dimension_mismatch")
+        else:
+            failures.append("page_dimension_mismatch")
+
+    if result.mean_diff_ratio >= resolved.fail_mean_diff_ratio:
+        failures.append("high_mean_visual_diff")
+    elif result.mean_diff_ratio >= resolved.warning_mean_diff_ratio:
+        warnings.append("high_mean_visual_diff")
+
+    if result.max_diff_ratio >= resolved.fail_max_diff_ratio:
+        failures.append("high_max_visual_diff")
+    elif result.max_diff_ratio >= resolved.warning_max_diff_ratio:
+        warnings.append("high_max_visual_diff")
+
+    status = "fail" if failures else "warning" if warnings else "pass"
+    public_summary = {
+        "status": status,
+        "warning_count": len(warnings),
+        "failure_count": len(failures),
+        "warnings": list(warnings),
+        "failures": list(failures),
+        "mean_diff_ratio": float(result.mean_diff_ratio),
+        "max_diff_ratio": float(result.max_diff_ratio),
+        "page_count_match": bool(result.page_count_match),
+        "dimension_mismatches": int(result.dimension_mismatches),
+        "pages_compared": int(result.pages_compared),
+        "thresholds": asdict(resolved),
+    }
+    return PDFVisualQAEvaluation(
+        status=status,
+        warnings=warnings,
+        failures=failures,
+        mean_diff_ratio=float(result.mean_diff_ratio),
+        max_diff_ratio=float(result.max_diff_ratio),
+        page_count_match=bool(result.page_count_match),
+        dimension_mismatches=int(result.dimension_mismatches),
+        public_summary=public_summary,
+    )
+
+
+def visual_evaluation_to_public_dict(evaluation: PDFVisualQAEvaluation) -> dict[str, Any]:
+    public = asdict(evaluation)
+    public["warnings"] = [str(warning) for warning in evaluation.warnings]
+    public["failures"] = [str(failure) for failure in evaluation.failures]
+    public["public_summary"] = dict(evaluation.public_summary)
+    return public
+
+
+def merge_visual_evaluation_into_pdf_qa_report(report, evaluation: PDFVisualQAEvaluation | dict[str, Any] | None):
+    if not evaluation:
+        return report
+
+    if isinstance(evaluation, PDFVisualQAEvaluation):
+        public = visual_evaluation_to_public_dict(evaluation)
+    else:
+        public = dict(evaluation)
+
+    visual_status = str(public.get("status", "") or "").strip() or None
+    visual_warnings = [str(item) for item in public.get("warnings", []) if str(item).strip()]
+    visual_failures = [str(item) for item in public.get("failures", []) if str(item).strip()]
+
+    report.visual_status = visual_status
+    report.visual_warnings = visual_warnings
+    report.visual_failures = visual_failures
+    report.visual_mean_diff_ratio = float(public.get("mean_diff_ratio", 0.0) or 0.0)
+    report.visual_max_diff_ratio = float(public.get("max_diff_ratio", 0.0) or 0.0)
+
+    merged = dict(getattr(report, "warnings_by_type", {}))
+    for warning in visual_warnings:
+        merged[warning] = merged.get(warning, 0) + 1
+    for failure in visual_failures:
+        merged[f"visual_fail:{failure}"] = merged.get(f"visual_fail:{failure}", 0) + 1
+    report.warnings_by_type = merged
+    report.warning_count = sum(int(count) for count in merged.values())
+    return report
