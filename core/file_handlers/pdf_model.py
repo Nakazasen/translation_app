@@ -35,6 +35,7 @@ class PDFLineModel:
     bbox: BBox
     text: str
     spans: list[PDFSpanModel] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -47,6 +48,7 @@ class PDFBlockModel:
     kind: str = "unknown"
     flags: set[str] = field(default_factory=set)
     reading_order: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -56,6 +58,7 @@ class PDFPageModel:
     height: float
     rotation: int
     blocks: list[PDFBlockModel] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -152,17 +155,9 @@ def mark_noisy_blocks(model: PDFDocumentModel) -> PDFDocumentModel:
 
 
 def sort_blocks_reading_order(model: PDFDocumentModel) -> PDFDocumentModel:
-    for page in model.pages:
-        page.blocks.sort(
-            key=lambda block: (
-                round(block.bbox[1], 3),
-                round(block.bbox[0], 3),
-                block.block_id,
-            )
-        )
-        for index, block in enumerate(page.blocks):
-            block.reading_order = index
-    return model
+    from translation_app.core.file_handlers.pdf_reading_order import assign_reading_order
+
+    return assign_reading_order(model, strategy="layout_aware")
 
 
 def collect_text_blocks_from_model(model: PDFDocumentModel) -> list[dict[str, Any]]:
@@ -180,6 +175,7 @@ def collect_text_blocks_from_model(model: PDFDocumentModel) -> list[dict[str, An
                     "length": len(block.text),
                     "flags": sorted(block.flags),
                     "reading_order": block.reading_order,
+                    "column_index": block.metadata.get("column_index"),
                 }
             )
     return blocks
@@ -202,6 +198,7 @@ def model_to_public_metrics(model: PDFDocumentModel) -> dict[str, Any]:
     table_blocks = 0
     noisy_blocks = 0
     translatable_blocks = 0
+    caption_like_blocks = 0
 
     for page in model.pages:
         for block in page.blocks:
@@ -219,6 +216,11 @@ def model_to_public_metrics(model: PDFDocumentModel) -> dict[str, Any]:
                 noisy_blocks += 1
             if "translatable" in block.flags:
                 translatable_blocks += 1
+            if "caption_like" in block.flags:
+                caption_like_blocks += 1
+
+    paragraph_candidates = model.metadata.get("paragraph_candidates", [])
+    reading_order_summary = model.metadata.get("reading_order_summary", {})
 
     return {
         "page_count": model.page_count,
@@ -231,6 +233,9 @@ def model_to_public_metrics(model: PDFDocumentModel) -> dict[str, Any]:
         "table_like_block_count": table_blocks,
         "noisy_block_count": noisy_blocks,
         "translatable_block_count": translatable_blocks,
+        "caption_like_block_count": caption_like_blocks,
+        "paragraph_candidate_count": len(paragraph_candidates) if isinstance(paragraph_candidates, list) else 0,
+        "ambiguous_reading_order_pages": int(reading_order_summary.get("ambiguous_page_count", 0) or 0),
     }
 
 
@@ -343,21 +348,14 @@ def build_pdf_document_model(path: str | Path) -> PDFDocumentModel:
     mark_table_like_blocks(model)
     mark_noisy_blocks(model)
 
-    for page in model.pages:
-        visual_blocks = [block for block in page.blocks if block.kind in {"image", "drawing"}]
-        if not visual_blocks:
-            continue
-        for block in page.blocks:
-            if block.kind != "text" or not block.text or len(block.text) > 120:
-                continue
-            text_top = block.bbox[1]
-            for visual_block in visual_blocks:
-                visual_bottom = visual_block.bbox[3]
-                close_below = 0 <= text_top - visual_bottom <= 40
-                overlaps_horizontally = block.bbox[0] <= visual_block.bbox[2] + 20
-                if close_below and overlaps_horizontally:
-                    block.flags.add("caption_like")
-                    break
+    from translation_app.core.file_handlers.pdf_reading_order import (
+        build_paragraph_candidates,
+        detect_caption_relationships,
+        model_to_reading_order_summary,
+    )
 
+    detect_caption_relationships(model)
     sort_blocks_reading_order(model)
+    model.metadata["paragraph_candidates"] = build_paragraph_candidates(model)
+    model.metadata["reading_order_summary"] = model_to_reading_order_summary(model)
     return model
