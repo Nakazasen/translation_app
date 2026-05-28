@@ -205,12 +205,15 @@ def detect_caption_relationships(model: PDFDocumentModel) -> PDFDocumentModel:
             scored_candidates = [
                 (visual_block, _score_caption_relationship(text_block, visual_block))
                 for visual_block in visual_blocks
+                if visual_block.block_id != text_block.block_id
             ]
             if not scored_candidates:
                 continue
 
             related_block, score = max(scored_candidates, key=lambda item: item[1])
             if score < 0.85:
+                continue
+            if related_block.kind == "text" and not CAPTION_CUE_PATTERN.search(text_block.text or ""):
                 continue
 
             text_block.flags.add("caption_like")
