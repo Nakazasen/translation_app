@@ -28,11 +28,29 @@ class TranslationService:
         self._runtime_observer = None
         self._provider_router = None
         self._provider_router_signature = None
+        self.last_translation_metadata = {
+            "provider": "",
+            "model": "",
+            "strategy": "",
+            "fallback_count": 0,
+            "attempts": []
+        }
         logger.info(f"TranslationService initialized with {self.max_workers} workers. Strategy: {self.strategy}")
 
     def set_strategy(self, strategy: str):
         """Update translation strategy at runtime."""
         mapping = {
+            "tự động chọn ai tốt nhất": "waterfall",
+            "chỉ dùng ai, không dùng google translate": "ai",
+            "chỉ dùng gemini": "gemini_only",
+            "chỉ dùng chatanywhere": "chatanywhere_only",
+            "chỉ dùng deepseek": "deepseek_only",
+            "chỉ dùng nvidia nim": "nvidia_nim_only",
+            "chỉ dùng openai tùy chỉnh": "openai_compatible_only",
+            "chỉ dùng google translate": "google",
+            "nâng cao: dùng thứ tự ưu tiên bên dưới": "ai_waterfall",
+        }
+        old_mapping = {
             "google translate (mặc định)": "google",
             "google translate (m蘯ｷc ﾄ黛ｻ杵h)": "google",
             "gemini ai (chỉ dùng ai)": "ai",
@@ -40,12 +58,9 @@ class TranslationService:
             "google translate -> gemini ai": "waterfall",
             "google -> gemini (waterfall)": "waterfall",
             "gemini ai -> google translate": "ai_waterfall",
-            "tự động chọn ai tốt nhất": "waterfall",
-            "chỉ dùng gemini": "ai",
-            "chỉ dùng google translate": "google",
             "nâng cao": "ai_waterfall",
         }
-        self.strategy = mapping.get(str(strategy or "").lower(), "waterfall")
+        self.strategy = mapping.get(str(strategy or "").lower(), old_mapping.get(str(strategy or "").lower(), "waterfall"))
         logger.info(f"Translation strategy changed to: {self.strategy}")
 
     def __enter__(self):
@@ -114,10 +129,24 @@ class TranslationService:
             allowed = ai_provider_order + ["google"]
         elif self.strategy == "google":
             allowed = ["google"]
+        elif self.strategy == "gemini_only":
+            allowed = ["gemini"]
+        elif self.strategy == "chatanywhere_only":
+            allowed = ["chatanywhere"]
+        elif self.strategy == "deepseek_only":
+            allowed = ["deepseek"]
+        elif self.strategy == "nvidia_nim_only":
+            allowed = ["nvidia_nim"]
+        elif self.strategy == "openai_compatible_only":
+            allowed = ["openai_compatible"]
         else:
             allowed = [provider for provider in order if provider in set(ai_provider_order + ["google"])]
             if not allowed:
                 allowed = ai_provider_order + ["google"]
+
+        # Filter out disabled providers
+        providers_config = config_manager.providers_config
+        allowed = [p for p in allowed if bool(providers_config.get(p, {}).get("enabled", False))]
 
         return {
             "mode": config_manager.provider_router_policy,
@@ -240,6 +269,13 @@ class TranslationService:
             cached_translation = tm.lookup_segment(src_lang, dest_lang, text)
             if cached_translation is not None:
                 self._emit_runtime_event("tm_hit", source_lang=src_lang, target_lang=dest_lang)
+                self.last_translation_metadata = {
+                    "provider": "translation_memory",
+                    "model": "cache",
+                    "strategy": self.strategy,
+                    "fallback_count": 0,
+                    "attempts": []
+                }
                 return cached_translation
 
         def save_to_tm(translated: str, provider: str, model: str):
@@ -289,7 +325,22 @@ class TranslationService:
             self._emit_router_attempt_events(result, src_lang, dest_lang)
             if result.status == "success":
                 save_to_tm(result.text, provider=result.provider, model=result.model or result.provider)
+                failed_attempts = [a for a in result.attempts if a.get("status") == "failed"]
+                self.last_translation_metadata = {
+                    "provider": result.provider,
+                    "model": result.model or result.provider,
+                    "strategy": self.strategy,
+                    "fallback_count": len(failed_attempts),
+                    "attempts": result.attempts
+                }
                 return result.text
+            self.last_translation_metadata = {
+                "provider": result.provider or "none",
+                "model": result.model or "none",
+                "strategy": self.strategy,
+                "fallback_count": len([a for a in result.attempts if a.get("status") == "failed"]),
+                "attempts": result.attempts
+            }
             raise TranslationServiceError(result.error_message or "Translation failed via provider router.")
 
         if self.strategy == "ai_waterfall":
@@ -301,6 +352,13 @@ class TranslationService:
                     if result.get("status") == "success":
                         mark_provider_success("gemini", result.get("model_used", "gemini"))
                         save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
+                        self.last_translation_metadata = {
+                            "provider": "gemini",
+                            "model": result.get("model_used", "gemini"),
+                            "strategy": self.strategy,
+                            "fallback_count": 0,
+                            "attempts": [{"provider": "gemini", "model": result.get("model_used", "gemini"), "status": "success"}]
+                        }
                         return result["text"]
                     mark_provider_fail(
                         "gemini",
@@ -321,11 +379,32 @@ class TranslationService:
                 if result.get("status") == "success":
                     mark_provider_success("gemini", result.get("model_used", "gemini"))
                     save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
+                    self.last_translation_metadata = {
+                        "provider": "gemini",
+                        "model": result.get("model_used", "gemini"),
+                        "strategy": self.strategy,
+                        "fallback_count": 0,
+                        "attempts": [{"provider": "gemini", "model": result.get("model_used", "gemini"), "status": "success"}]
+                    }
                     return result["text"]
                 error_msg = result.get("error_message") or result.get("text") or "AI Translation failed"
                 mark_provider_fail("gemini", error_type="error", error_message=error_msg, model=result.get("model_used", "gemini"))
+                self.last_translation_metadata = {
+                    "provider": "gemini",
+                    "model": result.get("model_used", "gemini"),
+                    "strategy": self.strategy,
+                    "fallback_count": 0,
+                    "attempts": [{"provider": "gemini", "model": result.get("model_used", "gemini"), "status": "failed", "reason": error_msg}]
+                }
                 raise TranslationServiceError(f"Gemini AI translation failed: {error_msg}")
             mark_provider_fail("gemini", error_type="unavailable", error_message="Gemini AI translation failed or not configured.", model="gemini")
+            self.last_translation_metadata = {
+                "provider": "gemini",
+                "model": "gemini",
+                "strategy": self.strategy,
+                "fallback_count": 0,
+                "attempts": [{"provider": "gemini", "model": "gemini", "status": "failed", "reason": "unavailable"}]
+            }
             raise TranslationServiceError("Gemini AI translation failed or not configured.")
 
         try:
@@ -333,6 +412,13 @@ class TranslationService:
             translated_text = self._translate_with_google(text, src_lang, dest_lang)
             mark_provider_success("google", "google-translate")
             save_to_tm(translated_text, provider="google", model="google-translate")
+            self.last_translation_metadata = {
+                "provider": "google",
+                "model": "google-translate",
+                "strategy": self.strategy,
+                "fallback_count": 0,
+                "attempts": [{"provider": "google", "model": "google-translate", "status": "success"}]
+            }
             return translated_text
 
         except Exception as exc:
@@ -346,6 +432,16 @@ class TranslationService:
                         logger.info(f"AI Waterfall success using: {result.get('model_used')}")
                         mark_provider_success("gemini", result.get("model_used", "gemini"))
                         save_to_tm(result["text"], provider="gemini", model=result.get("model_used", "gemini"))
+                        self.last_translation_metadata = {
+                            "provider": "gemini",
+                            "model": result.get("model_used", "gemini"),
+                            "strategy": self.strategy,
+                            "fallback_count": 1,
+                            "attempts": [
+                                {"provider": "google", "model": "google-translate", "status": "failed", "reason": str(exc)},
+                                {"provider": "gemini", "model": result.get("model_used", "gemini"), "status": "success"}
+                            ]
+                        }
                         return result["text"]
                     mark_provider_fail(
                         "gemini",
@@ -354,6 +450,16 @@ class TranslationService:
                         model=result.get("model_used", "gemini"),
                     )
 
+                self.last_translation_metadata = {
+                    "provider": "gemini",
+                    "model": "gemini",
+                    "strategy": self.strategy,
+                    "fallback_count": 1,
+                    "attempts": [
+                        {"provider": "google", "model": "google-translate", "status": "failed", "reason": str(exc)},
+                        {"provider": "gemini", "model": "gemini", "status": "failed", "reason": "ai_waterfall_failed"}
+                    ]
+                }
                 error_msg = handle_translation_error(exc, "Translation failed")
                 logger.error(f"Translation error: {exc}")
                 raise TranslationServiceError(error_msg, original_error=exc) from exc

@@ -47,6 +47,14 @@ def temp_db_path():
             time.sleep(0.1)
 
 
+def _set_enabled_providers(config_manager, enabled_provider_names):
+    providers = config_manager.providers_config
+    enabled = set(enabled_provider_names)
+    for provider_name in providers:
+        providers[provider_name]["enabled"] = provider_name in enabled
+    config_manager.providers_config = providers
+
+
 class DummyProvider(BaseTranslationProvider):
     supports_glossary = True
     supports_ai_prompt = True
@@ -233,9 +241,12 @@ def test_strict_ai_policy_never_uses_google():
     assert google.calls == 0
 
 
-def test_strict_ai_policy_uses_ai_providers_without_google():
+def test_strict_ai_policy_uses_ai_providers_without_google(monkeypatch):
     service = TranslationService()
     ai_service = get_ai_service()
+    for provider in ("gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible", "google"):
+        monkeypatch.setitem(ai_service.config_manager._config["providers"][provider], "enabled", True)
+    monkeypatch.setitem(ai_service.config_manager._config["openai_compatible"], "enabled", True)
     ai_service.config_manager.use_provider_router = True
     service.strategy = "ai"
 
@@ -268,9 +279,12 @@ def test_ai_waterfall_can_fallback_to_google():
     ]
 
 
-def test_ai_waterfall_provider_order_before_google():
+def test_ai_waterfall_provider_order_before_google(monkeypatch):
     service = TranslationService()
     ai_service = get_ai_service()
+    for provider in ("gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible", "google"):
+        monkeypatch.setitem(ai_service.config_manager._config["providers"][provider], "enabled", True)
+    monkeypatch.setitem(ai_service.config_manager._config["openai_compatible"], "enabled", True)
     ai_service.config_manager.use_provider_router = True
     service.strategy = "ai_waterfall"
 
@@ -807,6 +821,7 @@ def test_router_disabled_preserves_legacy_translation_path(monkeypatch):
 def test_google_strategy_legacy_path_does_not_call_router_or_ai(monkeypatch):
     service = TranslationService()
     ai_service = get_ai_service()
+    _set_enabled_providers(ai_service.config_manager, {"google"})
     ai_service.config_manager.use_provider_router = False
     original_use_tm = ai_service.config_manager.use_translation_memory
     ai_service.config_manager.use_translation_memory = False
@@ -827,6 +842,7 @@ def test_google_strategy_legacy_path_does_not_call_router_or_ai(monkeypatch):
 def test_google_strategy_router_policy_only_allows_google(monkeypatch):
     service = TranslationService()
     ai_service = get_ai_service()
+    _set_enabled_providers(ai_service.config_manager, {"google"})
     ai_service.config_manager.use_provider_router = True
     original_use_tm = ai_service.config_manager.use_translation_memory
     ai_service.config_manager.use_translation_memory = False
@@ -876,6 +892,9 @@ def test_glossary_terms_passed_to_ai_provider_request(temp_db_path, monkeypatch)
     service = TranslationService()
     service.strategy = "ai"
     ai_service = get_ai_service()
+    for provider in ("gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible", "google"):
+        monkeypatch.setitem(ai_service.config_manager._config["providers"][provider], "enabled", True)
+    monkeypatch.setitem(ai_service.config_manager._config["openai_compatible"], "enabled", True)
     ai_service.config_manager.use_provider_router = True
     ai_service.config_manager.use_glossary = True
     ai_service.config_manager.glossary_enforcement_level = "prompt"
@@ -1065,3 +1084,69 @@ def test_router_does_not_mutate_provider_config_on_cooldown():
         assert config_manager.providers_config["deepseek"] == profile_before
     finally:
         config_manager.providers_config = original
+
+
+def test_google_can_be_disabled_from_router_candidates(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    _set_enabled_providers(ai_service.config_manager, {"gemini"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "ai_waterfall"
+
+    policy = service._build_router_policy(ai_service.config_manager)
+    assert "google" not in policy["allowed_providers"]
+
+
+def test_ai_only_strategy_never_uses_google(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    _set_enabled_providers(ai_service.config_manager, {"gemini", "google"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "ai"
+
+    policy = service._build_router_policy(ai_service.config_manager)
+    assert "google" not in policy["allowed_providers"]
+
+
+def test_translation_result_exposes_provider_model_metadata(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    ai_service.config_manager.use_provider_router = True
+    
+    # 1. Test TM Lookup metadata
+    # Fake lookups
+    class DummyTM:
+        def lookup_segment(self, src, dest, text):
+            return "cached-text"
+            
+    from translation_app.core import translation_memory
+    monkeypatch.setattr(translation_memory, "get_tm_manager", lambda *args: DummyTM())
+    
+    res = service.translate_text("hello", "en", "vi")
+    assert res == "cached-text"
+    assert service.last_translation_metadata["provider"] == "translation_memory"
+    assert service.last_translation_metadata["model"] == "cache"
+    
+    # 2. Test active router metadata
+    class FakeRouter:
+        def route(self, request, policy):
+            return TranslationResult(
+                status="success",
+                text="routed-text",
+                provider="deepseek",
+                model="deepseek-chat",
+                attempts=[
+                    {"provider": "gemini", "model": "gemini-flash", "status": "failed", "reason": "quota"},
+                    {"provider": "deepseek", "model": "deepseek-chat", "status": "success"}
+                ]
+            )
+            
+    ai_service.config_manager.use_translation_memory = False
+    monkeypatch.setattr(service, "_get_provider_router", lambda *args: FakeRouter())
+    
+    res2 = service.translate_text("hello", "en", "vi")
+    assert res2 == "routed-text"
+    assert service.last_translation_metadata["provider"] == "deepseek"
+    assert service.last_translation_metadata["model"] == "deepseek-chat"
+    assert service.last_translation_metadata["fallback_count"] == 1
+    assert len(service.last_translation_metadata["attempts"]) == 2
