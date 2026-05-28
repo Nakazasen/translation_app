@@ -311,7 +311,13 @@ class TranslationService:
                 target_lang=dest_lang,
             )
 
-        if ai_service.config_manager.use_provider_router:
+        if ai_service.config_manager.use_provider_router or self.strategy in {
+            "gemini_only",
+            "deepseek_only",
+            "chatanywhere_only",
+            "nvidia_nim_only",
+            "openai_compatible_only",
+        }:
             glossary_terms = self._find_glossary_terms(text, src_lang, dest_lang, ai_service)
             request = TranslationRequest(
                 text=text,
@@ -406,6 +412,25 @@ class TranslationService:
                 "attempts": [{"provider": "gemini", "model": "gemini", "status": "failed", "reason": "unavailable"}]
             }
             raise TranslationServiceError("Gemini AI translation failed or not configured.")
+
+        if self.strategy == "google":
+            try:
+                mark_provider_call("google")
+                translated_text = self._translate_with_google(text, src_lang, dest_lang)
+                mark_provider_success("google", "google-translate")
+                save_to_tm(translated_text, provider="google", model="google-translate")
+                self.last_translation_metadata = {
+                    "provider": "google",
+                    "model": "google-translate",
+                    "strategy": self.strategy,
+                    "fallback_count": 0,
+                    "attempts": [{"provider": "google", "model": "google-translate", "status": "success"}]
+                }
+                return translated_text
+            except Exception as exc:
+                mark_provider_fail("google", error_type="error", error_message=str(exc), model="google-translate")
+                error_msg = handle_translation_error(exc, "Translation failed")
+                raise TranslationServiceError(error_msg, original_error=exc) from exc
 
         try:
             mark_provider_call("google")
