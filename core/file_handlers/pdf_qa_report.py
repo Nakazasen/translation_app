@@ -30,12 +30,16 @@ class PDFQAReport:
     output_file: str | None
     mode: str
     page_count: int
+    translated_units: int = 0
     translated_blocks: int = 0
+    skipped_units: int = 0
     skipped_protected_blocks: int = 0
     skipped_noisy_blocks: int = 0
+    overflow_units: int = 0
     overflow_blocks: int = 0
     warning_count: int = 0
     warnings_by_type: dict[str, int] = field(default_factory=dict)
+    unit_types_by_kind: dict[str, int] = field(default_factory=dict)
     protected_regions_by_kind: dict[str, int] = field(default_factory=dict)
     rejected: bool = False
     rejection_reason: str | None = None
@@ -49,12 +53,16 @@ def build_pdf_qa_report(
     output_file: str | None,
     mode: str,
     page_count: int,
+    translated_units: int = 0,
     translated_blocks: int = 0,
+    skipped_units: int = 0,
     skipped_protected_blocks: int = 0,
     skipped_noisy_blocks: int = 0,
+    overflow_units: int = 0,
     overflow_blocks: int = 0,
     warning_count: int = 0,
     warnings_by_type: dict[str, int] | None = None,
+    unit_types_by_kind: dict[str, int] | None = None,
     protected_regions_by_kind: dict[str, int] | None = None,
     rejected: bool = False,
     rejection_reason: str | None = None,
@@ -65,12 +73,16 @@ def build_pdf_qa_report(
         output_file=_safe_file_label(output_file),
         mode=mode,
         page_count=page_count,
+        translated_units=translated_units,
         translated_blocks=translated_blocks,
+        skipped_units=skipped_units,
         skipped_protected_blocks=skipped_protected_blocks,
         skipped_noisy_blocks=skipped_noisy_blocks,
+        overflow_units=overflow_units,
         overflow_blocks=overflow_blocks,
         warning_count=warning_count,
         warnings_by_type=dict(warnings_by_type or {}),
+        unit_types_by_kind=dict(unit_types_by_kind or {}),
         protected_regions_by_kind=dict(protected_regions_by_kind or {}),
         rejected=rejected,
         rejection_reason=_sanitize_text_value(rejection_reason),
@@ -89,6 +101,7 @@ def merge_fit_summary_into_report(report: PDFQAReport, fit_summary: dict[str, ob
             merged[str(warning)] = merged.get(str(warning), 0) + int(count)
         report.warnings_by_type = merged
     report.overflow_blocks = max(report.overflow_blocks, int(fit_summary.get("overflow_count", 0) or 0))
+    report.overflow_units = max(report.overflow_units, int(fit_summary.get("overflow_count", 0) or 0))
     report.warning_count = sum(report.warnings_by_type.values())
     return report
 
@@ -131,6 +144,10 @@ def sanitize_pdf_qa_report(report: PDFQAReport) -> PDFQAReport:
     for warning, count in report.warnings_by_type.items():
         sanitized_warnings[_sanitize_text_value(str(warning)) or "[redacted]"] = int(count)
     report.warnings_by_type = sanitized_warnings
+    sanitized_unit_types: dict[str, int] = {}
+    for kind, count in report.unit_types_by_kind.items():
+        sanitized_unit_types[_sanitize_text_value(str(kind)) or "[redacted]"] = int(count)
+    report.unit_types_by_kind = sanitized_unit_types
     sanitized_regions: dict[str, int] = {}
     for kind, count in report.protected_regions_by_kind.items():
         sanitized_regions[_sanitize_text_value(str(kind)) or "[redacted]"] = int(count)
@@ -149,12 +166,16 @@ def summarize_pdf_processing(
     output_file: str | None,
     mode: str,
     page_count: int,
+    translated_units: int = 0,
     translated_blocks: int = 0,
+    skipped_units: int = 0,
     skipped_protected_blocks: int = 0,
     skipped_noisy_blocks: int = 0,
+    overflow_units: int = 0,
     overflow_blocks: int = 0,
     warning_count: int = 0,
     warnings_by_type: dict[str, int] | None = None,
+    unit_types_by_kind: dict[str, int] | None = None,
     protected_regions_by_kind: dict[str, int] | None = None,
     rejected: bool = False,
     rejection_reason: str | None = None,
@@ -165,12 +186,16 @@ def summarize_pdf_processing(
         output_file=output_file,
         mode=mode,
         page_count=page_count,
+        translated_units=translated_units,
         translated_blocks=translated_blocks,
+        skipped_units=skipped_units,
         skipped_protected_blocks=skipped_protected_blocks,
         skipped_noisy_blocks=skipped_noisy_blocks,
+        overflow_units=overflow_units,
         overflow_blocks=overflow_blocks,
         warning_count=warning_count,
         warnings_by_type=warnings_by_type,
+        unit_types_by_kind=unit_types_by_kind,
         protected_regions_by_kind=protected_regions_by_kind,
         rejected=rejected,
         rejection_reason=rejection_reason,
