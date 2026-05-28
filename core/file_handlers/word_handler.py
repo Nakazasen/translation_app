@@ -120,6 +120,21 @@ class WordHandler:
             # Save the clean QA report safely
             self.last_word_qa_report = redact_sensitive(report)
 
+            # Strict error checking policy
+            failed_cand = report.get("failed_candidates", 0)
+            trans_cand = report.get("translated_candidates", 0)
+            total_cand = report.get("total_candidates", 0)
+
+            if failed_cand > 0:
+                if trans_cand == 0:
+                    raise FileProcessingError(
+                        "Không dịch được nội dung Word nào. Vui lòng kiểm tra provider/API key/chế độ dịch."
+                    )
+                else:
+                    raise FileProcessingError(
+                        f"Phát hiện lỗi dịch thuật trên {failed_cand}/{total_cand} đoạn văn bản. Vui lòng kiểm tra API key hoặc kết nối mạng."
+                    )
+
             if self.progress_callback:
                 self.progress_callback("Saving translated Word document...", 95)
             doc.save(output_file)
@@ -133,6 +148,9 @@ class WordHandler:
                 "images_processed": 0,
                 "images_skipped": 0,
             }
+        except FileProcessingError as exc:
+            logger.error(str(exc))
+            raise exc
         except Exception as exc:
             error_msg = f"Error translating Word file: {exc}"
             logger.error(error_msg)
