@@ -8,6 +8,7 @@ from docx.oxml.ns import qn
 
 from translation_app.core.file_handlers.word_handler import WordHandler
 from tests.test_word_ppt_format_preservation import FakeTranslationService
+from translation_app.utils.error_handler import FileProcessingError
 
 
 def _add_textbox_to_doc(doc, text: str):
@@ -159,7 +160,7 @@ def test_word_skip_logic_does_not_skip_normal_vietnamese():
     assert handler._should_skip_text("---")  # divider
 
 
-def test_word_translation_error_is_counted_not_silent(tmp_path):
+def test_word_ai_all_candidates_fail_raises_not_success(tmp_path):
     input_path = tmp_path / "error.docx"
     output_path = tmp_path / "error_out.docx"
 
@@ -174,13 +175,76 @@ def test_word_translation_error_is_counted_not_silent(tmp_path):
 
     handler = WordHandler(service)
     try:
-        stats = handler.translate(str(input_path), str(output_path), "vi", "ja")
+        with pytest.raises(FileProcessingError) as exc_info:
+            handler.translate(str(input_path), str(output_path), "vi", "ja")
+        
+        assert "Không dịch được nội dung Word nào" in str(exc_info.value)
     finally:
         service.executor.shutdown(wait=True)
 
     report = handler.last_word_qa_report
+    assert report is not None
     assert report["failed_candidates"] == 1
     assert report["translated_candidates"] == 0
+
+
+def test_word_partial_failure_is_not_silent(tmp_path):
+    input_path = tmp_path / "partial.docx"
+    output_path = tmp_path / "partial_out.docx"
+
+    class PartialFailingTranslationService(FakeTranslationService):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def translate_long_text(self, text, src_lang, dest_lang):
+            self.calls += 1
+            if self.calls == 1:
+                return text + "-ja"
+            raise Exception("API quota exceeded")
+
+    service = PartialFailingTranslationService()
+    doc = Document()
+    doc.add_paragraph("Đoạn văn dịch được.")
+    doc.add_paragraph("Đoạn văn lỗi.")
+    doc.save(input_path)
+
+    handler = WordHandler(service)
+    try:
+        with pytest.raises(FileProcessingError) as exc_info:
+            handler.translate(str(input_path), str(output_path), "vi", "ja")
+        
+        assert "Phát hiện lỗi dịch thuật trên 1" in str(exc_info.value)
+    finally:
+        service.executor.shutdown(wait=True)
+
+    report = handler.last_word_qa_report
+    assert report is not None
+    assert report["failed_candidates"] == 1
+    assert report["translated_candidates"] == 1
+
+
+def test_word_google_success_path_still_passes(tmp_path):
+    input_path = tmp_path / "google_success.docx"
+    output_path = tmp_path / "google_success_out.docx"
+    service = FakeTranslationService()
+
+    doc = Document()
+    doc.add_paragraph("Đoạn văn Google dịch 1.")
+    doc.add_paragraph("Đoạn văn Google dịch 2.")
+    doc.save(input_path)
+
+    handler = WordHandler(service)
+    try:
+        stats = handler.translate(str(input_path), str(output_path), "vi", "ja")
+        assert stats["api_requests"] == 2
+    finally:
+        service.executor.shutdown(wait=True)
+
+    report = handler.last_word_qa_report
+    assert report is not None
+    assert report["failed_candidates"] == 0
+    assert report["translated_candidates"] == 2
 
 
 def test_word_qa_report_public_safe(tmp_path):
