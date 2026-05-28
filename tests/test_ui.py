@@ -1,5 +1,6 @@
 import os
 import gc
+import json
 import pytest
 import tempfile
 import time
@@ -339,6 +340,26 @@ def _prepare_translate_file_ui(monkeypatch, tmp_path, suffix):
     return root, input_path
 
 
+def _set_fake_pdf_report(root, input_name="input.pdf", output_name="output.pdf"):
+    root.pdf_handler.last_pdf_qa_report = {
+        "mode": "experimental_pdf",
+        "page_count": 1,
+        "translated_units": 1,
+        "translated_blocks": 2,
+        "skipped_units": 0,
+        "overflow_units": 0,
+        "warning_count": 1,
+        "warnings_by_type": {"font_shrunk": 1, "html_preview": "<script>alert(1)</script>"},
+        "protected_regions_by_kind": {"formula": 1},
+        "rejected": False,
+        "input_file": input_name,
+        "output_file": output_name,
+    }
+    root.last_pdf_report_input_file = str(Path("C:/sensitive") / input_name)
+    root.last_pdf_report_output_file = str(Path("C:/sensitive") / output_name)
+    root._update_pdf_report_export_state()
+
+
 def test_pdf_experimental_ui_default_off(monkeypatch, tmp_path):
     root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".pdf")
     calls = []
@@ -430,6 +451,142 @@ def test_pdf_experimental_ui_does_not_affect_non_pdf(monkeypatch, tmp_path):
         root.destroy()
 
 
+def test_pdf_report_export_buttons_exist_or_helpers_present():
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        assert root.btn_export_pdf_report_json.cget("text") == "Xuất báo cáo JSON"
+        assert root.btn_export_pdf_report_html.cget("text") == "Xuất báo cáo HTML"
+        assert root.label_pdf_report_notice.cget("text") == root._get_pdf_report_export_notice()
+        assert root.btn_export_pdf_report_json.cget("state") == "disabled"
+        assert root.btn_export_pdf_report_html.cget("state") == "disabled"
+    finally:
+        root.destroy()
+
+
+def test_export_pdf_report_json_requires_existing_report(monkeypatch):
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    warnings = []
+    try:
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda title, message: warnings.append((title, message)))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected info")))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        result = root.export_pdf_report_json()
+
+        assert result is None
+        assert warnings == [("Cảnh báo", "Chưa có báo cáo PDF thử nghiệm. Hãy chạy dịch PDF thử nghiệm trước.")]
+    finally:
+        root.destroy()
+
+
+def test_export_pdf_report_json_success(monkeypatch, tmp_path):
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    infos = []
+    try:
+        _set_fake_pdf_report(root)
+        output_path = tmp_path / "pdf_regression_report.json"
+        monkeypatch.setattr("translation_app.ui.main_window.filedialog.asksaveasfilename", lambda **kwargs: str(output_path))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda title, message: infos.append((title, message)))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        result = root.export_pdf_report_json()
+
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        assert result == str(output_path)
+        assert output_path.exists()
+        assert payload["qa_report"]["translated_units"] == 1
+        assert payload["metadata"]["input_file"] == "input.pdf"
+        assert "prompt" not in repr(payload)
+        assert infos and "Đã xuất báo cáo PDF thử nghiệm dạng JSON" in infos[0][1]
+    finally:
+        root.destroy()
+
+
+def test_export_pdf_report_html_success(monkeypatch, tmp_path):
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    infos = []
+    try:
+        _set_fake_pdf_report(root)
+        output_path = tmp_path / "pdf_regression_report.html"
+        monkeypatch.setattr("translation_app.ui.main_window.filedialog.asksaveasfilename", lambda **kwargs: str(output_path))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda title, message: infos.append((title, message)))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        result = root.export_pdf_report_html()
+
+        html = output_path.read_text(encoding="utf-8")
+        assert result == str(output_path)
+        assert output_path.exists()
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+        assert "<script>alert(1)</script>" not in html
+        assert infos and "Đã xuất báo cáo PDF thử nghiệm dạng HTML" in infos[0][1]
+    finally:
+        root.destroy()
+
+
+def test_export_pdf_report_cancel_is_safe(monkeypatch):
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        _set_fake_pdf_report(root)
+        monkeypatch.setattr("translation_app.ui.main_window.filedialog.asksaveasfilename", lambda **kwargs: "")
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected info")))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        result = root.export_pdf_report_html()
+
+        assert result is None
+    finally:
+        root.destroy()
+
+
+def test_pdf_report_ui_wording_safe():
+    from translation_app.ui.main_window import MainWindow
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        widgets_text = []
+
+        def traverse(widget):
+            for child in widget.winfo_children():
+                if hasattr(child, "cget"):
+                    try:
+                        text = child.cget("text")
+                        if text:
+                            widgets_text.append(text)
+                    except Exception:
+                        pass
+                traverse(child)
+
+        traverse(root.tab_file)
+        full_text = " ".join(widgets_text)
+
+        assert "Báo cáo PDF thử nghiệm" in full_text
+        assert "Đây không phải chứng nhận giữ layout tuyệt đối" in full_text
+        for banned in ("giữ nguyên PDF", "layout chính xác", "bảo toàn 100%", "enterprise", "tương đương Google"):
+            assert banned not in full_text
+    finally:
+        root.destroy()
+
+
 def test_pdf_experimental_ui_wording_is_safe():
     from translation_app.ui.main_window import MainWindow
 
@@ -492,5 +649,8 @@ def test_no_mojibake_after_pdf_ui_toggle():
     content = main_window_path.read_text(encoding="utf-8")
 
     assert "Xuất PDF thử nghiệm cho PDF text đơn giản" in content
+    assert "Báo cáo PDF thử nghiệm" in content
+    assert "Xuất báo cáo JSON" in content
+    assert "Xuất báo cáo HTML" in content
     assert "DOCX ổn định" in content
     assert not detect_mojibake(content)
