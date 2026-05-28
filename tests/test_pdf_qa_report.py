@@ -13,12 +13,16 @@ def test_pdf_qa_report_public_dict_has_counts_only():
         output_file=r"C:\temp\output.pdf",
         mode="experimental_pdf",
         page_count=2,
+        translated_units=3,
         translated_blocks=4,
+        skipped_units=2,
         skipped_protected_blocks=2,
         skipped_noisy_blocks=1,
+        overflow_units=1,
         overflow_blocks=1,
         warning_count=3,
         warnings_by_type={"text_overflow": 1, "font_shrunk": 2},
+        unit_types_by_kind={"paragraph": 2, "single_block": 1},
         protected_regions_by_kind={"formula": 1, "table": 1, "image": 1},
         engine_version="phase_5h6",
     )
@@ -28,6 +32,10 @@ def test_pdf_qa_report_public_dict_has_counts_only():
     assert public["input_file"] == "input.pdf"
     assert public["output_file"] == "output.pdf"
     assert public["page_count"] == 2
+    assert public["translated_units"] == 3
+    assert public["skipped_units"] == 2
+    assert public["overflow_units"] == 1
+    assert public["unit_types_by_kind"]["paragraph"] == 2
     assert public["warnings_by_type"]["text_overflow"] == 1
     assert "Source Text:" not in repr(public)
     assert "Bearer " not in repr(public)
@@ -58,13 +66,17 @@ def test_summarize_pdf_processing_creates_public_safe_report():
         output_file=r"C:\temp\sample_out.pdf",
         mode="experimental_pdf",
         page_count=1,
+        translated_units=1,
         translated_blocks=1,
         warning_count=2,
         warnings_by_type={"font_shrunk": 1, "text_overflow": 1},
+        unit_types_by_kind={"single_block": 1},
         protected_regions_by_kind={"formula": 1},
     )
 
     assert public["input_file"] == "sample.pdf"
     assert public["output_file"] == "sample_out.pdf"
+    assert public["translated_units"] == 1
     assert public["translated_blocks"] == 1
+    assert public["unit_types_by_kind"]["single_block"] == 1
     assert public["protected_regions_by_kind"]["formula"] == 1

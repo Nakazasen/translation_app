@@ -70,6 +70,16 @@ def _make_formula_mixed_pdf(path):
     doc.close()
 
 
+def _make_adjacent_paragraph_pdf(path):
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_textbox(fitz.Rect(72, 72, 320, 102), "First paragraph line", fontsize=12, fontname="helv")
+    page.insert_textbox(fitz.Rect(72, 104, 320, 134), "Second paragraph line", fontsize=12, fontname="helv")
+    page.insert_textbox(fitz.Rect(72, 220, 320, 250), "Separate paragraph", fontsize=12, fontname="helv")
+    doc.save(path)
+    doc.close()
+
+
 def _extract_page_texts(path):
     doc = fitz.open(path)
     try:
@@ -206,6 +216,7 @@ def test_pdf_experimental_rejects_scanned_or_empty_pdf(tmp_path):
     assert not output_path.exists()
     assert handler.last_pdf_qa_report is not None
     assert handler.last_pdf_qa_report["rejected"] is True
+    assert handler.last_pdf_qa_report["translated_units"] == 0
     assert handler.last_pdf_qa_report["rejection_reason"] is not None
 
 
@@ -224,7 +235,9 @@ def test_pdf_experimental_rejected_scanned_report(tmp_path):
     report = handler.last_pdf_qa_report
     assert report is not None
     assert report["rejected"] is True
+    assert report["translated_units"] == 0
     assert report["protected_regions_by_kind"]["scanned_page"] == 1
+    assert report["warnings_by_type"]["scanned_or_image_only_pdf"] >= 1
     assert "Scanned or image-only PDFs are not supported." in report["rejection_reason"]
 
 
@@ -254,13 +267,13 @@ def test_pdf_experimental_uses_canonical_model_and_protection(tmp_path, monkeypa
         "build_model": 0,
         "detect_regions": 0,
         "apply_flags": 0,
-        "get_translatable": 0,
+        "build_plan": 0,
     }
 
     original_build = pdf_handler_module.build_pdf_document_model
     original_detect = pdf_handler_module.detect_protected_regions
     original_apply = pdf_handler_module.apply_protected_flags
-    original_get = pdf_handler_module.get_translatable_blocks
+    original_plan = pdf_handler_module.build_pdf_translation_plan
 
     def wrapped_build(*args, **kwargs):
         call_counts["build_model"] += 1
@@ -274,14 +287,14 @@ def test_pdf_experimental_uses_canonical_model_and_protection(tmp_path, monkeypa
         call_counts["apply_flags"] += 1
         return original_apply(*args, **kwargs)
 
-    def wrapped_get(*args, **kwargs):
-        call_counts["get_translatable"] += 1
-        return original_get(*args, **kwargs)
+    def wrapped_plan(*args, **kwargs):
+        call_counts["build_plan"] += 1
+        return original_plan(*args, **kwargs)
 
     monkeypatch.setattr(pdf_handler_module, "build_pdf_document_model", wrapped_build)
     monkeypatch.setattr(pdf_handler_module, "detect_protected_regions", wrapped_detect)
     monkeypatch.setattr(pdf_handler_module, "apply_protected_flags", wrapped_apply)
-    monkeypatch.setattr(pdf_handler_module, "get_translatable_blocks", wrapped_get)
+    monkeypatch.setattr(pdf_handler_module, "build_pdf_translation_plan", wrapped_plan)
 
     _, output_path, _, stats = _run_experimental_translation(
         tmp_path,
@@ -295,8 +308,47 @@ def test_pdf_experimental_uses_canonical_model_and_protection(tmp_path, monkeypa
         "build_model": 1,
         "detect_regions": 1,
         "apply_flags": 1,
-        "get_translatable": 1,
+        "build_plan": 1,
     }
+
+
+def test_pdf_experimental_translates_paragraph_unit_once(tmp_path):
+    input_path = tmp_path / "paragraph_input.pdf"
+    output_path = tmp_path / "paragraph_output.pdf"
+    _make_adjacent_paragraph_pdf(input_path)
+
+    translations = {
+        "First paragraph line\nSecond paragraph line": "Doan mot da dich",
+        "Separate paragraph": "Doan hai da dich",
+    }
+    service = FakeTranslationService(translations=translations)
+    handler = PDFHandler(service)
+    try:
+        stats = handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    assert service.calls == ["First paragraph line\nSecond paragraph line", "Separate paragraph"]
+    assert stats["translated_units"] == 2
+    assert stats["translated_blocks"] == 3
+
+
+def test_pdf_experimental_preserves_caption_unit_translation(tmp_path):
+    input_path = create_image_caption_pdf(tmp_path / "caption_input.pdf", caption_text="Figure 1: Chart sample")
+    output_path = tmp_path / "caption_output.pdf"
+
+    service = FakeTranslationService(translations={"Figure 1: Chart sample": "Hinh 1: Mau bieu do"})
+    handler = PDFHandler(service)
+    try:
+        stats = handler.translate_to_pdf_experimental(str(input_path), str(output_path), "en", "vi")
+    finally:
+        service.executor.shutdown(wait=True)
+
+    output_text = _extract_page_texts(output_path)[0]
+    assert service.calls == ["Figure 1: Chart sample"]
+    assert "Hinh 1: Mau bieu do" in output_text
+    assert stats["translated_units"] == 1
+    assert handler.last_pdf_qa_report["unit_types_by_kind"]["caption"] == 1
 
 
 def test_pdf_experimental_skips_formula_like_blocks(tmp_path):
@@ -315,6 +367,7 @@ def test_pdf_experimental_skips_formula_like_blocks(tmp_path):
     assert service.calls == ["Translate this paragraph"]
     assert "Doan van da dich" in output_text
     assert "E = mc^2" in output_text
+    assert stats["translated_units"] == 1
     assert stats["skipped_protected_blocks"] >= 1
     assert handler.last_pdf_qa_report["protected_regions_by_kind"]["formula"] >= 1
 
@@ -331,6 +384,7 @@ def test_pdf_experimental_skips_table_regions(tmp_path):
         service.executor.shutdown(wait=True)
 
     assert service.calls == ["Item\nQty\nPrice"]
+    assert stats["translated_units"] == 1
     assert stats["skipped_protected_blocks"] >= 1
     assert handler.last_pdf_qa_report["protected_regions_by_kind"]["table"] >= 1
 
@@ -380,6 +434,7 @@ def test_pdf_experimental_uses_text_fit_for_insert(tmp_path, monkeypatch):
 
     assert output_path.exists()
     assert calls["fit"] == 1
+    assert stats["overflow_units"] == 1
     assert stats["overflow_blocks"] == 1
     assert stats["warning_count"] >= 2
 
@@ -414,7 +469,9 @@ def test_pdf_experimental_report_counts_overflow(tmp_path, monkeypatch):
         service.executor.shutdown(wait=True)
 
     report = handler.last_pdf_qa_report
+    assert report["translated_units"] == 1
     assert report["overflow_blocks"] == 1
+    assert report["overflow_units"] == 1
     assert report["warning_count"] >= 2
     assert report["warnings_by_type"]["text_overflow"] >= 1
     assert "Very long translated block" not in repr(report)
@@ -447,10 +504,16 @@ def test_pdf_experimental_outputs_warning_summary_without_raw_text_in_report(tmp
 
     report = handler.last_pdf_qa_report
     assert report is not None
+    assert "translated_units" in report
+    assert "skipped_units" in report
+    assert "overflow_units" in report
+    assert "unit_types_by_kind" in report
     assert "warning_count" in report
     assert "warnings_by_type" in report
     assert "Hello world" not in repr(report)
     assert "Xin chao the gioi" not in repr(report)
+    assert "prompt" not in repr(report)
+    assert "AIza" not in repr(report)
 
 
 def test_pdf_experimental_no_mojibake_with_vietnamese_text_when_supported(tmp_path):
