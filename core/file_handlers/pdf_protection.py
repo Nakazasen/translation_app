@@ -82,12 +82,24 @@ def _find_nearby_caption(page_blocks: list[PDFBlockModel], visual_block: PDFBloc
             continue
         if "caption_like" not in block.flags:
             continue
+        related_ids = block.metadata.get("related_block_ids", [])
+        if visual_block.block_id in related_ids or block.metadata.get("caption_for_block_id") == visual_block.block_id:
+            candidates.append(block)
+            continue
         block_rect = fitz.Rect(block.bbox)
         if 0 <= block_rect.y0 - visual_rect.y1 <= 60 and block_rect.x0 <= visual_rect.x1 + 40:
             candidates.append(block)
     if not candidates:
         return None
-    candidates.sort(key=lambda block: (block.bbox[1], block.bbox[0], block.block_id))
+    candidates.sort(
+        key=lambda block: (
+            0 if block.metadata.get("caption_for_block_id") == visual_block.block_id else 1,
+            block.reading_order if block.reading_order is not None else 10**9,
+            block.bbox[1],
+            block.bbox[0],
+            block.block_id,
+        )
+    )
     return candidates[0]
 
 
