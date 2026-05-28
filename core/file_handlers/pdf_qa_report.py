@@ -106,6 +106,23 @@ def merge_protection_summary_into_report(
     return report
 
 
+def merge_visual_diff_into_pdf_qa_report(
+    report: PDFQAReport, visual_result: dict[str, object] | None
+) -> PDFQAReport:
+    if not visual_result:
+        return report
+
+    warnings = visual_result.get("warnings", [])
+    if isinstance(warnings, list):
+        merged = dict(report.warnings_by_type)
+        for warning in warnings:
+            label = _sanitize_text_value(str(warning)) or "[redacted]"
+            merged[label] = merged.get(label, 0) + 1
+        report.warnings_by_type = merged
+        report.warning_count = sum(report.warnings_by_type.values())
+    return report
+
+
 def sanitize_pdf_qa_report(report: PDFQAReport) -> PDFQAReport:
     report.input_file = _safe_file_label(report.input_file)
     report.output_file = _safe_file_label(report.output_file)
