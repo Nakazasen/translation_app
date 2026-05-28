@@ -203,10 +203,15 @@ class MainWindow(tk.Tk):
         # Map current strategy to display string
         current_strategy = self.translation_service.strategy
         strategy_display_map = {
-            "google": "Chỉ dùng Google Translate",
-            "ai": "Chỉ dùng Gemini",
             "waterfall": "Tự động chọn AI tốt nhất",
-            "ai_waterfall": "Nâng cao"
+            "ai": "Chỉ dùng AI, không dùng Google Translate",
+            "gemini_only": "Chỉ dùng Gemini",
+            "chatanywhere_only": "Chỉ dùng ChatAnyWhere",
+            "deepseek_only": "Chỉ dùng DeepSeek",
+            "nvidia_nim_only": "Chỉ dùng NVIDIA NIM",
+            "openai_compatible_only": "Chỉ dùng OpenAI tùy chỉnh",
+            "google": "Chỉ dùng Google Translate",
+            "ai_waterfall": "Nâng cao: dùng thứ tự ưu tiên bên dưới"
         }
         initial_display_val = strategy_display_map.get(current_strategy, "Tự động chọn AI tốt nhất")
         
@@ -214,10 +219,15 @@ class MainWindow(tk.Tk):
         self.strat_combo = ttk.Combobox(
             frame_mode_row, textvariable=self.strat_var, values=[
                 "Tự động chọn AI tốt nhất",
+                "Chỉ dùng AI, không dùng Google Translate",
                 "Chỉ dùng Gemini",
+                "Chỉ dùng ChatAnyWhere",
+                "Chỉ dùng DeepSeek",
+                "Chỉ dùng NVIDIA NIM",
+                "Chỉ dùng OpenAI tùy chỉnh",
                 "Chỉ dùng Google Translate",
-                "Nâng cao"
-            ], state="readonly", width=25
+                "Nâng cao: dùng thứ tự ưu tiên bên dưới"
+            ], state="readonly", width=40
         )
         self.strat_combo.pack(side=tk.LEFT, padx=10)
         
@@ -250,7 +260,28 @@ class MainWindow(tk.Tk):
         frame_providers.pack(fill=tk.X, padx=20, pady=5)
 
         columns = ("name", "enabled", "api_key_status", "key_count", "default_model")
-        self.prov_tree = ttk.Treeview(frame_providers, columns=columns, show="headings", height=6)
+        
+        # Container frame for treeview and side buttons
+        frame_tree_container = tk.Frame(frame_providers, bg=self.colors['gray_light'])
+        frame_tree_container.pack(fill=tk.BOTH, expand=True)
+
+        # Move Up/Down buttons on the right side
+        frame_move_buttons = tk.Frame(frame_tree_container, bg=self.colors['gray_light'])
+        frame_move_buttons.pack(side=tk.RIGHT, padx=10, fill=tk.Y)
+
+        self.btn_move_up = create_styled_button(
+            frame_move_buttons, text="▲ Di chuyển lên", command=self._move_provider_up,
+            width=15, colors=self.colors
+        )
+        self.btn_move_up.pack(pady=5)
+
+        self.btn_move_down = create_styled_button(
+            frame_move_buttons, text="▼ Di chuyển xuống", command=self._move_provider_down,
+            width=15, colors=self.colors
+        )
+        self.btn_move_down.pack(pady=5)
+
+        self.prov_tree = ttk.Treeview(frame_tree_container, columns=columns, show="headings", height=6)
         self.prov_tree.heading("name", text="Nhà cung cấp")
         self.prov_tree.heading("enabled", text="Trạng thái")
         self.prov_tree.heading("api_key_status", text="API Key")
@@ -262,7 +293,8 @@ class MainWindow(tk.Tk):
         self.prov_tree.column("api_key_status", width=120, anchor=tk.CENTER)
         self.prov_tree.column("key_count", width=80, anchor=tk.CENTER)
         self.prov_tree.column("default_model", width=180)
-        self.prov_tree.pack(fill=tk.BOTH, expand=True)
+        
+        self.prov_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.prov_tree.bind("<<TreeviewSelect>>", self._on_provider_selected)
 
         # --- PHẦN C: CHI TIẾT & CẤU HÌNH NHÀ CUNG CẤP ---
@@ -289,6 +321,12 @@ class MainWindow(tk.Tk):
             state=tk.DISABLED
         )
         self.chk_prov_enabled.pack(anchor=tk.W, pady=2)
+
+        self.lbl_google_tip = tk.Label(
+            self.frame_detail, text="💡 Tắt Google Translate nếu bạn muốn chắc chắn chỉ dùng AI provider.",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 9, 'italic')
+        )
 
         # Base URL Row
         self.frame_base_url = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
@@ -550,7 +588,15 @@ class MainWindow(tk.Tk):
                 "google": "Google Translate"
             }
             
-            for p_name, display in provider_display_names.items():
+            # Sort providers by priority order list
+            order = list(self.config_manager.provider_order)
+            full_order = [p for p in order if p in provider_display_names]
+            for p in provider_display_names:
+                if p not in full_order:
+                    full_order.append(p)
+            
+            for p_name in full_order:
+                display = provider_display_names[p_name]
                 p_cfg = pub_data.get(p_name, {})
                 enabled = "🟢 Bật" if p_cfg.get("enabled", False) else "🔴 Tắt"
                 
@@ -563,7 +609,7 @@ class MainWindow(tk.Tk):
 
                 api_key_status = "Đã cấu hình" if keys_count > 0 else "Chưa cấu hình"
                 if p_name == "google":
-                    enabled = "🟢 Hoạt động"
+                    # Google doesn't need keys, but can be enabled or disabled
                     api_key_status = "Không yêu cầu key"
                     keys_count = 0
                 
@@ -610,7 +656,7 @@ class MainWindow(tk.Tk):
         
         # Update enabled
         self.prov_enabled_var.set(p_cfg.get("enabled", False))
-        self.chk_prov_enabled.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        self.chk_prov_enabled.config(state=tk.NORMAL)
         
         # Update base url
         self.prov_base_url_var.set(p_cfg.get("base_url", ""))
@@ -634,7 +680,12 @@ class MainWindow(tk.Tk):
         
         self._refresh_provider_model_controls(p_name, catalog_entry)
             
-        self.btn_save_prov.config(state=tk.NORMAL if p_name != "google" else tk.DISABLED)
+        self.btn_save_prov.config(state=tk.NORMAL)
+
+        if p_name == "google":
+            self.lbl_google_tip.pack(anchor=tk.W, pady=5)
+        else:
+            self.lbl_google_tip.pack_forget()
         
         self.frame_detail.config(text=f"🛠️ Chi tiết nhà cung cấp được chọn: {p_name.upper()}")
 
@@ -799,6 +850,44 @@ class MainWindow(tk.Tk):
         self._on_provider_selected() # Refresh detail pane
         self._refresh_router_health() # Sync to router snapshot
         messagebox.showinfo("Thành công", f"Đã lưu các cài đặt cho {self.selected_provider} thành công.")
+
+    def _move_provider_up(self):
+        """Move selected provider up in the router priority list."""
+        selection = self.prov_tree.selection()
+        if not selection:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một nhà cung cấp để di chuyển.")
+            return
+        p_name = selection[0]
+        order = list(self.config_manager.provider_order)
+        if p_name not in order:
+            return
+        idx = order.index(p_name)
+        if idx > 0:
+            order[idx], order[idx-1] = order[idx-1], order[idx]
+            self.config_manager.provider_order = order
+            self.config_manager.save_config()
+            self._refresh_providers_tree()
+            self.prov_tree.selection_set(p_name)
+            self._refresh_quick_config_summary()
+
+    def _move_provider_down(self):
+        """Move selected provider down in the router priority list."""
+        selection = self.prov_tree.selection()
+        if not selection:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một nhà cung cấp để di chuyển.")
+            return
+        p_name = selection[0]
+        order = list(self.config_manager.provider_order)
+        if p_name not in order:
+            return
+        idx = order.index(p_name)
+        if idx < len(order) - 1:
+            order[idx], order[idx+1] = order[idx+1], order[idx]
+            self.config_manager.provider_order = order
+            self.config_manager.save_config()
+            self._refresh_providers_tree()
+            self.prov_tree.selection_set(p_name)
+            self._refresh_quick_config_summary()
 
     def setup_file_tab(self):
         """Setup file translation tab"""
@@ -1158,6 +1247,13 @@ class MainWindow(tk.Tk):
             padx=10, pady=10
         )
         self.entry_paragraph_output.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        self.lbl_last_translation_source = tk.Label(
+            frame_output, text="",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 9, 'italic'), anchor=tk.W
+        )
+        self.lbl_last_translation_source.pack(fill=tk.X, pady=(0, 5))
         
         button_copy_paragraph = create_styled_button(
             frame_output, text="Sao chép đoạn văn đã dịch",
@@ -1704,6 +1800,32 @@ class MainWindow(tk.Tk):
             translated_text = self.translation_service.translate_text(input_text, src_lang, dest_lang)
             self.entry_paragraph_output.delete("1.0", tk.END)
             self.entry_paragraph_output.insert(tk.END, translated_text)
+            
+            # Show translation source telemetry
+            metadata = self.translation_service.last_translation_metadata
+            provider = metadata.get("provider", "")
+            model = metadata.get("model", "")
+            fallbacks = metadata.get("fallback_count", 0)
+            
+            if provider:
+                display_provider = {
+                    "gemini": "Gemini AI",
+                    "chatanywhere": "ChatAnyWhere",
+                    "deepseek": "DeepSeek",
+                    "nvidia_nim": "NVIDIA NIM",
+                    "openai_compatible": "OpenAI tùy chỉnh",
+                    "google": "Google Translate",
+                    "translation_memory": "Bộ nhớ dịch (TM Cache)"
+                }.get(provider, provider)
+                
+                text_info = f"Được dịch bởi: {display_provider}"
+                if model and model != "none":
+                    text_info += f" / {model}"
+                if fallbacks > 0:
+                    text_info += f" (Fallback: {fallbacks} lần)"
+                self.lbl_last_translation_source.config(text=text_info)
+            else:
+                self.lbl_last_translation_source.config(text="")
         except Exception as e:
             error_msg = handle_translation_error(e, "Dịch đoạn văn")
             messagebox.showerror("Lỗi", error_msg)
