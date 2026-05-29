@@ -66,6 +66,16 @@ class MainWindow(tk.Tk):
         self.glossary_level_var = tk.StringVar(value=self.config_manager.glossary_enforcement_level)
         self.use_router_var = tk.BooleanVar(value=self.config_manager.use_provider_router)
         self.router_policy_var = tk.StringVar(value=self.config_manager.provider_router_policy)
+        self.auto_refresh_provider_models_var = tk.BooleanVar(value=self.config_manager.auto_refresh_provider_models)
+
+        # Background model catalog refresh tracking
+        self._provider_model_refresh_inflight = set()
+        self._provider_model_auto_refresh_attempted = set()
+        self._provider_model_auto_refresh_queue = []
+        self._provider_model_auto_refresh_running = False
+        self._provider_model_refresh_queue_results = []
+        self._provider_model_poll_after_ids = set()
+        self._auto_refresh_after_id = None
 
         # Filter out backward compatibility keys for cleaner UI
         # Keep 'auto' for auto-detect, filter out zh-cn/zh-tw variations
@@ -137,11 +147,34 @@ class MainWindow(tk.Tk):
 
         # Connect Strategy ComboBox to Translation Service
         self.strat_var.trace_add("write", self._on_strategy_changed)
+
+        # Notebook tab selection binding
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+        # Schedule background refresh after UI is fully initialized and ready
+        self._auto_refresh_after_id = self.after(100, self._auto_refresh_provider_models_on_startup)
+        
+        # Start polling for background model discovery queue results
+        self.after(50, self._poll_provider_model_refresh_results)
     
     def _on_strategy_changed(self, *args):
         """Update translation strategy when ComboBox changes"""
         new_strat = self.strat_var.get()
         self.translation_service.set_strategy(new_strat)
+
+    def _on_tab_changed(self, event=None):
+        """Handle notebook tab switch to trigger auto refresh when opening AI config tab."""
+        if not self.winfo_exists():
+            return
+        selected_tab = self.notebook.select()
+        if not selected_tab:
+            return
+        # Switch tab index matches tab_ai
+        try:
+            if self.notebook.index(selected_tab) == self.notebook.index(self.tab_ai):
+                self._auto_refresh_provider_models_on_startup()
+        except Exception:
+            pass
     
     def setup_ai_tab(self):
         """Setup the AI Configuration tab with Unified Provider settings."""
@@ -409,6 +442,13 @@ class MainWindow(tk.Tk):
         self.combo_model = ttk.Combobox(self.frame_model, textvariable=self.prov_default_model_var, state="disabled", width=30)
         self.combo_model.pack(side=tk.LEFT, padx=5)
 
+        # Refresh status label
+        self.lbl_refresh_status = tk.Label(
+            self.frame_detail, text="", bg=self.colors['gray_light'],
+            fg=self.colors['gray_dark'], font=('Segoe UI', 8, 'italic'), anchor=tk.W, justify=tk.LEFT
+        )
+        self.lbl_refresh_status.pack(fill=tk.X, pady=(2, 5))
+
         # Section C action buttons
         self.frame_detail_actions = tk.Frame(self.frame_detail, bg=self.colors['gray_light'])
         self.frame_detail_actions.pack(fill=tk.X, pady=(10, 0))
@@ -520,6 +560,20 @@ class MainWindow(tk.Tk):
             bg=self.colors['gray_light'], fg=self.colors['gray_medium'], font=('Segoe UI', 8, 'italic')
         )
         self.glossary_note_label.pack(anchor=tk.W, pady=(2, 5))
+
+        # Row for Auto Refresh setting
+        auto_refresh_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
+        auto_refresh_row.pack(fill=tk.X, pady=2)
+        chk_auto_refresh = tk.Checkbutton(
+            auto_refresh_row, text="Tự động làm mới model khi mở app", 
+            variable=self.auto_refresh_provider_models_var, bg=self.colors['gray_light'],
+            fg=self.colors['gray_dark'], activebackground=self.colors['gray_light']
+        )
+        chk_auto_refresh.pack(side=tk.LEFT)
+        tk.Label(
+            auto_refresh_row, text="💡 Tự động tải danh sách model mới của OpenAI/NVIDIA trong background.",
+            bg=self.colors['gray_light'], fg=self.colors['gray_medium'], font=('Segoe UI', 8, 'italic')
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
         # Row 3: Save button
         save_btn_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
@@ -840,66 +894,241 @@ class MainWindow(tk.Tk):
         messagebox.showinfo("Thành công", f"Đã xóa model '{model_id}'.")
 
     def _refresh_provider_models_catalog(self):
-        """Refresh models from a provider /models endpoint on a background thread to keep UI active."""
+        """Refresh models from selected provider using the background helper."""
         if not self.selected_provider:
             return
+        self._start_provider_model_refresh(self.selected_provider, manual=True, force=True)
 
-        provider_name = self.selected_provider
+    def _start_provider_model_refresh(
+        self,
+        provider_name: str,
+        manual: bool = False,
+        force: bool = False,
+        on_complete: Optional[callable] = None,
+    ) -> bool:
+        """Start a background thread to refresh provider models without making any Tkinter calls in it."""
+        if not self.winfo_exists():
+            return False
 
-        # Visual feedback
-        self.btn_refresh_models.config(state=tk.DISABLED, text="Đang quét model...")
-        self.listbox_models.config(state=tk.DISABLED)
+        provider_name = str(provider_name or "").strip().lower()
+
+        # Prevent double-refreshing the same provider at the same time
+        if provider_name in self._provider_model_refresh_inflight:
+            return False
+
+        # If this is auto-refresh (not force), check caching
+        if not force:
+            if not self.config_manager.should_auto_refresh_provider_models(provider_name):
+                return False
+
+        # Mark as inflight and register attempt
+        self._provider_model_auto_refresh_attempted.add(provider_name)
+        self._provider_model_refresh_inflight.add(provider_name)
+
+        # Update manual refresh controls visual state if this provider is currently selected
+        if self.selected_provider == provider_name:
+            self.btn_refresh_models.config(state=tk.DISABLED, text="Đang quét model...")
+            self.listbox_models.config(state=tk.DISABLED)
+            self._refresh_provider_model_status_widgets()
 
         def worker():
+            success = False
+            discovered_count = 0
+            error_text = ""
             try:
                 discovered = self.config_manager.refresh_provider_models(provider_name)
                 self.config_manager.save_config()
-
-                def on_success():
-                    try:
-                        if not self.winfo_exists():
-                            return
-                        self._refresh_providers_tree()
-                        self._on_provider_selected()
-                        # Restore UI state
-                        self.btn_refresh_models.config(state=tk.NORMAL, text="Làm mới model")
-                        self.listbox_models.config(state=tk.NORMAL)
-                        messagebox.showinfo(
-                            "Thành công",
-                            f"Đã làm mới và phát hiện {len(discovered)} model từ API cho {provider_name}."
-                        )
-                    except Exception:
-                        pass
-                
-                try:
-                    if self.winfo_exists():
-                        self.after(0, on_success)
-                except Exception:
-                    pass
-
+                success = True
+                discovered_count = len(discovered)
             except Exception as e:
-                def on_failure():
-                    try:
-                        if not self.winfo_exists():
-                            return
-                        # Restore UI state
-                        self.btn_refresh_models.config(state=tk.NORMAL, text="Làm mới model")
-                        self.listbox_models.config(state=tk.NORMAL)
-                        self._on_provider_selected()
-                        messagebox.showerror(
-                            "Lỗi",
-                            f"Không thể làm mới model: {e}"
-                        )
-                    except Exception:
-                        pass
-                
-                try:
-                    if self.winfo_exists():
-                        self.after(0, on_failure)
-                except Exception:
-                    pass
+                error_text = str(e)
+
+            # Append the result thread-safely to our list. Python lists are thread-safe for appending.
+            self._provider_model_refresh_queue_results.append({
+                "provider_name": provider_name,
+                "manual": manual,
+                "success": success,
+                "count": discovered_count,
+                "error_text": error_text,
+                "on_complete": on_complete,
+            })
 
         threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _poll_provider_model_refresh_results(self):
+        """Periodically poll for background thread results on the main thread."""
+        if not self.winfo_exists():
+            return
+
+        while self._provider_model_refresh_queue_results:
+            res = self._provider_model_refresh_queue_results.pop(0)
+            self._handle_provider_model_refresh_done(
+                res["provider_name"],
+                res["manual"],
+                res["success"],
+                res["count"],
+                res["error_text"],
+                res["on_complete"],
+            )
+
+        poll_after_id = self.after(50, self._poll_provider_model_refresh_results)
+        self._provider_model_poll_after_ids.add(poll_after_id)
+
+    def _handle_provider_model_refresh_done(
+        self,
+        provider_name: str,
+        manual: bool,
+        success: bool,
+        count: int,
+        error_text: str,
+        on_complete: Optional[callable] = None,
+    ):
+        """Handle UI updates after a background provider model refresh completes. Runs on main thread."""
+        if provider_name in self._provider_model_refresh_inflight:
+            self._provider_model_refresh_inflight.remove(provider_name)
+
+        # Update cache state
+        self.config_manager.record_provider_model_refresh_result(
+            provider_name,
+            "success" if success else "error",
+            count,
+            error_text if not success else None,
+        )
+
+        if not self.winfo_exists():
+            if callable(on_complete):
+                on_complete()
+            return
+
+        # Restore button visuals if selected provider is this provider
+        if self.selected_provider == provider_name:
+            self.listbox_models.config(state=tk.NORMAL)
+            self._on_provider_selected()
+
+        # Update list elements
+        self._refresh_providers_tree()
+        self._refresh_provider_model_status_widgets()
+
+        # Handle feedback popups
+        if manual:
+            if success:
+                messagebox.showinfo(
+                    "Thành công",
+                    f"Đã làm mới và phát hiện {count} model từ API cho {provider_name}.",
+                )
+            else:
+                messagebox.showerror(
+                    "Lỗi",
+                    f"Không thể làm mới model: {error_text}",
+                )
+
+        if callable(on_complete):
+            on_complete()
+
+    def _run_next_auto_provider_model_refresh(self):
+        """Process next provider in the auto refresh queue. Runs on main thread."""
+        if not self.winfo_exists():
+            return
+
+        if self._provider_model_auto_refresh_running:
+            return
+
+        if not self._provider_model_auto_refresh_queue:
+            self._refresh_provider_model_status_widgets()
+            return
+
+        provider_name = self._provider_model_auto_refresh_queue.pop(0)
+        self._provider_model_auto_refresh_running = True
+
+        def continue_queue():
+            self._provider_model_auto_refresh_running = False
+            if self.winfo_exists():
+                self.after(0, self._run_next_auto_provider_model_refresh)
+
+        started = self._start_provider_model_refresh(
+            provider_name,
+            manual=False,
+            force=False,
+            on_complete=continue_queue,
+        )
+        if not started:
+            continue_queue()
+
+    def _auto_refresh_provider_models_on_startup(self):
+        """Auto refresh eligible provider models in the background on startup or tab focus."""
+        if hasattr(self, '_auto_refresh_after_id') and self._auto_refresh_after_id:
+            try:
+                self.after_cancel(self._auto_refresh_after_id)
+            except Exception:
+                pass
+        self._auto_refresh_after_id = None
+        if not self.winfo_exists():
+            return
+
+        self._refresh_provider_model_status_widgets()
+        if not self.config_manager.auto_refresh_provider_models:
+            return
+
+        # Get list of providers prioritised by user's configuration
+        ordered_names = list(self.config_manager.provider_order)
+        for provider_name in self.config_manager.providers_config.keys():
+            if provider_name not in ordered_names:
+                ordered_names.append(provider_name)
+
+        # Get all providers that need background auto-refresh
+        eligible = [
+            provider_name
+            for provider_name in ordered_names
+            if provider_name not in self._provider_model_auto_refresh_attempted
+            and self.config_manager.should_auto_refresh_provider_models(provider_name)
+        ]
+        if not eligible:
+            self._refresh_provider_model_status_widgets()
+            return
+
+        self._provider_model_auto_refresh_queue = eligible
+        self._refresh_provider_model_status_widgets()
+        self._run_next_auto_provider_model_refresh()
+
+    def _refresh_provider_model_status_widgets(self):
+        """Update localized status widgets for the current provider model refresh status."""
+        if not hasattr(self, 'lbl_refresh_status'):
+            return
+
+        if not self.selected_provider:
+            self.lbl_refresh_status.config(text="")
+            return
+
+        p_name = self.selected_provider
+        catalog = self.config_manager.get_provider_model_catalog_public()
+        entry = catalog.get("providers", {}).get(p_name, {})
+        supports_refresh = entry.get("supports_refresh", False)
+
+        if not supports_refresh:
+            self.lbl_refresh_status.config(text="💡 Nhà cung cấp này không hỗ trợ tự động làm mới model.")
+            return
+
+        state = self.config_manager.get_provider_model_refresh_state_public().get(p_name, {})
+        last_refreshed_str = state.get("last_refreshed_at")
+        last_status = state.get("last_status", "never")
+        last_error = state.get("last_error", "")
+        last_count = state.get("last_count", 0)
+
+        status_text = ""
+        if p_name in self._provider_model_refresh_inflight:
+            status_text = "⏳ Đang quét danh sách model từ API ở background..."
+        elif last_status == "never":
+            status_text = "🔄 Chưa từng được làm mới. Nhấn 'Làm mới model' để tải."
+        elif last_status == "success":
+            time_part = last_refreshed_str.split(".")[0].replace("T", " ") if last_refreshed_str else "không rõ"
+            status_text = f"🟢 Làm mới thành công lúc {time_part}. Tìm thấy {last_count} model."
+        elif last_status == "error":
+            time_part = last_refreshed_str.split(".")[0].replace("T", " ") if last_refreshed_str else "không rõ"
+            err_msg = last_error[:60] + "..." if len(last_error) > 60 else last_error
+            status_text = f"🔴 Làm mới lỗi lúc {time_part}: {err_msg}"
+
+        self.lbl_refresh_status.config(text=status_text)
 
     def _save_provider_detail(self):
         """Save base_url, enabled state and default model for current provider."""
@@ -2544,6 +2773,7 @@ Bước 3: Sử dụng AI Vision
             self.config_manager.glossary_enforcement_level = self.glossary_level_var.get()
             self.config_manager.use_provider_router = self.use_router_var.get()
             self.config_manager.provider_router_policy = self.router_policy_var.get()
+            self.config_manager.auto_refresh_provider_models = self.auto_refresh_provider_models_var.get()
             
             if self.config_manager.save_config():
                 messagebox.showinfo("Thanh cong", "Da luu cai dat nang cao thanh cong!")
@@ -3188,3 +3418,18 @@ Bước 3: Sử dụng AI Vision
         logger.info("Application closing")
         self.translation_service.shutdown()
         self.destroy()
+
+    def destroy(self):
+        """Clean up background pollers and after tasks."""
+        if hasattr(self, '_provider_model_poll_after_ids'):
+            for after_id in list(self._provider_model_poll_after_ids):
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
+        if hasattr(self, '_auto_refresh_after_id') and self._auto_refresh_after_id:
+            try:
+                self.after_cancel(self._auto_refresh_after_id)
+            except Exception:
+                pass
+        super().destroy()
