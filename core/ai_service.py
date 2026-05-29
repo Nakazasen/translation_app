@@ -23,6 +23,7 @@ import concurrent.futures
 import urllib.error
 import urllib.request
 from copy import deepcopy
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -78,6 +79,23 @@ DEFAULT_MODELS = [
 ]
 
 DEFAULT_PROVIDER_MODEL_CATALOG_VERSION = 1
+PROVIDER_MODEL_REFRESH_STATUSES = {"never", "success", "error"}
+
+
+def _blank_provider_model_refresh_entry() -> dict[str, Any]:
+    return {
+        "last_refreshed_at": None,
+        "last_status": "never",
+        "last_error": "",
+        "last_count": 0,
+    }
+
+
+def get_default_provider_model_refresh_state() -> dict[str, dict[str, Any]]:
+    return {
+        provider_name: _blank_provider_model_refresh_entry()
+        for provider_name in get_default_provider_profiles().keys()
+    }
 
 
 def _gemini_catalog_seed() -> list[dict[str, Any]]:
@@ -496,6 +514,9 @@ class AIConfigManager:
             "provider_router": deepcopy(provider_router_defaults),
             "providers": deepcopy(provider_defaults),
             "provider_model_catalog": get_default_provider_model_catalog(),
+            "auto_refresh_provider_models": True,
+            "provider_model_refresh_ttl_hours": 24,
+            "provider_model_refresh_state": get_default_provider_model_refresh_state(),
         }
 
     @property
@@ -1315,6 +1336,126 @@ class AIConfigManager:
         if provider_name in providers:
             providers[provider_name]["base_url"] = base_url
             self.providers_config = providers
+
+    @property
+    def auto_refresh_provider_models(self) -> bool:
+        return bool(self._config.get("auto_refresh_provider_models", True))
+
+    @auto_refresh_provider_models.setter
+    def auto_refresh_provider_models(self, value: bool):
+        self._config["auto_refresh_provider_models"] = bool(value)
+
+    @property
+    def provider_model_refresh_ttl_hours(self) -> int:
+        return int(self._config.get("provider_model_refresh_ttl_hours", 24))
+
+    @provider_model_refresh_ttl_hours.setter
+    def provider_model_refresh_ttl_hours(self, value: int):
+        self._config["provider_model_refresh_ttl_hours"] = int(value)
+
+    @property
+    def provider_model_refresh_state(self) -> Dict[str, Dict[str, Any]]:
+        value = self._config.get("provider_model_refresh_state", {})
+        if not isinstance(value, dict):
+            value = {}
+        defaults = get_default_provider_model_refresh_state()
+        merged = deepcopy(defaults)
+        for provider_name, entry in value.items():
+            if provider_name in merged and isinstance(entry, dict):
+                merged[provider_name].update(entry)
+        return merged
+
+    @provider_model_refresh_state.setter
+    def provider_model_refresh_state(self, value: Dict[str, Dict[str, Any]]):
+        defaults = get_default_provider_model_refresh_state()
+        merged = deepcopy(defaults)
+        if isinstance(value, dict):
+            for provider_name, entry in value.items():
+                if provider_name in merged and isinstance(entry, dict):
+                    merged[provider_name].update(entry)
+        self._config["provider_model_refresh_state"] = merged
+
+    def should_auto_refresh_provider_models(self, provider_id: str, now: Optional[datetime] = None) -> bool:
+        """
+        Check if a provider should undergo automatic model catalog refresh.
+        """
+        if not self.auto_refresh_provider_models:
+            return False
+
+        provider_id = str(provider_id or "").strip().lower()
+        if provider_id == "google":
+            return False
+
+        catalog = self.get_provider_model_catalog_public()
+        provider_entry = catalog.get("providers", {}).get(provider_id, {})
+        if not provider_entry.get("supports_refresh", False):
+            return False
+
+        provider_cfg = self.providers_config.get(provider_id, {})
+        base_url = str(provider_cfg.get("base_url", "") or "").strip()
+        if not base_url:
+            return False
+
+        api_keys = provider_cfg.get("api_keys", [])
+        has_key = any(str(k or "").strip() for k in api_keys)
+        allow_no_key = bool(provider_cfg.get("allow_no_key_local", False))
+        if not (has_key or allow_no_key):
+            return False
+
+        state = self.provider_model_refresh_state.get(provider_id, {})
+        last_refreshed_str = state.get("last_refreshed_at")
+        if not last_refreshed_str:
+            return True
+
+        try:
+            last_refreshed = datetime.fromisoformat(last_refreshed_str)
+        except ValueError:
+            return True
+
+        if now is None:
+            now = datetime.now()
+
+        ttl = timedelta(hours=self.provider_model_refresh_ttl_hours)
+        return now - last_refreshed >= ttl
+
+    def record_provider_model_refresh_result(
+        self,
+        provider_id: str,
+        status: str,
+        count: int,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        Record the outcome of a provider model refresh and persist it.
+        """
+        provider_id = str(provider_id or "").strip().lower()
+        if status not in PROVIDER_MODEL_REFRESH_STATUSES:
+            status = "error"
+
+        state = self.provider_model_refresh_state
+        entry = state.setdefault(provider_id, _blank_provider_model_refresh_entry())
+
+        provider_cfg = self.providers_config.get(provider_id, {})
+        api_keys = provider_cfg.get("api_keys", [])
+        api_key = str(api_keys[0] if isinstance(api_keys, list) and api_keys else "").strip()
+
+        sanitized_error = ""
+        if error:
+            sanitized_error = _sanitize_catalog_error_detail(error, api_key)
+
+        entry["last_refreshed_at"] = datetime.now().isoformat()
+        entry["last_status"] = status
+        entry["last_count"] = count
+        entry["last_error"] = sanitized_error
+
+        self.provider_model_refresh_state = state
+        self.save_config()
+
+    def get_provider_model_refresh_state_public(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get public, safe copy of refresh states.
+        """
+        return deepcopy(self.provider_model_refresh_state)
 
 
 class WaterfallGeminiService:
