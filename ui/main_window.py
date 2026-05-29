@@ -22,6 +22,7 @@ from translation_app.core.file_handlers.pdf_regression_report import (
     export_pdf_regression_report_json,
 )
 from translation_app.core.file_handlers.text_handler import TextHandler
+from translation_app.core.file_translation_control import FileTranslationControl, FileTranslationInterrupted
 from translation_app.core.email_handler import EmailHandler
 from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.ui.theme import setup_theme
@@ -60,6 +61,18 @@ class MainWindow(tk.Tk):
 
         # Advanced config variables for bindings
         self.use_tm_var = tk.BooleanVar(value=self.config_manager.use_translation_memory)
+        
+        self.TM_POLICY_DISPLAY_MAP = {
+            "tm_prefer_cache": "Ưu tiên bộ nhớ dịch",
+            "tm_suggest_only": "Chỉ gợi ý, vẫn dịch lại bằng AI",
+            "tm_retranslate_and_update": "Dịch lại và cập nhật bộ nhớ",
+            "tm_disabled": "Tắt bộ nhớ dịch"
+        }
+        self.TM_POLICY_VALUE_MAP = {v: k for k, v in self.TM_POLICY_DISPLAY_MAP.items()}
+        initial_policy = self.config_manager.translation_memory_policy
+        display_policy = self.TM_POLICY_DISPLAY_MAP.get(initial_policy, "Ưu tiên bộ nhớ dịch")
+        self.tm_policy_var = tk.StringVar(value=display_policy)
+
         self.min_seg_len_var = tk.StringVar(value=str(self.config_manager.min_segment_length_to_cache))
         self.use_glossary_var = tk.BooleanVar(value=self.config_manager.use_glossary)
         self.max_glossary_terms_var = tk.StringVar(value=str(self.config_manager.max_glossary_terms_per_segment))
@@ -89,6 +102,10 @@ class MainWindow(tk.Tk):
         self.last_ocr_text: str = "" # To store OCR result for analysis
         self.last_pdf_report_input_file: Optional[str] = None
         self.last_pdf_report_output_file: Optional[str] = None
+        self._file_translation_in_progress = False
+        self._file_translation_control: Optional[FileTranslationControl] = None
+        self._selected_file_paths: list[str] = []
+        self._selected_file_display_value: str = ""
 
         # Setup UI
         self.setup_window()
@@ -526,6 +543,17 @@ class MainWindow(tk.Tk):
         ).pack(side=tk.LEFT)
         tk.Label(tm_row, text="Độ dài tối thiểu segment lưu cache:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(20, 5))
         tk.Entry(tm_row, textvariable=self.min_seg_len_var, width=5, bg=self.colors['white']).pack(side=tk.LEFT)
+
+        # Row 1.5: TM Quality Policy Settings
+        tm_policy_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
+        tm_policy_row.pack(fill=tk.X, pady=2)
+        tk.Label(tm_policy_row, text="Chính sách chất lượng TM:", bg=self.colors['gray_light']).pack(side=tk.LEFT, padx=(5, 5))
+        tm_policy_combo = ttk.Combobox(
+            tm_policy_row, textvariable=self.tm_policy_var,
+            values=["Ưu tiên bộ nhớ dịch", "Chỉ gợi ý, vẫn dịch lại bằng AI", "Dịch lại và cập nhật bộ nhớ", "Tắt bộ nhớ dịch"],
+            state="readonly", width=30
+        )
+        tm_policy_combo.pack(side=tk.LEFT, padx=5)
 
         # Row 2: Glossary Settings
         glossary_row = tk.Frame(frame_general_save, bg=self.colors['gray_light'])
@@ -1215,10 +1243,10 @@ class MainWindow(tk.Tk):
         )
         self.entry_file_path.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         
-        button_browse = create_styled_button(
+        self.button_browse_file = create_styled_button(
             frame_file_entry, text="Duyệt...", command=self.browse_file, colors=self.colors
         )
-        button_browse.pack(side=tk.LEFT)
+        self.button_browse_file.pack(side=tk.LEFT)
         
         # Language selection frame
         frame_lang = tk.Frame(self.tab_file, bg=self.colors['gray_light'])
@@ -1239,11 +1267,11 @@ class MainWindow(tk.Tk):
         label_src_lang_file.pack(anchor=tk.W, pady=(0, 5))
         
         self.src_lang_file = tk.StringVar(value=config.default_src_lang)
-        combobox_src_lang_file = create_language_combobox(
+        self.combobox_src_lang_file = create_language_combobox(
             frame_src_lang, self.src_lang_file,
             list(self.display_languages.keys()), self.colors
         )
-        combobox_src_lang_file.pack(fill=tk.X)
+        self.combobox_src_lang_file.pack(fill=tk.X)
         
         # Destination language
         frame_dest_lang = tk.Frame(frame_lang_row, bg=self.colors['gray_light'])
@@ -1257,11 +1285,11 @@ class MainWindow(tk.Tk):
         label_dest_lang_file.pack(anchor=tk.W, pady=(0, 5))
         
         self.dest_lang_file = tk.StringVar(value=config.default_dest_lang)
-        combobox_dest_lang_file = create_language_combobox(
+        self.combobox_dest_lang_file = create_language_combobox(
             frame_dest_lang, self.dest_lang_file,
             list(self.display_languages.keys()), self.colors
         )
-        combobox_dest_lang_file.pack(fill=tk.X)
+        self.combobox_dest_lang_file.pack(fill=tk.X)
         
         # Info label
         label_info_file = tk.Label(
@@ -1408,11 +1436,28 @@ class MainWindow(tk.Tk):
         frame_buttons = tk.Frame(self.tab_file, bg=self.colors['gray_light'])
         frame_buttons.pack(fill=tk.X, padx=15, pady=15)
         
-        button_translate_file = create_styled_button(
-            frame_buttons, text="Dịch File",
+        primary_file_buttons = tk.Frame(frame_buttons, bg=self.colors['gray_light'])
+        primary_file_buttons.pack(fill=tk.X, pady=5)
+
+        self.button_translate_file = create_styled_button(
+            primary_file_buttons, text="Dịch File",
             command=self.translate_file, colors=self.colors
         )
-        button_translate_file.pack(fill=tk.X, pady=5)
+        self.button_translate_file.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        self.button_pause_file = create_styled_button(
+            primary_file_buttons, text="Tam dung",
+            command=self._request_pause_file_translation, colors=self.colors
+        )
+        self.button_pause_file.config(state=tk.DISABLED)
+        self.button_pause_file.pack(side=tk.LEFT, padx=5)
+
+        self.button_cancel_file = create_styled_button(
+            primary_file_buttons, text="Huy",
+            command=self._request_cancel_file_translation, colors=self.colors
+        )
+        self.button_cancel_file.config(state=tk.DISABLED)
+        self.button_cancel_file.pack(side=tk.LEFT, padx=(5, 0))
 
         
         # Status frame for progress indication
@@ -1536,12 +1581,23 @@ class MainWindow(tk.Tk):
         frame_output = tk.Frame(self.tab_paragraph, bg=self.colors['gray_light'])
         frame_output.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
         
+        # Frame header for Output title and model telemetry label
+        frame_output_header = tk.Frame(frame_output, bg=self.colors['gray_light'])
+        frame_output_header.pack(fill=tk.X, pady=(0, 5))
+        
         label_paragraph_output = tk.Label(
-            frame_output, text="Bản dịch:",
+            frame_output_header, text="Bản dịch:",
             bg=self.colors['gray_light'], fg=self.colors['gray_dark'],
             font=('Segoe UI', 11, 'bold')
         )
-        label_paragraph_output.pack(anchor=tk.W, pady=(0, 5))
+        label_paragraph_output.pack(side=tk.LEFT)
+        
+        self.lbl_last_translation_source = tk.Label(
+            frame_output_header, text="",
+            bg=self.colors['gray_light'], fg=self.colors['navy'],
+            font=('Segoe UI', 9, 'italic'), anchor=tk.W
+        )
+        self.lbl_last_translation_source.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
         
         self.entry_paragraph_output = tk.Text(
             frame_output, height=10, wrap=tk.WORD,
@@ -1550,13 +1606,6 @@ class MainWindow(tk.Tk):
             padx=10, pady=10
         )
         self.entry_paragraph_output.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        self.lbl_last_translation_source = tk.Label(
-            frame_output, text="",
-            bg=self.colors['gray_light'], fg=self.colors['navy'],
-            font=('Segoe UI', 9, 'italic'), anchor=tk.W
-        )
-        self.lbl_last_translation_source.pack(fill=tk.X, pady=(0, 5))
         
         button_copy_paragraph = create_styled_button(
             frame_output, text="Sao chép đoạn văn đã dịch",
@@ -1831,44 +1880,79 @@ class MainWindow(tk.Tk):
     
     def browse_file(self):
         """Browse for file"""
-        file_path = filedialog.askopenfilename(filetypes=[("All Files", "*.*")])
-        if file_path:
+        file_paths = list(filedialog.askopenfilenames(filetypes=[("All Files", "*.*")]))
+        if file_paths:
+            self._set_selected_file_paths(file_paths)
+
+    def _build_file_selection_display(self, file_paths: list[str]) -> str:
+        if not file_paths:
+            return ""
+        if len(file_paths) == 1:
+            return file_paths[0]
+        if len(file_paths) == 2:
+            return " | ".join(file_paths)
+        return f"{len(file_paths)} files selected | {file_paths[0]}"
+
+    def _set_selected_file_paths(self, file_paths: list[str]) -> None:
+        normalized_paths = [str(path).strip() for path in file_paths if str(path).strip()]
+        self._selected_file_paths = normalized_paths
+        self._selected_file_display_value = self._build_file_selection_display(normalized_paths)
+        if hasattr(self, "entry_file_path"):
+            self.entry_file_path.config(state=tk.NORMAL)
             self.entry_file_path.delete(0, tk.END)
-            self.entry_file_path.insert(0, file_path)
-    
-    def translate_file(self):
-        """Translate selected file"""
-        file_path = self.entry_file_path.get()
-        src_lang = self.src_lang_file.get()
-        dest_lang = self.dest_lang_file.get()
-        
-        # Validate
-        try:
-            FileValidator.validate_file(file_path)
-            LanguageValidator.validate_language_pair(src_lang, dest_lang)
-        except Exception as e:
-            messagebox.showerror("Lỗi", str(e))
+            self.entry_file_path.insert(0, self._selected_file_display_value)
+            if self._file_translation_in_progress:
+                self.entry_file_path.config(state=tk.DISABLED)
+
+    def _get_selected_file_paths(self) -> list[str]:
+        current_value = self.entry_file_path.get().strip() if hasattr(self, "entry_file_path") else ""
+        if self._selected_file_paths and current_value == self._selected_file_display_value:
+            return list(self._selected_file_paths)
+        if not current_value:
+            return []
+        return [current_value]
+
+    def _set_file_translation_busy(self, is_busy: bool, status_text: str = "") -> None:
+        self._file_translation_in_progress = bool(is_busy)
+        if hasattr(self, "button_translate_file"):
+            self.button_translate_file.config(
+                state=tk.DISABLED if is_busy else tk.NORMAL,
+                text="Dang dich file..." if is_busy else "Dich File",
+            )
+        if hasattr(self, "button_pause_file"):
+            self.button_pause_file.config(state=tk.NORMAL if is_busy else tk.DISABLED)
+        if hasattr(self, "button_cancel_file"):
+            self.button_cancel_file.config(state=tk.NORMAL if is_busy else tk.DISABLED)
+        if hasattr(self, "button_browse_file"):
+            self.button_browse_file.config(state=tk.DISABLED if is_busy else tk.NORMAL)
+        if hasattr(self, "entry_file_path"):
+            self.entry_file_path.config(state=tk.DISABLED if is_busy else tk.NORMAL)
+        for widget_name in ("combobox_src_lang_file", "combobox_dest_lang_file"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.config(state=tk.DISABLED if is_busy else "readonly")
+        if status_text:
+            self.label_file_status.config(text=status_text)
+
+    def _request_pause_file_translation(self) -> None:
+        if self._file_translation_control is None:
             return
-        
-        # Determine file type and output
-        base, ext = os.path.splitext(file_path)
-        ext_lower = ext.lower()
-        today_str = datetime.now().strftime("%Y%m%d")
-        
-        use_ai_vision = (ext_lower == '.pdf' and self.use_ai_vision_for_pdf.get())
-        use_pdf_experimental = (ext_lower == '.pdf' and self.use_experimental_pdf_output.get())
+        self._file_translation_control.request_pause()
+        if hasattr(self, "button_pause_file"):
+            self.button_pause_file.config(state=tk.DISABLED)
+        self.label_file_status.config(text="Dang tam dung va se luu ban dang co o diem an toan tiep theo...")
 
-        # Show PDF AI Vision guide if it's a PDF file and get user's choice
-        if ext_lower == '.pdf' and not use_ai_vision and not use_pdf_experimental:
-            user_choice = self._show_pdf_ai_guide_and_wait()
-            if user_choice is None:
-                # User closed dialog without making a choice - cancel translation
-                logger.info("User cancelled PDF translation dialog")
-                return
-            # user_choice is already reflected in self.use_ai_vision_for_pdf
-            use_ai_vision = self.use_ai_vision_for_pdf.get()
+    def _request_cancel_file_translation(self) -> None:
+        if self._file_translation_control is None:
+            return
+        self._file_translation_control.request_cancel()
+        if hasattr(self, "button_pause_file"):
+            self.button_pause_file.config(state=tk.DISABLED)
+        if hasattr(self, "button_cancel_file"):
+            self.button_cancel_file.config(state=tk.DISABLED)
+        self.label_file_status.config(text="Dang huy va se luu ban dang co o diem an toan tiep theo...")
 
-        
+    def _prepare_file_translation_tasks(self, file_paths: list[str]) -> list[dict]:
         handlers_map = {
             '.xlsx': (self.excel_handler, '.xlsx'),
             '.xls': (self.excel_handler, '.xlsx'),
@@ -1877,27 +1961,259 @@ class MainWindow(tk.Tk):
             '.pptx': (self.powerpoint_handler, '.pptx'),
             '.ppt': (self.powerpoint_handler, '.pptx'),
             '.txt': (self.text_handler, '.txt'),
-            '.pdf': (self.pdf_handler, '.docx')
+            '.pdf': (self.pdf_handler, '.docx'),
         }
-        
-        if ext_lower not in handlers_map:
-            messagebox.showerror(
-                "Lỗi",
-                f"Loại file '{ext}' không được hỗ trợ.\n\n"
-                f"Các định dạng được hỗ trợ:\n"
-                f"- Excel: .xlsx, .xls\n"
-                f"- Word: .docx, .doc\n"
-                f"- PowerPoint: .pptx, .ppt\n"
-                f"- Text: .txt\n"
-                f"- PDF: .pdf"
+
+        tasks = []
+        today_str = datetime.now().strftime("%Y%m%d")
+        for file_path in file_paths:
+            base, ext = os.path.splitext(file_path)
+            ext_lower = ext.lower()
+            if ext_lower not in handlers_map:
+                raise ValueError(
+                    f"Loai file '{ext}' khong duoc ho tro.\n\n"
+                    "Cac dinh dang duoc ho tro:\n"
+                    "- Excel: .xlsx, .xls\n"
+                    "- Word: .docx, .doc\n"
+                    "- PowerPoint: .pptx, .ppt\n"
+                    "- Text: .txt\n"
+                    "- PDF: .pdf"
+                )
+
+            handler, output_ext = handlers_map[ext_lower]
+            use_ai_vision = ext_lower == '.pdf' and self.use_ai_vision_for_pdf.get()
+            use_pdf_experimental = ext_lower == '.pdf' and self.use_experimental_pdf_output.get()
+            if use_pdf_experimental:
+                output_ext = '.pdf'
+
+            tasks.append(
+                {
+                    "input_file": file_path,
+                    "output_file": f"{base}_translated_{today_str}{output_ext}",
+                    "handler": handler,
+                    "ext_lower": ext_lower,
+                    "use_ai_vision": use_ai_vision,
+                    "use_pdf_experimental": use_pdf_experimental,
+                    "pages_per_batch": int(self.ai_vision_pages_per_batch.get()) if use_ai_vision else 4,
+                }
             )
+        return tasks
+
+    def _format_file_translation_error(self, task: dict, exc: Exception) -> str:
+        if task.get("use_pdf_experimental") and isinstance(exc, FileProcessingError):
+            return "PDF này không phù hợp với chế độ thử nghiệm. Vui lòng dùng chế độ DOCX ổn định."
+        return handle_translation_error(exc, f"Dịch file '{os.path.basename(task['input_file'])}'")
+
+    def translate_file(self):
+        """Translate one or more selected files."""
+        if self._file_translation_in_progress:
+            self.label_file_status.config(text="Đang dịch file. Vui lòng chờ tác vụ hiện tại hoàn tất.")
+            return
+
+        file_paths = self._get_selected_file_paths()
+        src_lang = self.src_lang_file.get()
+        dest_lang = self.dest_lang_file.get()
+
+        try:
+            if not file_paths:
+                raise ValueError("Vui long chon it nhat mot file.")
+            LanguageValidator.validate_language_pair(src_lang, dest_lang)
+            for file_path in file_paths:
+                FileValidator.validate_file(file_path)
+        except Exception as exc:
+            messagebox.showerror("Loi", str(exc))
             return
         
-        handler, output_ext = handlers_map[ext_lower]
-        if use_pdf_experimental:
-            output_ext = '.pdf'
-        output_file = f"{base}_translated_{today_str}{output_ext}"
-        pages_per_batch = int(self.ai_vision_pages_per_batch.get()) if use_ai_vision else 4
+        if any(str(path).lower().endswith(".pdf") for path in file_paths):
+            use_ai_vision = self.use_ai_vision_for_pdf.get()
+            use_pdf_experimental = self.use_experimental_pdf_output.get()
+            if not use_ai_vision and not use_pdf_experimental:
+                user_choice = self._show_pdf_ai_guide_and_wait()
+                if user_choice is None:
+                    logger.info("User cancelled PDF translation dialog")
+                    return
+
+        try:
+            tasks = self._prepare_file_translation_tasks(file_paths)
+        except Exception as exc:
+            messagebox.showerror("Loi", str(exc))
+            return
+
+        def make_progress_callback(file_index: int, total_files: int):
+            prefix = f"[{file_index}/{total_files}] " if total_files > 1 else ""
+
+            def update_progress(text, value=None):
+                def _update():
+                    self.label_file_status.config(text=f"{prefix}{text}")
+                    if value is not None:
+                        self.progress_file.config(mode='determinate')
+                        self.progress_file['value'] = value
+                    self.update_idletasks()
+                self.after(0, _update)
+
+            return update_progress
+
+        self._file_translation_control = FileTranslationControl()
+        self.translation_service.set_file_translation_control(self._file_translation_control)
+        self._set_file_translation_busy(True)
+        self.progress_file.stop()
+        self.progress_file.config(mode='determinate', value=0)
+        self.label_file_status.config(
+            text=f"Đang chuẩn bị dịch {len(tasks)} file..." if len(tasks) > 1 else "Đang chuẩn bị dịch file..."
+        )
+
+        def translate_thread():
+            successes = []
+            failures = []
+            interruption = None
+
+            try:
+                total_files = len(tasks)
+                for file_index, task in enumerate(tasks, start=1):
+                    self.translation_service.raise_if_file_translation_stopped()
+                    file_path = task["input_file"]
+                    output_file = task["output_file"]
+                    handler = task["handler"]
+                    update_progress = make_progress_callback(file_index, total_files)
+
+                    if hasattr(handler, 'progress_callback'):
+                        handler.progress_callback = update_progress
+
+                    if task["use_ai_vision"]:
+                        update_progress(
+                            f"Đang chuẩn bị dịch AI Vision '{os.path.basename(file_path)}' ({task['pages_per_batch']} trang/batch)...",
+                            2,
+                        )
+                    elif task["use_pdf_experimental"]:
+                        update_progress(
+                            f"Đang chuẩn bị xuất PDF thử nghiệm '{os.path.basename(file_path)}'...",
+                            2,
+                        )
+                    else:
+                        update_progress(f"Đang chuẩn bị dịch '{os.path.basename(file_path)}'...", 2)
+
+                    try:
+                        if task["use_ai_vision"]:
+                            self.pdf_handler.progress_callback = update_progress
+                            self.pdf_handler.translate_with_ai_vision(
+                                file_path,
+                                output_file,
+                                src_lang,
+                                dest_lang,
+                                pages_per_batch=task["pages_per_batch"],
+                            )
+                        elif task["use_pdf_experimental"]:
+                            self.pdf_handler.progress_callback = update_progress
+                            self.pdf_handler.translate_to_pdf_experimental(
+                                file_path,
+                                output_file,
+                                src_lang,
+                                dest_lang,
+                            )
+                            self._remember_pdf_report_context(file_path, output_file)
+                        else:
+                            handler.translate(file_path, output_file, src_lang, dest_lang)
+
+                        successes.append(task)
+                    except FileTranslationInterrupted as exc:
+                        if task["use_pdf_experimental"] and self.pdf_handler.last_pdf_qa_report:
+                            self._remember_pdf_report_context(file_path, output_file)
+                        interruption = (exc, len(successes))
+                        break
+                    except Exception as exc:
+                        if task["use_pdf_experimental"] and self.pdf_handler.last_pdf_qa_report:
+                            self._remember_pdf_report_context(file_path, output_file)
+                        failures.append((task, self._format_file_translation_error(task, exc)))
+                        logger.error(f"File translation failed for '{file_path}': {exc}")
+
+                def _on_complete():
+                    self.translation_service.clear_file_translation_control()
+                    self._file_translation_control = None
+                    self.progress_file.stop()
+                    self.progress_file.config(mode='determinate')
+                    self._set_file_translation_busy(False)
+                    if any(task.get("use_pdf_experimental") for task in successes):
+                        self._update_pdf_report_export_state()
+                    if hasattr(self, "_refresh_jobs_list"):
+                        self._refresh_jobs_list()
+
+                    if interruption is not None:
+                        exc, completed_count = interruption
+                        title = "Tạm dừng" if exc.status == "paused" else "Đã hủy"
+                        message = f"Đã dừng dịch sau khi hoàn tất {completed_count}/{len(tasks)} file."
+                        if exc.partial_saved and exc.output_file:
+                            message += f"\n\nĐã lưu bản đang dịch dở tại:\n{exc.output_file}"
+                        elif exc.output_file:
+                            message += f"\n\nKhông thể lưu bản đang dịch dở tại:\n{exc.output_file}"
+                        if failures:
+                            message += f"\n\nĐã có {len(failures)} file lỗi trước khi dừng."
+                        messagebox.showwarning(title, message)
+                        self.label_file_status.config(text="")
+                        return
+
+                    if failures and successes:
+                        failed_preview = "\n".join(
+                            f"- {os.path.basename(item['input_file'])}: {error}"
+                            for item, error in failures[:3]
+                        )
+                        messagebox.showwarning(
+                            "Hoàn tất có cảnh báo",
+                            (
+                                f"Đã dịch xong {len(successes)}/{len(tasks)} file.\n"
+                                f"{len(failures)} file lỗi.\n\n{failed_preview}"
+                            ),
+                        )
+                    elif failures:
+                        failed_preview = "\n".join(
+                            f"- {os.path.basename(item['input_file'])}: {error}"
+                            for item, error in failures[:3]
+                        )
+                        messagebox.showerror(
+                            "Lỗi",
+                            f"Không dịch được file nào.\n\n{failed_preview}",
+                        )
+                    else:
+                        if len(successes) == 1:
+                            output_file = successes[0]["output_file"]
+                            messagebox.showinfo(
+                                "Thành công",
+                                (
+                                    f"File '{os.path.basename(successes[0]['input_file'])}' đã được dịch.\n\n"
+                                    f"Đã lưu kết quả tại:\n{output_file}"
+                                ),
+                            )
+                        else:
+                            output_preview = "\n".join(
+                                f"- {os.path.basename(task['output_file'])}"
+                                for task in successes[:5]
+                            )
+                            messagebox.showinfo(
+                                "Thành công",
+                                (
+                                    f"Đã dịch xong {len(successes)} file.\n\n"
+                                    f"Kết quả đầu ra:\n{output_preview}"
+                                ),
+                            )
+
+                    self.label_file_status.config(text="")
+
+                self.after(0, _on_complete)
+            except Exception as exc:
+                caught_error = exc
+
+                def _on_error():
+                    self.translation_service.clear_file_translation_control()
+                    self._file_translation_control = None
+                    self.progress_file.config(mode='indeterminate')
+                    self.progress_file.stop()
+                    self._set_file_translation_busy(False)
+                    self.label_file_status.config(text="Dịch file thất bại.")
+                    messagebox.showerror("Lỗi", handle_translation_error(caught_error, "Dịch file"))
+
+                self.after(0, _on_error)
+
+        threading.Thread(target=translate_thread, daemon=True).start()
+        return
         
         # Prepare progress update function
 
@@ -1911,6 +2227,7 @@ class MainWindow(tk.Tk):
             self.after(0, _update)
 
         # Show progress indicator
+        self._set_file_translation_busy(True)
         self.progress_file.stop()
         self.progress_file.config(mode='determinate', value=0)
         
@@ -1956,30 +2273,38 @@ class MainWindow(tk.Tk):
                     self.label_file_status.config(text="🟢 Hoàn tất!")
                     if use_pdf_experimental:
                         self._update_pdf_report_export_state()
-                    messagebox.showinfo(
-"Thành công",
-                        f"File '{os.path.basename(file_path)}' đã được dịch{method_info}.\n\n"
-                        f"Đã lưu kết quả tại:\n{output_file}"
-                    )
-                    self.label_file_status.config(text="")
-                    self.progress_file.config(mode='indeterminate')
                     self.progress_file.stop()
-                
+                    self.progress_file.config(mode='determinate')
+                    self._set_file_translation_busy(
+                        False,
+                        "\u0110\u00e3 ho\u00e0n t\u1ea5t d\u1ecbch file.",
+                    )
+                    if hasattr(self, "_refresh_jobs_list"):
+                        self._refresh_jobs_list()
+                    success_message = (
+                        f"File '{os.path.basename(file_path)}' da duoc dich{method_info}.\n\n"
+                        f"Da luu ket qua tai:\n{output_file}"
+                    )
+                    messagebox.showinfo("Thanh cong", success_message)
+                    self.label_file_status.config(text="")
+                    return
                 self.after(0, _on_success)
                 
             except Exception as e:
+                caught_error = e
                 # Stop progress and show error
                 def _on_error():
                     self.progress_file.config(mode='indeterminate')
                     self.progress_file.stop()
-                    self.label_file_status.config(text="")
+                    self._set_file_translation_busy(False)
+                    self.label_file_status.config(text="Dịch file thất bại.")
                     if use_pdf_experimental and self.pdf_handler.last_pdf_qa_report:
                         self._remember_pdf_report_context(file_path, output_file)
                         self._update_pdf_report_export_state()
-                    if use_pdf_experimental and isinstance(e, FileProcessingError):
+                    if use_pdf_experimental and isinstance(caught_error, FileProcessingError):
                         error_msg = "PDF này không phù hợp với chế độ thử nghiệm. Vui lòng dùng chế độ DOCX ổn định."
                     else:
-                        error_msg = handle_translation_error(e, "Dịch file")
+                        error_msg = handle_translation_error(caught_error, "Dịch file")
                     messagebox.showerror("Lỗi", error_msg)
                 
                 self.after(0, _on_error)
@@ -2767,6 +3092,11 @@ Bước 3: Sử dụng AI Vision
                 return
 
             self.config_manager.use_translation_memory = self.use_tm_var.get()
+            
+            display_policy = self.tm_policy_var.get()
+            policy_val = self.TM_POLICY_VALUE_MAP.get(display_policy, "tm_prefer_cache")
+            self.config_manager.translation_memory_policy = policy_val
+
             self.config_manager.min_segment_length_to_cache = min_seg_len
             self.config_manager.use_glossary = self.use_glossary_var.get()
             self.config_manager.max_glossary_terms_per_segment = max_glossary_terms

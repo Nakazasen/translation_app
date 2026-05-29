@@ -186,6 +186,13 @@ def build_provider_profiles(config_manager) -> dict[str, ProviderProfile]:
         elif models and not default_model:
             default_model = models[0]
 
+        # Ensure default model is ALWAYS at the front of model pool for active execution
+        if default_model:
+            if default_model in models:
+                models = [default_model] + [m for m in models if m != default_model]
+            else:
+                models = [default_model] + models
+
         profiles[provider_name] = ProviderProfile(
             name=provider_name,
             display_name=_normalize_text(provider_data.get("display_name", provider_name)) or provider_name,

@@ -15,6 +15,7 @@ import tempfile
 from typing import Optional, List, Dict, Any
 
 from translation_app.core.translator import TranslationService
+from translation_app.core.file_translation_control import FileTranslationInterrupted, FileTranslationStopRequested
 from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.core.translation_job import get_translation_job_manager
 from translation_app.core.translation_memory import get_segment_hash
@@ -105,6 +106,7 @@ class ExcelHandler:
 
         cell_tasks = {}
         for cell in cells_to_translate:
+            getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
             segment_id = self._make_segment_id(sheet.title, cell.coordinate)
             job_manager.record_checkpoint(
                 job_id,
@@ -131,6 +133,7 @@ class ExcelHandler:
 
         for task, (cell, segment_id, original_text) in cell_tasks.items():
             try:
+                getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
                 translated_text = task.result(timeout=self.translation_service.timeout)
                 cell.value = translated_text
                 job_manager.record_checkpoint(
@@ -143,6 +146,8 @@ class ExcelHandler:
                     status="completed",
                 )
                 job_manager.update_progress(job_id, completed_delta=1)
+            except FileTranslationStopRequested:
+                raise
             except Exception as exc:
                 logger.warning(f"Error translating cell {cell.coordinate}: {exc}, keeping original")
                 job_manager.record_failed_item(
@@ -201,6 +206,7 @@ class ExcelHandler:
         job_manager.update_job_status(job_id, "running")
         self._images_backup = {}
         self.translation_service.set_runtime_observer(self._create_job_observer(job_manager, job_id))
+        wb = None
 
         try:
             logger.info(f"Starting Excel translation: {input_file}")
@@ -341,7 +347,24 @@ class ExcelHandler:
             
             if total_images_saved < total_images_before:
                 logger.warning(f"Warning: Some images may not have been preserved correctly ({total_images_before} -> {total_images_saved})")
-        
+        except FileTranslationStopRequested as exc:
+            partial_saved = False
+            save_error = None
+            if wb is not None:
+                try:
+                    wb.save(output_file)
+                    partial_saved = True
+                    logger.info(f"Saved partial Excel output after file translation was {exc.status}: {output_file}")
+                except Exception as partial_exc:
+                    save_error = partial_exc
+                    logger.error(f"Failed to save partial Excel output after {exc.status}: {partial_exc}")
+            job_manager.update_job_status(job_id, exc.status)
+            raise FileTranslationInterrupted(
+                exc.status,
+                output_file=output_file,
+                partial_saved=partial_saved,
+                save_error=save_error,
+            ) from exc
         except Exception as e:
             error_msg = f"Error translating Excel file: {e}"
             logger.error(error_msg, exc_info=True)

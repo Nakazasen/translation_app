@@ -13,11 +13,12 @@ from deep_translator import GoogleTranslator
 
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.provider_router import ProviderRouter, TranslationRequest, TranslationResult, classify_error
-from translation_app.core.providers import build_provider_profiles, get_default_provider_profiles
+from translation_app.core.providers import GeminiProvider, build_provider_profiles, get_default_provider_profiles
 from translation_app.core.providers.base import BaseTranslationProvider, ProviderCandidate
 from translation_app.core.providers.openai_compatible_provider import OpenAICompatibleProvider
 from translation_app.core.translation_memory import get_tm_manager
 from translation_app.core.translator import TranslationService
+from translation_app.utils.error_handler import TranslationServiceError
 
 
 @pytest.fixture(autouse=True)
@@ -419,6 +420,343 @@ def test_provider_model_fallback_runtime_only():
     assert original_models == ["model-a", "model-b"]
     assert first[0].model == "model-a"
     assert second[0].model == "model-b"
+
+
+def test_router_strict_provider_model_reports_pinned_default_model_failure(monkeypatch):
+    router = ProviderRouter(cooldown_seconds=60, max_retries=3)
+    provider = OpenAICompatibleProvider(
+        enabled=True,
+        base_url="http://127.0.0.1:8080/v1",
+        api_keys=["sk-nvidia-strict"],
+        models=["z-ai/glm-5.1", "meta/llama-3.1-70b-instruct"],
+        provider_name="nvidia_nim",
+    )
+    router.register_provider(provider)
+    seen_models = []
+
+    def fake_translate(request, candidate=None):
+        seen_models.append(candidate.model)
+        return TranslationResult(
+            status="error",
+            provider="nvidia_nim",
+            model=candidate.model,
+            error_type="timeout",
+            error_message="upstream timed out",
+        )
+
+    monkeypatch.setattr(provider, "translate", fake_translate)
+    result = router.route(
+        TranslationRequest(text="hello", source_lang="en", target_lang="vi", strategy="nvidia_nim_only"),
+        {
+            "allowed_providers": ["nvidia_nim"],
+            "provider_order": ["nvidia_nim"],
+            "strict_provider_models": {"nvidia_nim": "z-ai/glm-5.1"},
+        },
+    )
+
+    assert result.status == "error"
+    assert seen_models == ["z-ai/glm-5.1"]
+    assert result.model == "z-ai/glm-5.1"
+    assert "z-ai/glm-5.1" in result.error_message
+    assert "meta/llama-3.1-70b-instruct" not in seen_models
+
+
+def test_nvidia_nim_only_policy_pins_default_model_and_preserves_success_metadata(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    original_use_tm = ai_service.config_manager.use_translation_memory
+    ai_service.config_manager.use_translation_memory = False
+    _set_enabled_providers(ai_service.config_manager, {"nvidia_nim", "google"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "nvidia_nim_only"
+
+    catalog = ai_service.config_manager.provider_model_catalog
+    catalog["providers"]["nvidia_nim"]["default_model"] = "z-ai/glm-5.1"
+    catalog["providers"]["nvidia_nim"]["models"] = [
+        {"id": "z-ai/glm-5.1", "enabled": True, "source": "user", "capabilities": {"text": True, "vision": False}},
+        {"id": "meta/llama-3.1-70b-instruct", "enabled": True, "source": "seed", "capabilities": {"text": True, "vision": False}},
+    ]
+    ai_service.config_manager.provider_model_catalog = catalog
+    captured = {}
+
+    class CaptureRouter:
+        def route(self, request, policy):
+            captured["policy"] = policy
+            return TranslationResult(
+                status="success",
+                text="nim-strict-ok",
+                provider="nvidia_nim",
+                model="z-ai/glm-5.1",
+                attempts=[
+                    {
+                        "provider": "nvidia_nim",
+                        "display_name": "NVIDIA NIM",
+                        "model": "z-ai/glm-5.1",
+                        "status": "success",
+                    }
+                ],
+            )
+
+    try:
+        monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: CaptureRouter())
+        result = service.translate_text("Hello strict NVIDIA", "en", "vi")
+    finally:
+        ai_service.config_manager.use_translation_memory = original_use_tm
+
+    assert result == "nim-strict-ok"
+    assert captured["policy"]["allowed_providers"] == ["nvidia_nim"]
+    assert "google" not in captured["policy"]["allowed_providers"]
+    assert captured["policy"]["strict_provider_models"] == {"nvidia_nim": "z-ai/glm-5.1"}
+    assert service.last_translation_metadata["provider"] == "nvidia_nim"
+    assert service.last_translation_metadata["model"] == "z-ai/glm-5.1"
+
+
+def test_nvidia_nim_only_surfaces_pinned_default_model_failure_without_google_fallback(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    original_use_tm = ai_service.config_manager.use_translation_memory
+    ai_service.config_manager.use_translation_memory = False
+    _set_enabled_providers(ai_service.config_manager, {"nvidia_nim", "google"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "nvidia_nim_only"
+
+    providers = ai_service.config_manager.providers_config
+    providers["nvidia_nim"]["base_url"] = "http://127.0.0.1:8080/v1"
+    providers["nvidia_nim"]["api_keys"] = ["sk-nvidia-strict"]
+    ai_service.config_manager.providers_config = providers
+
+    catalog = ai_service.config_manager.provider_model_catalog
+    catalog["providers"]["nvidia_nim"]["default_model"] = "z-ai/glm-5.1"
+    catalog["providers"]["nvidia_nim"]["models"] = [
+        {"id": "z-ai/glm-5.1", "enabled": True, "source": "user", "capabilities": {"text": True, "vision": False}},
+        {"id": "meta/llama-3.1-70b-instruct", "enabled": True, "source": "seed", "capabilities": {"text": True, "vision": False}},
+    ]
+    ai_service.config_manager.provider_model_catalog = catalog
+
+    router = ProviderRouter(cooldown_seconds=60, max_retries=3)
+    provider = OpenAICompatibleProvider(profile=build_provider_profiles(ai_service.config_manager)["nvidia_nim"])
+    google = DummyProvider("google", [{"status": "success", "text": "wrong-google-fallback"}])
+    router.register_provider(provider)
+    router.register_provider(google)
+    seen_models = []
+
+    def fake_translate(request, candidate=None):
+        seen_models.append(candidate.model)
+        return TranslationResult(
+            status="error",
+            provider="nvidia_nim",
+            model=candidate.model,
+            error_type="timeout",
+            error_message="upstream timed out",
+        )
+
+    try:
+        monkeypatch.setattr(provider, "translate", fake_translate)
+        monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: router)
+        with pytest.raises(TranslationServiceError) as exc_info:
+            service.translate_text("Hello strict NVIDIA failure", "en", "vi")
+    finally:
+        ai_service.config_manager.use_translation_memory = original_use_tm
+
+    assert "z-ai/glm-5.1" in str(exc_info.value)
+    assert seen_models == ["z-ai/glm-5.1"]
+    assert google.calls == 0
+    assert "meta/llama-3.1-70b-instruct" not in seen_models
+    assert service.last_translation_metadata["provider"] == "nvidia_nim"
+    assert service.last_translation_metadata["model"] == "z-ai/glm-5.1"
+
+
+def test_gemini_strict_default_model_is_not_skipped_as_model_unavailable(monkeypatch):
+    ai_service = get_ai_service()
+    config_manager = ai_service.config_manager
+    _set_enabled_providers(config_manager, {"gemini"})
+
+    config_manager.provider_model_catalog = {
+        **config_manager.provider_model_catalog,
+        "providers": {
+            **config_manager.provider_model_catalog.get("providers", {}),
+            "gemini": {
+                "default_model": "gemini-3.5-flash",
+                "models": [
+                    {"id": "gemini-3.5-flash", "enabled": True, "source": "user", "capabilities": {"text": True, "vision": False}},
+                    {"id": "gemini-2.5-flash", "enabled": True, "source": "seed", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+        },
+    }
+
+    provider = GeminiProvider(profile=build_provider_profiles(config_manager)["gemini"])
+    router = ProviderRouter(cooldown_seconds=60, max_retries=0)
+    router.register_provider(provider)
+    seen_models = []
+
+    monkeypatch.setattr(provider, "is_available", lambda: True)
+
+    def fake_translate(request, candidate=None):
+        seen_models.append(candidate.model)
+        return TranslationResult(
+            status="error",
+            provider="gemini",
+            model=candidate.model,
+            error_type="timeout",
+            error_message="upstream timed out",
+        )
+
+    monkeypatch.setattr(provider, "translate", fake_translate)
+    result = router.route(
+        TranslationRequest(text="hello", source_lang="en", target_lang="vi", strategy="gemini_only"),
+        {
+            "allowed_providers": ["gemini"],
+            "provider_order": ["gemini"],
+            "strict_provider_models": {"gemini": "gemini-3.5-flash"},
+        },
+    )
+
+    assert result.status == "error"
+    assert seen_models == ["gemini-3.5-flash"]
+    assert all(attempt.get("reason") != "model_unavailable" for attempt in result.attempts)
+    assert result.model == "gemini-3.5-flash"
+    assert "gemini-3.5-flash" in result.error_message
+
+
+def test_gemini_provider_translate_uses_runtime_candidate_model(monkeypatch):
+    ai_service = get_ai_service()
+    config_manager = ai_service.config_manager
+    _set_enabled_providers(config_manager, {"gemini"})
+
+    config_manager.provider_model_catalog = {
+        **config_manager.provider_model_catalog,
+        "providers": {
+            **config_manager.provider_model_catalog.get("providers", {}),
+            "gemini": {
+                "default_model": "gemini-3.5-flash",
+                "models": [
+                    {"id": "gemini-3.5-flash", "enabled": True, "source": "user", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+        },
+    }
+
+    provider = GeminiProvider(profile=build_provider_profiles(config_manager)["gemini"])
+    captured = {}
+
+    def fake_translate_with_glossary_terms(*args, **kwargs):
+        captured["preferred_models"] = kwargs.get("preferred_models")
+        return {
+            "status": "success",
+            "text": "xin chao",
+            "model_used": kwargs.get("preferred_models", [""])[0],
+        }
+
+    monkeypatch.setattr(ai_service, "translate_with_glossary_terms", fake_translate_with_glossary_terms)
+    result = provider.translate(
+        TranslationRequest(text="hello", source_lang="en", target_lang="vi"),
+        ProviderCandidate(provider_name="gemini", model="gemini-3.5-flash"),
+    )
+
+    assert captured["preferred_models"] == ["gemini-3.5-flash"]
+    assert result.status == "success"
+    assert result.model == "gemini-3.5-flash"
+
+
+def test_gemini_only_policy_pins_default_model_and_preserves_success_metadata(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    original_use_tm = ai_service.config_manager.use_translation_memory
+    ai_service.config_manager.use_translation_memory = False
+    _set_enabled_providers(ai_service.config_manager, {"gemini", "google"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "gemini_only"
+
+    catalog = ai_service.config_manager.provider_model_catalog
+    catalog["providers"]["gemini"]["default_model"] = "gemini-3.5-flash"
+    catalog["providers"]["gemini"]["models"] = [
+        {"id": "gemini-3.5-flash", "enabled": True, "source": "user", "capabilities": {"text": True, "vision": False}},
+        {"id": "gemini-2.5-flash", "enabled": True, "source": "seed", "capabilities": {"text": True, "vision": False}},
+    ]
+    ai_service.config_manager.provider_model_catalog = catalog
+    captured = {}
+
+    class CaptureRouter:
+        def route(self, request, policy):
+            captured["policy"] = policy
+            return TranslationResult(
+                status="success",
+                text="gemini-strict-ok",
+                provider="gemini",
+                model="gemini-3.5-flash",
+                attempts=[
+                    {
+                        "provider": "gemini",
+                        "display_name": "Gemini",
+                        "model": "gemini-3.5-flash",
+                        "status": "success",
+                    }
+                ],
+            )
+
+    try:
+        monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: CaptureRouter())
+        result = service.translate_text("Hello strict Gemini", "en", "vi")
+    finally:
+        ai_service.config_manager.use_translation_memory = original_use_tm
+
+    assert result == "gemini-strict-ok"
+    assert captured["policy"]["allowed_providers"] == ["gemini"]
+    assert "google" not in captured["policy"]["allowed_providers"]
+    assert captured["policy"]["strict_provider_models"] == {"gemini": "gemini-3.5-flash"}
+    assert service.last_translation_metadata["provider"] == "gemini"
+    assert service.last_translation_metadata["model"] == "gemini-3.5-flash"
+
+
+def test_gemini_only_surfaces_pinned_default_model_failure_without_google_fallback(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    original_use_tm = ai_service.config_manager.use_translation_memory
+    ai_service.config_manager.use_translation_memory = False
+    _set_enabled_providers(ai_service.config_manager, {"gemini", "google"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "gemini_only"
+
+    catalog = ai_service.config_manager.provider_model_catalog
+    catalog["providers"]["gemini"]["default_model"] = "gemini-3.5-flash"
+    catalog["providers"]["gemini"]["models"] = [
+        {"id": "gemini-3.5-flash", "enabled": True, "source": "user", "capabilities": {"text": True, "vision": False}},
+        {"id": "gemini-2.5-flash", "enabled": True, "source": "seed", "capabilities": {"text": True, "vision": False}},
+    ]
+    ai_service.config_manager.provider_model_catalog = catalog
+
+    router = ProviderRouter(cooldown_seconds=60, max_retries=0)
+    provider = GeminiProvider(profile=build_provider_profiles(ai_service.config_manager)["gemini"])
+    google = DummyProvider("google", [{"status": "success", "text": "wrong-google-fallback"}])
+    router.register_provider(provider)
+    router.register_provider(google)
+    seen_models = []
+
+    def fake_translate(request, candidate=None):
+        seen_models.append(candidate.model)
+        return TranslationResult(
+            status="error",
+            provider="gemini",
+            model=candidate.model,
+            error_type="timeout",
+            error_message="upstream timed out",
+        )
+
+    try:
+        monkeypatch.setattr(provider, "is_available", lambda: True)
+        monkeypatch.setattr(provider, "translate", fake_translate)
+        monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: router)
+        with pytest.raises(TranslationServiceError) as exc_info:
+            service.translate_text("Hello strict Gemini failure", "en", "vi")
+    finally:
+        ai_service.config_manager.use_translation_memory = original_use_tm
+
+    assert "gemini-3.5-flash" in str(exc_info.value)
+    assert seen_models == ["gemini-3.5-flash"]
+    assert google.calls == 0
+    assert service.last_translation_metadata["provider"] == "gemini"
+    assert service.last_translation_metadata["model"] == "gemini-3.5-flash"
 
 
 def test_openai_compatible_provider_redacts_key_and_classifies_auth_http_error(monkeypatch):
@@ -1095,6 +1433,56 @@ def test_google_can_be_disabled_from_router_candidates(monkeypatch):
 
     policy = service._build_router_policy(ai_service.config_manager)
     assert "google" not in policy["allowed_providers"]
+
+
+def test_waterfall_keeps_google_fallback_even_if_google_provider_toggle_is_off(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    _set_enabled_providers(ai_service.config_manager, {"deepseek"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "waterfall"
+
+    policy = service._build_router_policy(ai_service.config_manager)
+
+    assert policy["allowed_providers"] == ["deepseek", "google"]
+    assert policy["provider_order"] == ["deepseek", "google"]
+
+
+def test_waterfall_policy_passes_google_fallback_to_router_when_google_toggle_is_off(monkeypatch):
+    service = TranslationService()
+    ai_service = get_ai_service()
+    original_use_tm = ai_service.config_manager.use_translation_memory
+    ai_service.config_manager.use_translation_memory = False
+    _set_enabled_providers(ai_service.config_manager, {"deepseek"})
+    ai_service.config_manager.use_provider_router = True
+    service.strategy = "waterfall"
+    captured = {}
+
+    class CaptureRouter:
+        def route(self, request, policy):
+            captured["policy"] = policy
+            return TranslationResult(
+                status="success",
+                text="fallback-google-ok",
+                provider="google",
+                model="google-translate",
+                attempts=[
+                    {"provider": "deepseek", "display_name": "DeepSeek", "model": "deepseek-v4-flash", "status": "failed"},
+                    {"provider": "google", "display_name": "Google Translate", "model": "google-translate", "status": "success"},
+                ],
+            )
+
+    try:
+        monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: CaptureRouter())
+        result = service.translate_text("Hello fallback semantics", "en", "vi")
+    finally:
+        ai_service.config_manager.use_translation_memory = original_use_tm
+
+    assert result == "fallback-google-ok"
+    assert captured["policy"]["allowed_providers"] == ["deepseek", "google"]
+    assert captured["policy"]["provider_order"] == ["deepseek", "google"]
+    assert service.last_translation_metadata["provider"] == "google"
+    assert service.last_translation_metadata["model"] == "google-translate"
 
 
 def test_ai_only_strategy_never_uses_google(monkeypatch):

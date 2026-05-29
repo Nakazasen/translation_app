@@ -23,3 +23,6 @@ dist/
 venv/
 .venv/
 env/
+
+# Codebase analysis tool artifacts
+.understand-anything/

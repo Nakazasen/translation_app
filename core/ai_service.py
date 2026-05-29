@@ -63,9 +63,7 @@ LIVE_TEXT_TRANSLATION_MODELS = [
 
 VISION_MODELS = [
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview"
+    "gemini-3-flash-preview"
 ]
 
 DEFAULT_MODELS = [
@@ -315,7 +313,15 @@ def validate_model_for_profile(model_id: str, profile: str) -> bool:
     if profile == "text":
         return model_id in LIVE_TEXT_TRANSLATION_MODELS
     elif profile == "vision":
-        # Vision models must be in VISION_MODELS
+        # Dynamic check for other providers (Nvidia Nim, ChatAnywhere, DeepSeek, etc.)
+        vision_keywords = ["vision", "vl", "multimodal", "gui"]
+        if any(kw in model_lower for kw in vision_keywords):
+            # Exclude gemini pro models from dynamic vision since they fail/timeout
+            if "gemini" in model_lower and "pro" in model_lower:
+                return False
+            return True
+            
+        # Fallback to hardcoded list of verified default vision models
         return model_id in VISION_MODELS
         
     return True
@@ -493,6 +499,7 @@ class AIConfigManager:
             "current_key_index": 0,
             "waterfall_strategy": DEFAULT_MODELS.copy(),
             "use_translation_memory": True,
+            "translation_memory_policy": "tm_prefer_cache",
             "min_segment_length_to_cache": 2,
             "use_glossary": True,
             "max_glossary_terms_per_segment": 20,
@@ -844,6 +851,27 @@ class AIConfigManager:
     def use_translation_memory(self, value: bool):
         """Set Translation Memory enabled state."""
         self._config["use_translation_memory"] = value
+
+    @property
+    def translation_memory_policy(self) -> str:
+        """Get the Translation Memory Quality Policy.
+        Supported values:
+        - tm_prefer_cache: Use TM hit, skip AI call
+        - tm_suggest_only: Show suggestions, still call AI
+        - tm_retranslate_and_update: Call AI, overwrite/update TM cache
+        - tm_disabled: Disable TM entirely (fallback/equivalent to use_translation_memory = False)
+        """
+        value = str(self._config.get("translation_memory_policy", "tm_prefer_cache")).strip().lower()
+        if value in {"tm_prefer_cache", "tm_suggest_only", "tm_retranslate_and_update", "tm_disabled"}:
+            return value
+        return "tm_prefer_cache"
+        
+    @translation_memory_policy.setter
+    def translation_memory_policy(self, value: str):
+        """Set the Translation Memory Quality Policy."""
+        normalized = str(value).strip().lower()
+        if normalized in {"tm_prefer_cache", "tm_suggest_only", "tm_retranslate_and_update", "tm_disabled"}:
+            self._config["translation_memory_policy"] = normalized
         
     @property
     def min_segment_length_to_cache(self) -> int:
@@ -1569,7 +1597,7 @@ class WaterfallGeminiService:
             logger.error(f"⏱️ Model {model_name} timed out after {timeout}s | Key: [configured] | Chunk preview: {chunk_preview}")
             raise TimeoutError(f"Model {model_name} timed out after {timeout} seconds") from te
 
-    def generate_response(self, prompt: str) -> dict:
+    def generate_response(self, prompt: str, preferred_models: Optional[List[str]] = None) -> dict:
         """
         Execute Waterfall strategy to generate AI response.
         Automatically rotates API keys on quota errors.
@@ -1594,11 +1622,20 @@ class WaterfallGeminiService:
         
         last_error = None
         
-        # Filter priority models for text profile validation
-        active_models = [
-            m for m in self.models_priority 
-            if validate_model_for_profile(m, "text")
-        ]
+        if preferred_models is not None:
+            active_models = []
+            seen_models = set()
+            for model_name in preferred_models:
+                normalized_model = str(model_name or "").strip()
+                if normalized_model and normalized_model not in seen_models:
+                    active_models.append(normalized_model)
+                    seen_models.add(normalized_model)
+        else:
+            # Filter priority models for text profile validation
+            active_models = [
+                m for m in self.models_priority
+                if validate_model_for_profile(m, "text")
+            ]
         
         for model_name in active_models:
             # Find timeout in config
@@ -1763,7 +1800,14 @@ TRANSLATION:"""
     # TRANSLATION SPECIFIC METHODS
     # =========================================================================
     
-    def translate(self, text: str, source_lang: str, target_lang: str, allow_google_fallback: bool = True) -> dict:
+    def translate(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        allow_google_fallback: bool = True,
+        preferred_models: Optional[List[str]] = None,
+    ) -> dict:
         """Translate text using Waterfall strategy with optional Google fallback."""
         return self.translate_with_glossary_terms(
             text,
@@ -1771,6 +1815,7 @@ TRANSLATION:"""
             target_lang,
             glossary_terms=None,
             allow_google_fallback=allow_google_fallback,
+            preferred_models=preferred_models,
         )
 
     def translate_with_glossary_terms(
@@ -1780,6 +1825,7 @@ TRANSLATION:"""
         target_lang: str,
         glossary_terms: Optional[List[Dict[str, Any]]] = None,
         allow_google_fallback: bool = True,
+        preferred_models: Optional[List[str]] = None,
     ) -> dict:
         """Translate text using explicit glossary terms when provided."""
         prompt = self.build_translation_prompt(
@@ -1788,7 +1834,10 @@ TRANSLATION:"""
             target_lang,
             glossary_terms=glossary_terms,
         )
-        result = self.generate_response(prompt)
+        if preferred_models is None:
+            result = self.generate_response(prompt)
+        else:
+            result = self.generate_response(prompt, preferred_models=preferred_models)
         
         # If AI failed, use Google Translate fallback if allowed
         if result.get("status") == "fallback":

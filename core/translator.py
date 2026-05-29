@@ -10,6 +10,7 @@ from deep_translator import GoogleTranslator
 
 from translation_app.config import config
 from translation_app.core.ai_service import get_ai_service
+from translation_app.core.file_translation_control import FileTranslationStopRequested
 from translation_app.core.provider_router import ProviderRouter, TranslationRequest
 from translation_app.core.providers import GeminiProvider, GoogleTranslateProvider, OpenAICompatibleProvider, build_provider_profiles
 from translation_app.utils.error_handler import TranslationServiceError, handle_translation_error
@@ -26,6 +27,7 @@ class TranslationService:
         self.strategy = "waterfall"  # options: "google", "ai", "waterfall", "ai_waterfall"
         self._observer_lock = threading.RLock()
         self._runtime_observer = None
+        self._file_translation_control = None
         self._provider_router = None
         self._provider_router_signature = None
         self.last_translation_metadata = {
@@ -52,9 +54,7 @@ class TranslationService:
         }
         old_mapping = {
             "google translate (mặc định)": "google",
-            "google translate (m蘯ｷc ﾄ黛ｻ杵h)": "google",
             "gemini ai (chỉ dùng ai)": "ai",
-            "gemini ai (ch盻・dﾃｹng ai)": "ai",
             "google translate -> gemini ai": "waterfall",
             "google -> gemini (waterfall)": "waterfall",
             "gemini ai -> google translate": "ai_waterfall",
@@ -81,6 +81,20 @@ class TranslationService:
         with self._observer_lock:
             self._runtime_observer = None
 
+    def set_file_translation_control(self, control) -> None:
+        with self._observer_lock:
+            self._file_translation_control = control
+
+    def clear_file_translation_control(self) -> None:
+        with self._observer_lock:
+            self._file_translation_control = None
+
+    def raise_if_file_translation_stopped(self) -> None:
+        with self._observer_lock:
+            control = self._file_translation_control
+        if control is not None:
+            control.raise_if_stopped()
+
     def _emit_runtime_event(self, event: str, **metadata) -> None:
         with self._observer_lock:
             observer = self._runtime_observer
@@ -93,12 +107,14 @@ class TranslationService:
 
     def _build_provider_router_signature(self, config_manager) -> tuple:
         providers_config = config_manager.providers_config
+        catalog = config_manager.provider_model_catalog
         return (
             bool(config_manager.use_provider_router),
             config_manager.provider_cooldown_seconds,
             config_manager.provider_router_max_retries,
             tuple(config_manager.provider_order),
             repr(providers_config),
+            repr(catalog),
         )
 
     def _get_provider_router(self, ai_service):
@@ -112,7 +128,7 @@ class TranslationService:
             max_retries=config_manager.provider_router_max_retries,
         )
         profiles = build_provider_profiles(config_manager)
-        router.register_provider(GeminiProvider())
+        router.register_provider(GeminiProvider(profile=profiles["gemini"]))
         for provider_name in ("chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"):
             router.register_provider(OpenAICompatibleProvider(profile=profiles[provider_name]))
         router.register_provider(GoogleTranslateProvider())
@@ -123,12 +139,21 @@ class TranslationService:
     def _build_router_policy(self, config_manager) -> dict:
         order = list(config_manager.provider_order) or ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible", "google"]
         ai_provider_order = ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"]
+        non_optional_builtin_providers = set()
+        strict_strategy_provider = {
+            "gemini_only": "gemini",
+            "chatanywhere_only": "chatanywhere",
+            "deepseek_only": "deepseek",
+            "nvidia_nim_only": "nvidia_nim",
+            "openai_compatible_only": "openai_compatible",
+        }
         if self.strategy == "ai":
             allowed = ai_provider_order
         elif self.strategy == "ai_waterfall":
             allowed = ai_provider_order + ["google"]
         elif self.strategy == "google":
             allowed = ["google"]
+            non_optional_builtin_providers.add("google")
         elif self.strategy == "gemini_only":
             allowed = ["gemini"]
         elif self.strategy == "chatanywhere_only":
@@ -141,17 +166,30 @@ class TranslationService:
             allowed = ["openai_compatible"]
         else:
             allowed = [provider for provider in order if provider in set(ai_provider_order + ["google"])]
+            if "google" not in allowed:
+                allowed.append("google")
+            non_optional_builtin_providers.add("google")
             if not allowed:
                 allowed = ai_provider_order + ["google"]
 
         # Filter out disabled providers
         providers_config = config_manager.providers_config
-        allowed = [p for p in allowed if bool(providers_config.get(p, {}).get("enabled", False))]
+        allowed = [
+            p for p in allowed
+            if p in non_optional_builtin_providers or bool(providers_config.get(p, {}).get("enabled", False))
+        ]
+        strict_provider_models = {}
+        strict_provider_name = strict_strategy_provider.get(self.strategy)
+        if strict_provider_name and strict_provider_name in allowed:
+            profile = build_provider_profiles(config_manager).get(strict_provider_name)
+            if profile and profile.default_model:
+                strict_provider_models[strict_provider_name] = profile.default_model
 
         return {
             "mode": config_manager.provider_router_policy,
             "allowed_providers": allowed,
             "provider_order": [provider for provider in order if provider in allowed] or allowed,
+            "strict_provider_models": strict_provider_models,
         }
 
     def _find_glossary_terms(self, text: str, src_lang: str, dest_lang: str, ai_service) -> list[dict]:
@@ -251,6 +289,7 @@ class TranslationService:
         return "".join(translated_chunks)
 
     def translate_text(self, text: str, src_lang: str, dest_lang: str) -> str:
+        self.raise_if_file_translation_stopped()
         if text is None:
             return ""
 
@@ -263,20 +302,33 @@ class TranslationService:
         ai_service = get_ai_service()
         use_tm = ai_service.config_manager.use_translation_memory
         min_len = ai_service.config_manager.min_segment_length_to_cache
+        tm_policy = ai_service.config_manager.translation_memory_policy
+
+        if use_tm and tm_policy == "tm_disabled":
+            use_tm = False
 
         if use_tm and len(text.strip()) >= min_len:
             tm = get_tm_manager()
             cached_translation = tm.lookup_segment(src_lang, dest_lang, text)
             if cached_translation is not None:
-                self._emit_runtime_event("tm_hit", source_lang=src_lang, target_lang=dest_lang)
-                self.last_translation_metadata = {
-                    "provider": "translation_memory",
-                    "model": "cache",
-                    "strategy": self.strategy,
-                    "fallback_count": 0,
-                    "attempts": []
-                }
-                return cached_translation
+                if tm_policy == "tm_prefer_cache":
+                    self._emit_runtime_event("tm_hit", source_lang=src_lang, target_lang=dest_lang)
+                    self.last_translation_metadata = {
+                        "provider": "translation_memory",
+                        "model": "cache",
+                        "strategy": self.strategy,
+                        "fallback_count": 0,
+                        "attempts": []
+                    }
+                    return cached_translation
+                elif tm_policy == "tm_suggest_only":
+                    from translation_app.core.translation_memory import get_segment_hash
+                    text_hash = get_segment_hash(src_lang, dest_lang, text)
+                    logger.info(f"💡 TM Suggestion (AI translation still runs): hash={text_hash[:8]}..., len={len(text)} chars")
+                elif tm_policy == "tm_retranslate_and_update":
+                    from translation_app.core.translation_memory import get_segment_hash
+                    text_hash = get_segment_hash(src_lang, dest_lang, text)
+                    logger.info(f"🔄 TM Retranslate and Update: hash={text_hash[:8]}..., len={len(text)} chars")
 
         def save_to_tm(translated: str, provider: str, model: str):
             if use_tm and len(text.strip()) >= min_len and translated and translated.strip():
@@ -510,6 +562,7 @@ class TranslationService:
         result = []
         start = 0
         while start < len(text):
+            self.raise_if_file_translation_stopped()
             chunk = text[start:start + max_length]
             if not chunk.strip() or len(chunk.strip()) < 2:
                 result.append(chunk)
@@ -522,12 +575,17 @@ class TranslationService:
                         logger.warning(f"Chunk too long ({len(chunk)} chars), splitting in translate_long_text...")
                         sub_chunks = [chunk[i:i + 4000] for i in range(0, len(chunk), 4000)]
                         for sub_chunk in sub_chunks:
+                            self.raise_if_file_translation_stopped()
                             if sub_chunk.strip():
                                 try:
                                     result.append(self.translate_text(sub_chunk, src_lang, dest_lang))
+                                except FileTranslationStopRequested:
+                                    raise
                                 except Exception as nested_exc:
                                     logger.warning(f"Error translating sub-chunk: {nested_exc}. Keeping original.")
                                     result.append(sub_chunk)
+                    elif isinstance(exc, FileTranslationStopRequested):
+                        raise
                     else:
                         logger.warning(f"Error translating chunk (len={len(chunk)}): {exc}. Keeping original.")
                         result.append(chunk)
@@ -550,13 +608,17 @@ class TranslationService:
 
         futures_with_indices: list[tuple[int, concurrent.futures.Future]] = []
         for index, text in valid_texts_with_indices:
+            self.raise_if_file_translation_stopped()
             future = self.executor.submit(self.translate_text, text, src_lang, dest_lang)
             futures_with_indices.append((index, future))
 
         for index, future in futures_with_indices:
+            self.raise_if_file_translation_stopped()
             try:
                 result = future.result(timeout=self.timeout)
                 results_map[index] = result if result is not None else ""
+            except FileTranslationStopRequested:
+                raise
             except concurrent.futures.TimeoutError:
                 logger.warning(f"Translation timeout for text at index {index}, keeping original")
                 original_text = texts[index] if index < len(texts) else ""

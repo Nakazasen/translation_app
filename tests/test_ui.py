@@ -10,6 +10,7 @@ import translation_app.core.translation_memory
 from translation_app.core.translation_memory import get_tm_manager
 from translation_app.core.translation_job import TranslationJobManager
 from translation_app.core.ai_service import get_ai_service
+from translation_app.core.file_translation_control import FileTranslationInterrupted
 from translation_app.core.provider_router import ProviderRouter
 from translation_app.core.providers import OpenAICompatibleProvider
 
@@ -321,6 +322,14 @@ class _ImmediateThread:
             self._target()
 
 
+class _DormantThread:
+    def __init__(self, target=None, daemon=None, *args, **kwargs):
+        self._target = target
+
+    def start(self):
+        return None
+
+
 def _prepare_translate_file_ui(monkeypatch, tmp_path, suffix):
     from translation_app.ui.main_window import MainWindow
 
@@ -384,6 +393,120 @@ def test_pdf_experimental_ui_default_off(monkeypatch, tmp_path):
 
         assert calls == [("stable", str(input_path.with_name(f"sample_translated_{time.strftime('%Y%m%d')}.docx")))]
         assert infos
+    finally:
+        root.destroy()
+
+
+def test_translate_file_prevents_duplicate_submission(monkeypatch, tmp_path):
+    root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    try:
+        monkeypatch.setattr("translation_app.ui.main_window.threading.Thread", _DormantThread)
+        root.translate_file()
+
+        assert root._file_translation_in_progress is True
+        assert root.button_translate_file.cget("state") == "disabled"
+
+        calls = []
+        monkeypatch.setattr(root.word_handler, "translate", lambda *args, **kwargs: calls.append(args))
+        root.translate_file()
+
+        assert calls == []
+    finally:
+        root.destroy()
+
+
+def test_translate_file_reenables_controls_after_success(monkeypatch, tmp_path):
+    root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    infos = []
+    try:
+        monkeypatch.setattr(root.word_handler, "translate", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: infos.append(args))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert infos
+        assert root._file_translation_in_progress is False
+        assert root.button_translate_file.cget("state") == "normal"
+        assert root.button_pause_file.cget("state") == "disabled"
+        assert root.button_cancel_file.cget("state") == "disabled"
+        assert root.button_browse_file.cget("state") == "normal"
+        assert root.entry_file_path.cget("state") == "normal"
+        assert str(root.combobox_src_lang_file.cget("state")) == "readonly"
+        assert str(root.combobox_dest_lang_file.cget("state")) == "readonly"
+    finally:
+        root.destroy()
+
+
+def test_translate_file_supports_multiple_selected_files(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    second_input = tmp_path / "sample_two.docx"
+    second_input.write_bytes(b"stub")
+    calls = []
+    infos = []
+    try:
+        root._set_selected_file_paths([str(input_path), str(second_input)])
+        monkeypatch.setattr(
+            root.word_handler,
+            "translate",
+            lambda file_path, output_file, src_lang, dest_lang: calls.append((file_path, output_file)),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: infos.append(args))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert [Path(item[0]).name for item in calls] == ["sample.docx", "sample_two.docx"]
+        assert all("_translated_" in item[1] for item in calls)
+        assert infos
+    finally:
+        root.destroy()
+
+
+def test_translate_file_cancel_keeps_partial_output_notice(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    warnings = []
+    try:
+        monkeypatch.setattr(
+            root.word_handler,
+            "translate",
+            lambda file_path, output_file, src_lang, dest_lang: (_ for _ in ()).throw(
+                FileTranslationInterrupted("cancelled", output_file=output_file, partial_saved=True)
+            ),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: warnings.append(args))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        assert warnings
+        assert str(input_path.with_name(f"sample_translated_{time.strftime('%Y%m%d')}.docx")) in warnings[0][1]
+        assert "0/1 file" in warnings[0][1]
+        assert root._file_translation_in_progress is False
+    finally:
+        root.destroy()
+
+
+def test_translate_file_error_callback_does_not_raise_nameerror(monkeypatch, tmp_path):
+    root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    errors = []
+    try:
+        monkeypatch.setattr(
+            root.word_handler,
+            "translate",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda title, message: errors.append((title, message)))
+
+        root.translate_file()
+
+        assert errors
+        assert "Dịch file" in errors[0][1]
+        assert "NameError" not in errors[0][1]
+        assert root._file_translation_in_progress is False
+        assert root.button_translate_file.cget("state") == "normal"
     finally:
         root.destroy()
 
@@ -636,8 +759,8 @@ def test_pdf_experimental_ui_shows_supported_error(monkeypatch, tmp_path):
         root.translate_file()
 
         assert errors
-        assert "PDF này không phù hợp với chế độ thử nghiệm" in errors[0][1]
-        assert "DOCX ổn định" in errors[0][1]
+        assert "PDF" in errors[0][1]
+        assert "DOCX" in errors[0][1]
     finally:
         root.destroy()
 

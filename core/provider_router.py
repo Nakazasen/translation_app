@@ -148,15 +148,25 @@ class ProviderRouter:
                 )
                 continue
 
-            candidates = list(provider.iter_candidates()) or []
+            candidates = self._filter_candidates(provider, list(provider.iter_candidates()) or [], policy)
             if not candidates:
+                pinned_model = self._get_strict_provider_model(policy, provider.name) or getattr(provider, "default_model", "")
+                message = ""
+                reason = "unavailable"
+                if self._get_strict_provider_model(policy, provider.name):
+                    reason = "model_unavailable"
+                    message = (
+                        f"Configured default model '{pinned_model}' is not available for "
+                        f"{getattr(provider, 'display_name', provider.name)}."
+                    )
                 attempts.append(
                     {
                         "provider": provider.name,
                         "display_name": getattr(provider, "display_name", provider.name),
-                        "model": getattr(provider, "default_model", ""),
+                        "model": pinned_model,
                         "status": "skipped",
-                        "reason": "unavailable",
+                        "reason": reason,
+                        "message": message,
                     }
                 )
                 continue
@@ -246,12 +256,18 @@ class ProviderRouter:
                 break
 
         final_attempt = attempts[-1] if attempts else {}
+        error_message = str(final_attempt.get("message", "No translation provider succeeded."))
+        strict_model = self._get_strict_provider_model(policy, str(final_attempt.get("provider", "")))
+        if strict_model and str(final_attempt.get("model", "")) == strict_model and final_attempt.get("status") == "failed":
+            display_name = str(final_attempt.get("display_name", final_attempt.get("provider", "provider")))
+            base_message = error_message or str(final_attempt.get("reason", "provider_error"))
+            error_message = f"{display_name} default model '{strict_model}' failed: {base_message}"
         return TranslationResult(
             status="error",
             provider=str(final_attempt.get("provider", "")),
             model=str(final_attempt.get("model", "")),
             error_type=str(final_attempt.get("reason", "no_provider_available")),
-            error_message=str(final_attempt.get("message", "No translation provider succeeded.")),
+            error_message=error_message,
             latency_ms=int(final_attempt.get("latency_ms", 0) or 0),
             attempts=attempts,
         )
@@ -358,6 +374,22 @@ class ProviderRouter:
             return False
         current = now if now is not None else time.time()
         return state.cooldown_until > current
+
+    def _filter_candidates(self, provider: Any, candidates: list[Any], policy: dict[str, Any]) -> list[Any]:
+        strict_model = self._get_strict_provider_model(policy, provider.name)
+        if not strict_model:
+            return candidates
+        return [
+            candidate
+            for candidate in candidates
+            if (getattr(candidate, "model", "") or getattr(provider, "default_model", "")) == strict_model
+        ]
+
+    def _get_strict_provider_model(self, policy: dict[str, Any], provider_name: str) -> str:
+        strict_provider_models = policy.get("strict_provider_models", {})
+        if not isinstance(strict_provider_models, dict):
+            return ""
+        return str(strict_provider_models.get(provider_name, "") or "").strip()
 
 
 def classify_error(error: Any, status_code: int | None = None, response_body: Any = None) -> str:

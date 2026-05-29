@@ -215,3 +215,104 @@ def test_translation_event_callback_failure_does_not_fail_translation(monkeypatc
     result = service.translate_text("Hello world", "en", "vi")
 
     assert result == "Observer Safe"
+
+
+def test_translator_tm_policy_prefer_cache(temp_db_path, monkeypatch):
+    """Verify that under tm_prefer_cache, TM hit is used and AI provider is NOT called."""
+    import translation_app.core.translation_memory
+    translation_app.core.translation_memory._tm_manager = None
+    
+    from translation_app.core.translation_memory import get_tm_manager
+    tm = get_tm_manager(temp_db_path)
+    
+    ai_service = get_ai_service()
+    ai_service.config_manager.use_translation_memory = True
+    ai_service.config_manager.translation_memory_policy = "tm_prefer_cache"
+    
+    src = "en"
+    tgt = "vi"
+    source = "StrictPreferCacheTest"
+    translated = "Prefer Cache Answer"
+    
+    tm.save_segment(src, tgt, source, translated, "test-provider", "test-model")
+    
+    # Mock translator to raise error if called
+    from deep_translator import GoogleTranslator
+    def mock_translate(*args, **kwargs):
+        raise AssertionError("AI provider called under tm_prefer_cache!")
+    monkeypatch.setattr(GoogleTranslator, "translate", mock_translate)
+    
+    service = TranslationService()
+    service.set_strategy("google translate (mặc định)")
+    res = service.translate_text(source, src, tgt)
+    
+    assert res == translated
+
+
+def test_translator_tm_policy_suggest_only(temp_db_path, monkeypatch):
+    """Verify that under tm_suggest_only, AI provider is STILL called even with a TM hit."""
+    import translation_app.core.translation_memory
+    translation_app.core.translation_memory._tm_manager = None
+    
+    from translation_app.core.translation_memory import get_tm_manager
+    tm = get_tm_manager(temp_db_path)
+    
+    ai_service = get_ai_service()
+    ai_service.config_manager.use_translation_memory = True
+    ai_service.config_manager.translation_memory_policy = "tm_suggest_only"
+    
+    src = "en"
+    tgt = "vi"
+    source = "StrictSuggestOnlyTest"
+    translated = "Old Suggestion Answer"
+    
+    tm.save_segment(src, tgt, source, translated, "test-provider", "test-model")
+    
+    # Mock translator to return a fresh translation
+    from deep_translator import GoogleTranslator
+    monkeypatch.setattr(GoogleTranslator, "translate", lambda self, text: "Fresh AI Answer")
+    
+    service = TranslationService()
+    service.set_strategy("google translate (mặc định)")
+    res = service.translate_text(source, src, tgt)
+    
+    # Assert fresh AI answer is returned (proving AI provider was called)
+    assert res == "Fresh AI Answer"
+    
+    # Verify that the new fresh answer gets saved/updated in TM as recommended
+    cached = tm.lookup_segment(src, tgt, source)
+    assert cached == "Fresh AI Answer"
+
+
+def test_translator_tm_policy_retranslate_and_update(temp_db_path, monkeypatch):
+    """Verify that under tm_retranslate_and_update, AI provider is called and TM cache is updated."""
+    import translation_app.core.translation_memory
+    translation_app.core.translation_memory._tm_manager = None
+    
+    from translation_app.core.translation_memory import get_tm_manager
+    tm = get_tm_manager(temp_db_path)
+    
+    ai_service = get_ai_service()
+    ai_service.config_manager.use_translation_memory = True
+    ai_service.config_manager.translation_memory_policy = "tm_retranslate_and_update"
+    
+    src = "en"
+    tgt = "vi"
+    source = "StrictRetranslateAndUpdateTest"
+    translated = "Old Retranslate Answer"
+    
+    tm.save_segment(src, tgt, source, translated, "test-provider", "test-model")
+    
+    # Mock translator to return a fresh translation
+    from deep_translator import GoogleTranslator
+    monkeypatch.setattr(GoogleTranslator, "translate", lambda self, text: "Fresh AI Answer Updated")
+    
+    service = TranslationService()
+    service.set_strategy("google translate (mặc định)")
+    res = service.translate_text(source, src, tgt)
+    
+    assert res == "Fresh AI Answer Updated"
+    
+    # Verify that the DB record is overwritten with the fresh translation
+    cached = tm.lookup_segment(src, tgt, source)
+    assert cached == "Fresh AI Answer Updated"

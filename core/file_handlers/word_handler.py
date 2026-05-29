@@ -8,6 +8,7 @@ from docx import Document
 from docx.text.paragraph import Paragraph
 
 from translation_app.config import config
+from translation_app.core.file_translation_control import FileTranslationInterrupted, FileTranslationStopRequested
 from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.core.translator import TranslationService
 from translation_app.utils.error_handler import FileProcessingError
@@ -44,6 +45,10 @@ class WordHandler:
     # Strict Unix path requiring at least one sub-folder (e.g. /home/user), Windows path, or UNC path
     _FILE_PATH_RE = re.compile(r"^(?:[A-Za-z]:\\|\\\\)(?:[^\\]+\\)*[^\\]+$|^(?:/[A-Za-z0-9_-]+){2,}(?:\.[A-Za-z0-9]+)?$")
     _FIELD_HINT_RE = re.compile(r"\b(?:HYPERLINK|MERGEFIELD|PAGE|NUMPAGES|TOC)\b", re.IGNORECASE)
+    _FLIGHT_CODE_RE = re.compile(r"^[A-Z]{1,4}\d{1,4}[A-Z]?$")
+    _NUMERICISH_TOKEN_RE = re.compile(r"^(?=.*\d)[\d\s.,:/()%+\-]+$")
+    _FRAGMENTED_RUN_MIN_COUNT = 2
+    _FRAGMENTED_RUN_MIN_TOTAL_CHARS = 20
 
     def __init__(self, translation_service: TranslationService):
         self.translation_service = translation_service
@@ -53,6 +58,7 @@ class WordHandler:
 
     def translate(self, input_file: str, output_file: str, src_lang: str, dest_lang: str) -> Dict[str, Any]:
         """Translate a DOCX file while preserving all core formatting and layout structure."""
+        doc = None
         try:
             logger.info(f"Starting Word translation: {input_file}")
             if self.progress_callback:
@@ -94,6 +100,7 @@ class WordHandler:
 
             api_requests = 0
             for idx, target in enumerate(targets):
+                getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
                 # Update location statistics
                 loc = target.location
                 report["by_location"][loc] = report["by_location"].get(loc, 0) + 1
@@ -148,6 +155,14 @@ class WordHandler:
                 "images_processed": 0,
                 "images_skipped": 0,
             }
+        except FileTranslationStopRequested as exc:
+            partial_saved, save_error = self._save_partial_document(doc, output_file, exc.status)
+            raise FileTranslationInterrupted(
+                exc.status,
+                output_file=output_file,
+                partial_saved=partial_saved,
+                save_error=save_error,
+            ) from exc
         except FileProcessingError as exc:
             logger.error(str(exc))
             raise exc
@@ -239,6 +254,7 @@ class WordHandler:
 
     def _translate_target_runs(self, target: WordTranslationTarget, src_lang: str, dest_lang: str) -> bool:
         """Translate individual runs of a target paragraph while preserving run-level formatting."""
+        getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
         original_text = target.text
         if self._should_skip_text(original_text):
             return False
@@ -254,21 +270,23 @@ class WordHandler:
                 if translated_text != original_text:
                     target.paragraph.text = translated_text
                     return True
-                return False
+                return self._is_unchanged_translation_acceptable(original_text)
             except Exception as exc:
                 logger.warning(f"Error translating Word paragraph: {exc}")
                 return False
 
+        eligible_runs = self._collect_translatable_runs(target.paragraph.runs)
+        if self._should_translate_fragmented_runs_as_block(target.paragraph.runs, eligible_runs):
+            return self._translate_fragmented_paragraph(target, src_lang, dest_lang)
+
         translated_any = False
+        acceptable_unchanged = False
         all_failed = True
         has_run = False
 
-        for run in target.paragraph.runs:
+        for run in eligible_runs:
+            getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
             run_text = run.text
-            if self._should_skip_text(run_text):
-                continue
-            if self._run_has_field_markup(run):
-                continue
 
             has_run = True
             try:
@@ -280,6 +298,8 @@ class WordHandler:
                 if translated_text != run_text:
                     run.text = translated_text
                     translated_any = True
+                elif self._is_unchanged_translation_acceptable(run_text):
+                    acceptable_unchanged = True
                 all_failed = False
             except Exception as exc:
                 logger.warning(f"Error translating Word run in target {target.target_id}: {exc}")
@@ -291,7 +311,76 @@ class WordHandler:
         if all_failed:
             return False
 
-        return translated_any or not has_run
+        return translated_any or acceptable_unchanged or not has_run
+
+    def _collect_translatable_runs(self, runs: List[Any]) -> List[Any]:
+        eligible_runs: List[Any] = []
+        for run in runs:
+            run_text = run.text
+            if self._should_skip_text(run_text):
+                continue
+            if self._run_has_field_markup(run):
+                continue
+            eligible_runs.append(run)
+        return eligible_runs
+
+    def _should_translate_fragmented_runs_as_block(self, all_runs: List[Any], eligible_runs: List[Any]) -> bool:
+        if len(eligible_runs) < self._FRAGMENTED_RUN_MIN_COUNT:
+            return False
+
+        for run in all_runs:
+            run_text = run.text or ""
+            if not run_text.strip():
+                continue
+            if self._run_has_field_markup(run):
+                return False
+            if self._should_skip_text(run_text):
+                return False
+
+        total_chars = sum(len((run.text or "").strip()) for run in eligible_runs)
+        return total_chars >= self._FRAGMENTED_RUN_MIN_TOTAL_CHARS
+
+    def _translate_fragmented_paragraph(self, target: WordTranslationTarget, src_lang: str, dest_lang: str) -> bool:
+        getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
+        original_text = target.text
+        try:
+            translated_text = self.translation_service.translate_long_text(
+                original_text,
+                src_lang,
+                dest_lang,
+            )
+        except Exception as exc:
+            logger.warning(f"Error translating fragmented Word paragraph in target {target.target_id}: {exc}")
+            return False
+
+        if translated_text == original_text:
+            return self._is_unchanged_translation_acceptable(original_text)
+
+        first_run = None
+        for run in target.paragraph.runs:
+            if self._run_has_field_markup(run):
+                continue
+            if first_run is None:
+                first_run = run
+                run.text = translated_text
+                continue
+            run.text = ""
+        if first_run is None:
+            target.paragraph.text = translated_text
+        return True
+
+    def _save_partial_document(self, doc: Optional[Document], output_file: str, status: str) -> tuple[bool, Optional[Exception]]:
+        if doc is None:
+            return False, None
+        try:
+            if self.progress_callback:
+                self.progress_callback(f"Saving partial Word document ({status})...", 95)
+            doc.save(output_file)
+            logger.info(f"Saved partial Word output after file translation was {status}: {output_file}")
+            return True, None
+        except Exception as exc:
+            logger.error(f"Failed to save partial Word output after {status}: {exc}")
+            return False, exc
 
     def _should_skip_text(self, text: str) -> bool:
         """Robust skip logic to ensure symbols, paths, fields, and URLs are skipped, but normal text is preserved."""
@@ -319,7 +408,31 @@ class WordHandler:
         if self._FIELD_HINT_RE.search(stripped):
             return True
 
+        if self._is_nonlinguistic_ascii_token(stripped):
+            return True
+
         return False
+
+    def _is_nonlinguistic_ascii_token(self, stripped: str) -> bool:
+        if self._FLIGHT_CODE_RE.match(stripped):
+            return True
+
+        if self._NUMERICISH_TOKEN_RE.match(stripped):
+            return True
+
+        if not stripped.isascii() or not any(ch.isdigit() for ch in stripped):
+            return False
+
+        words = re.findall(r"[A-Za-z]+", stripped)
+        return bool(words) and all(len(word) <= 2 for word in words)
+
+    def _is_unchanged_translation_acceptable(self, text: str) -> bool:
+        stripped = (text or "").strip()
+        if not stripped:
+            return True
+        if self._is_nonlinguistic_ascii_token(stripped):
+            return True
+        return bool(re.fullmatch(r"[A-Za-z]", stripped))
 
     def _run_has_field_markup(self, run) -> bool:
         """Check if the run XML contains Word fields or instructional text markup."""

@@ -1040,6 +1040,7 @@ class PDFHandler:
             logger.info("📌 Bước 2/2: Dịch file Word (giữ nguyên định dạng)...")
             
             word_handler = WordHandler(self.translation_service)
+            word_handler.progress_callback = self.progress_callback
             word_handler.translate(temp_word_file, output_file, src_lang, dest_lang)
             
             logger.info("=" * 60)
@@ -1115,6 +1116,7 @@ class PDFHandler:
                 logger.info("Processing images with OCR during translation...")
             
             word_handler = WordHandler(self.translation_service)
+            word_handler.progress_callback = self.progress_callback
             word_handler.translate(temp_word_file, output_file, src_lang, dest_lang)
             
             logger.info("✓ PDF translation completed successfully using smart method (format preserved)")

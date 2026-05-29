@@ -27,6 +27,9 @@ class FakeTranslationService:
     def clear_runtime_observer(self):
         self.observer = None
 
+    def raise_if_file_translation_stopped(self):
+        return None
+
     def translate_long_text(self, text, src_lang, dest_lang):
         self.calls.append(text)
         if self.observer:
@@ -103,6 +106,20 @@ def test_word_preserves_run_formatting(tmp_path):
     assert paragraph.runs[1].italic is True
     assert paragraph.runs[1].underline is True
     assert service.calls == ["Hello ", "world"]
+
+
+def test_word_collapses_heavily_fragmented_runs_into_single_translation_call(tmp_path):
+    def build_document(doc):
+        p = doc.add_paragraph()
+        for text in ["Fresh ", "strict ", "pinned ", "default ", "model ", "verification"]:
+            p.add_run(text)
+
+    output_path, service, _ = _run_word_translation(tmp_path, build_document)
+
+    result = Document(output_path)
+    paragraph = result.paragraphs[0]
+    assert paragraph.text == "Fresh strict pinned default model verification-vi"
+    assert service.calls == ["Fresh strict pinned default model verification"]
 
 
 def test_word_preserves_tables(tmp_path):
@@ -229,6 +246,23 @@ def test_ppt_preserves_run_formatting(tmp_path):
     assert paragraph.runs[1].font.italic is True
     assert paragraph.runs[1].font.size == Pt(24)
     assert service.calls == ["Hello ", "world"]
+
+
+def test_ppt_collapses_heavily_fragmented_runs_into_single_translation_call(tmp_path):
+    def build_presentation(prs):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        shape = slide.shapes.add_textbox(PptInches(1), PptInches(1), PptInches(5), PptInches(1.5))
+        paragraph = shape.text_frame.paragraphs[0]
+        for text in ["Fresh ", "strict ", "pinned ", "default ", "model ", "verification"]:
+            run = paragraph.add_run()
+            run.text = text
+
+    output_path, service, _ = _run_ppt_translation(tmp_path, build_presentation)
+
+    result = Presentation(output_path)
+    paragraph = result.slides[0].shapes[0].text_frame.paragraphs[0]
+    assert paragraph.text == "Fresh strict pinned default model verification-vi"
+    assert service.calls == ["Fresh strict pinned default model verification"]
 
 
 def test_ppt_preserves_tables(tmp_path):
