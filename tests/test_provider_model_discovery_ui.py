@@ -180,3 +180,196 @@ def test_nvidia_models_can_exceed_seed_list(tmp_path, monkeypatch):
         assert "deepseek-ai/deepseek-v3" in combo_values
     finally:
         root.destroy()
+
+
+def test_auto_model_refresh_checkbox_exists(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    fake_service = type("FakeService", (), {"config_manager": manager})()
+    monkeypatch.setattr("translation_app.core.ai_service.get_ai_service", lambda api_key=None: fake_service)
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        # Check if the checkbox variable exists and is initialized
+        assert hasattr(root, "auto_refresh_provider_models_var")
+        assert root.auto_refresh_provider_models_var.get() is True
+    finally:
+        root.destroy()
+
+
+def test_auto_model_refresh_schedules_background_refresh(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock.com/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    called = []
+    def mock_refresh(self, provider_name, manual=False, force=False, on_complete=None):
+        called.append((provider_name, manual, force))
+        if callable(on_complete):
+            on_complete()
+        return True
+
+    monkeypatch.setattr(MainWindow, "_start_provider_model_refresh", mock_refresh)
+    
+    fake_service = type("FakeService", (), {"config_manager": manager})()
+    monkeypatch.setattr("translation_app.core.ai_service.get_ai_service", lambda api_key=None: fake_service)
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        root._auto_refresh_provider_models_on_startup()
+        root.update()
+        assert len(called) > 0
+        assert any(x[0] == "chatanywhere" and x[1] is False and x[2] is False for x in called)
+    finally:
+        root.destroy()
+
+
+def test_auto_model_refresh_skips_google_and_unconfigured_provider(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    # Configure only chatanywhere
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock.com/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    # Deepseek is unconfigured
+    providers["deepseek"]["base_url"] = ""
+    providers["deepseek"]["api_keys"] = []
+    manager.providers_config = providers
+
+    called = []
+    def mock_refresh(self, provider_name, manual=False, force=False, on_complete=None):
+        called.append(provider_name)
+        if callable(on_complete):
+            on_complete()
+        return True
+
+    monkeypatch.setattr(MainWindow, "_start_provider_model_refresh", mock_refresh)
+
+    fake_service = type("FakeService", (), {"config_manager": manager})()
+    monkeypatch.setattr("translation_app.core.ai_service.get_ai_service", lambda api_key=None: fake_service)
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        root._auto_refresh_provider_models_on_startup()
+        root.update()
+        assert "chatanywhere" in called
+        assert "google" not in called
+        assert "deepseek" not in called
+    finally:
+        root.destroy()
+
+
+def test_auto_model_refresh_updates_catalog_after_success(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock.com/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    def mock_refresh_api(provider_name):
+        return ["model-a", "model-b"]
+    monkeypatch.setattr(manager, "refresh_provider_models", mock_refresh_api)
+
+    fake_service = type("FakeService", (), {"config_manager": manager})()
+    monkeypatch.setattr("translation_app.core.ai_service.get_ai_service", lambda api_key=None: fake_service)
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        root._auto_refresh_provider_models_on_startup()
+        import time
+        start_time = time.time()
+        # Wait for queue worker to finish
+        while (root._provider_model_refresh_inflight or root._provider_model_auto_refresh_queue) and time.time() - start_time < 3.0:
+            root.update()
+            time.sleep(0.05)
+            
+        root.update()
+        state = manager.get_provider_model_refresh_state_public().get("chatanywhere", {})
+        assert state.get("last_status") == "success"
+        assert state.get("last_count") == 2
+    finally:
+        root.destroy()
+
+
+def test_auto_model_refresh_failure_no_modal_popup(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock.com/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    def mock_refresh_api(provider_name):
+        raise RuntimeError("API failure")
+    monkeypatch.setattr(manager, "refresh_provider_models", mock_refresh_api)
+
+    popup_shown = []
+    monkeypatch.setattr(
+        "tkinter.messagebox.showerror",
+        lambda title, message: popup_shown.append(message)
+    )
+
+    fake_service = type("FakeService", (), {"config_manager": manager})()
+    monkeypatch.setattr("translation_app.core.ai_service.get_ai_service", lambda api_key=None: fake_service)
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        root._auto_refresh_provider_models_on_startup()
+        import time
+        start_time = time.time()
+        while (root._provider_model_refresh_inflight or root._provider_model_auto_refresh_queue) and time.time() - start_time < 3.0:
+            root.update()
+            time.sleep(0.05)
+            
+        root.update()
+        assert not popup_shown
+        state = manager.get_provider_model_refresh_state_public().get("chatanywhere", {})
+        assert state.get("last_status") == "error"
+    finally:
+        root.destroy()
+
+
+def test_manual_refresh_ignores_ttl(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock.com/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    # Record very fresh status (last seconds)
+    manager.record_provider_model_refresh_result("chatanywhere", "success", 5)
+
+    called = []
+    def mock_refresh(self, provider_name, manual=False, force=False, on_complete=None):
+        called.append((provider_name, manual, force))
+        if callable(on_complete):
+            on_complete()
+        return True
+
+    monkeypatch.setattr(MainWindow, "_start_provider_model_refresh", mock_refresh)
+
+    fake_service = type("FakeService", (), {"config_manager": manager})()
+    monkeypatch.setattr("translation_app.core.ai_service.get_ai_service", lambda api_key=None: fake_service)
+
+    root = MainWindow()
+    root.withdraw()
+    try:
+        root.prov_tree.selection_set("chatanywhere")
+        root._on_provider_selected()
+
+        root._refresh_provider_models_catalog()
+        assert len(called) > 0
+        assert any(x[0] == "chatanywhere" and x[1] is True and x[2] is True for x in called)
+    finally:
+        root.destroy()
+
+
+def test_no_mojibake_auto_refresh_ui():
+    # Verify no mojibake issues in main ui label translation or labels
+    from tools.check_mojibake import scan_file
+    problems = scan_file(Path("ui/main_window.py"))
+    assert not problems

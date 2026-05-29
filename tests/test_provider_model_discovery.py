@@ -235,3 +235,105 @@ def test_runtime_uses_discovered_default_model_not_seed_only(tmp_path, monkeypat
     
     assert chatanywhere_profile.default_model == "gpt-5-discovered"
     assert chatanywhere_profile.model_pool == ["gpt-5-discovered"]
+
+
+def test_should_auto_refresh_when_never_refreshed(tmp_path):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock-chatanywhere.org/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    # Fresh config has "never" as last_status
+    assert manager.should_auto_refresh_provider_models("chatanywhere") is True
+
+
+def test_should_not_auto_refresh_when_cache_fresh(tmp_path):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock-chatanywhere.org/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    manager.record_provider_model_refresh_result("chatanywhere", "success", 3)
+    
+    # State recorded is fresh (less than 24 hours)
+    assert manager.should_auto_refresh_provider_models("chatanywhere") is False
+
+
+def test_should_auto_refresh_when_ttl_expired(tmp_path):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock-chatanywhere.org/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    from datetime import datetime, timedelta
+    state = manager.provider_model_refresh_state
+    state["chatanywhere"] = {
+        "last_refreshed_at": (datetime.now() - timedelta(hours=25)).isoformat(),
+        "last_status": "success",
+        "last_error": "",
+        "last_count": 5
+    }
+    manager.provider_model_refresh_state = state
+    
+    assert manager.should_auto_refresh_provider_models("chatanywhere") is True
+
+
+def test_refresh_state_records_success_without_secret(tmp_path):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock-chatanywhere.org/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-super-secret-key"]
+    manager.providers_config = providers
+
+    manager.record_provider_model_refresh_result("chatanywhere", "success", 10)
+    
+    public_state = manager.get_provider_model_refresh_state_public()
+    chat_state = public_state["chatanywhere"]
+    assert chat_state["last_status"] == "success"
+    assert chat_state["last_count"] == 10
+    assert "sk-super-secret-key" not in json.dumps(public_state)
+
+
+def test_refresh_state_records_sanitized_failure(tmp_path):
+    manager = _make_manager(tmp_path)
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock-chatanywhere.org/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-super-secret-key"]
+    manager.providers_config = providers
+
+    manager.record_provider_model_refresh_result(
+        "chatanywhere", 
+        "error", 
+        0, 
+        error="Bearer sk-super-secret-key authorization failed"
+    )
+    
+    public_state = manager.get_provider_model_refresh_state_public()
+    chat_state = public_state["chatanywhere"]
+    assert chat_state["last_status"] == "error"
+    assert "[REDACTED_API_KEY]" in chat_state["last_error"]
+    assert "sk-super-secret-key" not in chat_state["last_error"]
+
+
+def test_auto_refresh_does_not_destroy_catalog_on_failure(tmp_path, monkeypatch):
+    manager = _make_manager(tmp_path)
+    old_catalog = deepcopy(manager.provider_model_catalog)
+    
+    providers = manager.providers_config
+    providers["chatanywhere"]["base_url"] = "https://mock-chatanywhere.org/v1"
+    providers["chatanywhere"]["api_keys"] = ["sk-token"]
+    manager.providers_config = providers
+
+    def _raise(*args, **kwargs):
+        raise ConnectionResetError("Connection refused")
+
+    monkeypatch.setattr("translation_app.core.ai_service.urllib.request.urlopen", _raise)
+
+    # Calling refresh_provider_models raises error
+    with pytest.raises(RuntimeError):
+        manager.refresh_provider_models("chatanywhere")
+
+    assert manager.provider_model_catalog == old_catalog
