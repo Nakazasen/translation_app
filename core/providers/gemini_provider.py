@@ -52,9 +52,35 @@ class GeminiProvider(BaseTranslationProvider):
         return [ProviderCandidate(provider_name=self.name, model=model) for model in self.model_pool]
 
     def translate(self, request: TranslationRequest, candidate: ProviderCandidate | None = None) -> TranslationResult:
-        service = get_ai_service()
+        import re
         started = time.time()
         model_name = (candidate.model if candidate else "") or self.default_model
+
+        # Determine candidate API key to use
+        api_key = None
+        if self.profile.api_key_pool:
+            key_index = candidate.key_index if (candidate and hasattr(candidate, 'key_index') and candidate.key_index is not None) else 0
+            if 0 <= key_index < len(self.profile.api_key_pool):
+                api_key = self.profile.api_key_pool[key_index]
+            else:
+                api_key = self.profile.api_key_pool[0]
+
+        # Use temporary service to keep it completely isolated and thread-safe if a key is provided
+        from translation_app.core.ai_service import get_ai_service, WaterfallGeminiService
+        if api_key:
+            service = WaterfallGeminiService(api_key=api_key)
+        else:
+            service = get_ai_service()
+
+        def sanitize_api_keys(text: str) -> str:
+            if not text:
+                return ""
+            # Redact Gemini keys
+            text = re.sub(r"AIzaSy[A-Za-z0-9_-]+", "[REDACTED_API_KEY]", text)
+            # Redact OpenAI/generic keys
+            text = re.sub(r"sk-[A-Za-z0-9]+", "[REDACTED_API_KEY]", text)
+            return text
+
         try:
             result = service.translate_with_glossary_terms(
                 request.text,
@@ -75,7 +101,17 @@ class GeminiProvider(BaseTranslationProvider):
                     model=runtime_model,
                     latency_ms=latency_ms,
                 )
+
             message = result.get("error_message") or result.get("text") or "Gemini translation failed."
+
+            # Unwrap the real underlying error from the waterfall wrapper text
+            if "AI translation failed and Google fallback is disabled" in message:
+                text_val = result.get("text", "")
+                if "Last error:" in text_val:
+                    message = text_val.split("Last error:", 1)[1].strip()
+
+            message = sanitize_api_keys(message)
+
             return TranslationResult(
                 status="error",
                 provider=self.name,
@@ -85,11 +121,12 @@ class GeminiProvider(BaseTranslationProvider):
                 latency_ms=latency_ms,
             )
         except Exception as exc:
+            message = sanitize_api_keys(str(exc))
             return TranslationResult(
                 status="error",
                 provider=self.name,
                 model=model_name or self.default_model,
-                error_type=classify_error(exc),
-                error_message=str(exc),
+                error_type=classify_error(message),
+                error_message=message,
                 latency_ms=round((time.time() - started) * 1000),
             )

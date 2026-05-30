@@ -4806,7 +4806,7 @@ Bước 3: Sử dụng AI Vision
         if getattr(self, '_is_destroyed', False):
             return
 
-        status_disp = "❓ Lỗi chưa xác định"
+        status_disp = "❓ Lỗi chưa phân loại"
         tag = "error"
 
         if res.status == "ok":
@@ -4838,6 +4838,9 @@ Bước 3: Sử dụng AI Vision
             tag = "warning"
         elif res.status == "cancelled":
             status_disp = "🛑 Đã dừng"
+            tag = "warning"
+        elif res.status == "provider_wrapper_error":
+            status_disp = "🧩 Lỗi wrapper kiểm tra"
             tag = "warning"
 
         err_msg = res.raw_error_sanitized or res.message

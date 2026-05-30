@@ -272,3 +272,147 @@ def test_health_checker_model_id_no_truncation(monkeypatch):
     assert result.status == "ok"
     assert len(captured_model) == 1
     assert captured_model[0] == model_id
+
+
+def test_gemini_health_checker_success(monkeypatch):
+    """Verify Gemini adapter success with non-empty translation -> status 'ok'."""
+    from translation_app.core.providers import GeminiProvider
+    cfg = MockConfigManager()
+    checker = ProviderHealthChecker(config_manager=cfg)
+
+    def mock_translate(self, request, candidate=None):
+        return TranslationResult(
+            status="success",
+            text="Xin chào",
+            provider=self.name,
+            model="gemini-3.5-flash",
+            latency_ms=150
+        )
+
+    monkeypatch.setattr(GeminiProvider, "translate", mock_translate)
+
+    result = checker.check_provider("gemini", "gemini-3.5-flash")
+    assert result.status == "ok"
+    assert result.model_id == "gemini-3.5-flash"
+    assert "Kết nối thành công" in result.message
+
+
+def test_gemini_health_checker_auth_error(monkeypatch):
+    """Verify Gemini key error (401/403) is unwrapped and classified as auth_error without leaking key."""
+    from translation_app.core.ai_service import WaterfallGeminiService
+    cfg = MockConfigManager()
+    checker = ProviderHealthChecker(config_manager=cfg)
+
+    def mock_translate_with_glossary(self, text, src, dest, glossary_terms=None, allow_google_fallback=True, preferred_models=None):
+        return {
+            "text": "All models failed. Last error: API_KEY_INVALID: API key AIzaSyFakeGeminiKey1234567890123456789 is invalid.",
+            "model_used": "AI_EXHAUSTED",
+            "status": "error",
+            "error_message": "AI translation failed and Google fallback is disabled."
+        }
+
+    monkeypatch.setattr(WaterfallGeminiService, "translate_with_glossary_terms", mock_translate_with_glossary)
+
+    # Let's ensure the GeminiProvider has an active key pool so that it doesn't fail early on missing_key
+    cfg.providers_config["gemini"]["api_keys"] = ["fake-api-key-1"]
+
+    result = checker.check_provider("gemini", "gemini-3.5-flash")
+    assert result.status == "auth_error"
+    assert "AIzaSy" not in result.raw_error_sanitized
+    assert "[REDACTED_API_KEY]" in result.raw_error_sanitized
+    assert "Lỗi xác thực" in result.message
+
+
+def test_gemini_health_checker_quota_error(monkeypatch):
+    """Verify Gemini quota error (429) is classified as quota_or_rate_limited."""
+    from translation_app.core.providers import GeminiProvider
+    cfg = MockConfigManager()
+    checker = ProviderHealthChecker(config_manager=cfg)
+
+    def mock_translate(self, request, candidate=None):
+        return TranslationResult(
+            status="error",
+            provider=self.name,
+            model="gemini-3.5-flash",
+            error_type="quota_rate_limit",
+            error_message="HTTP 429: Resource exhausted",
+            latency_ms=110
+        )
+
+    monkeypatch.setattr(GeminiProvider, "translate", mock_translate)
+
+    result = checker.check_provider("gemini", "gemini-3.5-flash")
+    assert result.status == "quota_or_rate_limited"
+    assert "Hết hạn mức" in result.message
+
+
+def test_gemini_health_checker_model_not_found(monkeypatch):
+    """Verify Gemini model not found is classified as model_not_found."""
+    from translation_app.core.providers import GeminiProvider
+    cfg = MockConfigManager()
+    checker = ProviderHealthChecker(config_manager=cfg)
+
+    def mock_translate(self, request, candidate=None):
+        return TranslationResult(
+            status="error",
+            provider=self.name,
+            model="gemini-invalid",
+            error_type="model_error",
+            error_message="HTTP 404: Model not found or unsupported",
+            latency_ms=90
+        )
+
+    monkeypatch.setattr(GeminiProvider, "translate", mock_translate)
+
+    result = checker.check_provider("gemini", "gemini-invalid")
+    assert result.status == "model_not_found"
+    assert "Mô hình" in result.message
+
+
+def test_gemini_health_checker_timeout(monkeypatch):
+    """Verify Gemini timeout is classified as timeout."""
+    from translation_app.core.providers import GeminiProvider
+    cfg = MockConfigManager()
+    checker = ProviderHealthChecker(config_manager=cfg)
+
+    def mock_translate(self, request, candidate=None):
+        return TranslationResult(
+            status="error",
+            provider=self.name,
+            model="gemini-3.5-flash",
+            error_type="timeout",
+            error_message="Timeout after 10 seconds",
+            latency_ms=10000
+        )
+
+    monkeypatch.setattr(GeminiProvider, "translate", mock_translate)
+
+    result = checker.check_provider("gemini", "gemini-3.5-flash")
+    assert result.status == "timeout"
+    assert "Thời gian phản hồi" in result.message
+
+
+def test_gemini_health_checker_wrapper_unwrap(monkeypatch):
+    """Verify that wrapper message is successfully unwrapped and mapped correctly instead of unknown_error."""
+    from translation_app.core.ai_service import WaterfallGeminiService
+    cfg = MockConfigManager()
+    checker = ProviderHealthChecker(config_manager=cfg)
+
+    def mock_translate_with_glossary(self, text, src, dest, glossary_terms=None, allow_google_fallback=True, preferred_models=None):
+        return {
+            "text": "All models failed. Last error: API_KEY_INVALID: API key AIzaSyFakeGeminiKey123 is invalid.",
+            "model_used": "AI_EXHAUSTED",
+            "status": "error",
+            "error_message": "AI translation failed and Google fallback is disabled."
+        }
+
+    monkeypatch.setattr(WaterfallGeminiService, "translate_with_glossary_terms", mock_translate_with_glossary)
+
+    # Let's ensure the GeminiProvider has an active key pool so that it doesn't fail early on missing_key
+    cfg.providers_config["gemini"]["api_keys"] = ["fake-api-key-1"]
+
+    result = checker.check_provider("gemini", "gemini-3.5-flash")
+    assert result.status == "auth_error"
+    assert "AIzaSy" not in result.raw_error_sanitized
+    assert "[REDACTED_API_KEY]" in result.raw_error_sanitized
+    assert "Lỗi xác thực" in result.message

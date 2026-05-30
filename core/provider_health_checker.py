@@ -36,7 +36,8 @@ STATUS_MESSAGES = {
     "provider_disabled": "Nhà cung cấp hiện đang bị tắt trong cài đặt.",
     "cancelled": "Yêu cầu kiểm tra đã bị dừng theo ý muốn của người dùng.",
     "unsupported": "Phương thức kiểm tra chưa được hỗ trợ cho nhà cung cấp này.",
-    "unknown_error": "Lỗi không xác định."
+    "provider_wrapper_error": "Lỗi từ wrapper dịch chung của hệ thống.",
+    "unknown_error": "Lỗi chưa phân loại."
 }
 
 SUGGESTIONS = {
@@ -52,6 +53,7 @@ SUGGESTIONS = {
     "provider_disabled": "Tích chọn 'Bật nhà cung cấp này trong hệ thống' ở bảng phía trên rồi lưu lại.",
     "cancelled": "Bạn đã dừng tiến trình kiểm tra thủ công.",
     "unsupported": "Hãy liên hệ tác giả để cập nhật adapter tương thích.",
+    "provider_wrapper_error": "Health Checker đang nhận lỗi từ tầng dịch chung thay vì lỗi gốc Gemini. Hãy kiểm tra bằng provider strict Gemini hoặc model khác.",
     "unknown_error": "Kiểm tra chi tiết lỗi bên dưới hoặc thử lại sau vài giây."
 }
 
@@ -84,7 +86,8 @@ def classify_provider_error(error_type_str: str) -> str:
         "provider_5xx": "network_error",
         "endpoint_not_found": "endpoint_not_found",
         "payload_error": "payload_error",
-        "cancelled": "cancelled"
+        "cancelled": "cancelled",
+        "provider_wrapper_error": "provider_wrapper_error"
     }
     return mapping.get(error_type_str, "unknown_error")
 
@@ -340,6 +343,18 @@ class ProviderHealthChecker:
                     else:
                         err_cat = "payload_error"
 
+                # Double-check classification using substring matching on sanitized error message
+                err_msg_lower = (result.error_message or "").lower()
+                if err_cat in ("unknown_error", "network_error", "endpoint_not_found") or not err_cat:
+                    if any(x in err_msg_lower for x in ["api key", "api_key", "invalid key", "unauthorized", "auth", "credential", "forbidden", "403", "401"]):
+                        err_cat = "auth_error"
+                    elif any(x in err_msg_lower for x in ["429", "quota", "rate limit", "exhausted", "too many requests"]):
+                        err_cat = "quota_or_rate_limited"
+                    elif any(x in err_msg_lower for x in ["model", "engine", "does not exist", "unknown model", "unsupported model"]):
+                        err_cat = "model_not_found"
+                    elif "fallback is disabled" in err_msg_lower or "ai translation failed" in err_msg_lower:
+                        err_cat = "provider_wrapper_error"
+
                 self._update_router_health(provider_id, check_model, result)
                 res = ProviderHealthResult(
                     provider_id=provider_id,
@@ -373,6 +388,18 @@ class ProviderHealthChecker:
                     err_cat = "model_not_found"
                 else:
                     err_cat = "payload_error"
+
+            # Double-check classification using substring matching on exception message
+            err_msg_lower = str(e).lower()
+            if err_cat in ("unknown_error", "network_error", "endpoint_not_found") or not err_cat:
+                if any(x in err_msg_lower for x in ["api key", "api_key", "invalid key", "unauthorized", "auth", "credential", "forbidden", "403", "401"]):
+                    err_cat = "auth_error"
+                elif any(x in err_msg_lower for x in ["429", "quota", "rate limit", "exhausted", "too many requests"]):
+                    err_cat = "quota_or_rate_limited"
+                elif any(x in err_msg_lower for x in ["model", "engine", "does not exist", "unknown model", "unsupported model"]):
+                    err_cat = "model_not_found"
+                elif "fallback is disabled" in err_msg_lower or "ai translation failed" in err_msg_lower:
+                    err_cat = "provider_wrapper_error"
 
             res = ProviderHealthResult(
                 provider_id=provider_id,
