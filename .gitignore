@@ -9,6 +9,8 @@ Thumbs.db
 
 # Local runtime config / secrets
 data/
+*.secrets.json
+*.secrets.json.bak
 logs/
 *.log
 __pycache__/

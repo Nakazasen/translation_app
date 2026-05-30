@@ -3,7 +3,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolated_ai_service_config(tmp_path, monkeypatch):
-    """Keep test config writes out of the repo-level data directory."""
+    """Keep test config and secret writes out of real user/repo locations."""
+    monkeypatch.setenv("TRANSLATION_APP_TEST_ISOLATED_CONFIG", "1")
+
     import translation_app.core.ai_service as ai_service_module
     import translation_app.core.translation_memory as tm_module
 

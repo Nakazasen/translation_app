@@ -116,7 +116,7 @@ def test_glossary_validation_rejects_empty_terms():
 def test_provider_router_health_snapshot_ui_redacts_keys():
     """Verify that health snapshot never contains raw api keys."""
     router = ProviderRouter(cooldown_seconds=60, max_retries=1)
-    secret_key = "sk-never-leak-me-123456789"
+    secret_key = "FAKE_OPENAI_API_KEY_FOR_TEST_8"
     provider = OpenAICompatibleProvider(
         enabled=True,
         base_url="http://127.0.0.1:9090/v1",
@@ -142,7 +142,7 @@ def test_router_error_text_is_sanitized_and_truncated():
 
     raw_error = (
         "Authorization: Bearer sk-secret-123456789 "
-        "AIzaSySentinelTestKey1234567890 "
+        "FAKE_GOOGLE_API_KEY_FOR_TEST_5 "
         "prompt source_text " + ("x" * 120)
     )
 
@@ -183,7 +183,7 @@ def test_ai_settings_contains_provider_profiles_without_raw_keys():
     
     # Set a fake key in deepseek
     providers = config_mgr.providers_config
-    secret_key = "sk-fake-deepseek-key-999"
+    secret_key = "FAKE_OPENAI_API_KEY_FOR_TEST_9"
     providers["deepseek"]["api_keys"] = [secret_key]
     providers["deepseek"]["enabled"] = True
     config_mgr.providers_config = providers
@@ -203,7 +203,7 @@ def test_provider_api_key_add_remove_does_not_log_or_display_raw_key():
     ai_service = get_ai_service()
     config_mgr = ai_service.config_manager
     
-    secret_key = "sk-added-via-test-12345"
+    secret_key = "FAKE_OPENAI_API_KEY_FOR_TEST_10"
     provider_name = "chatanywhere"
     
     # Add key

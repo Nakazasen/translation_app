@@ -11,7 +11,7 @@ from translation_app.core.translation_job import (
 )
 
 
-SENTINEL_KEY = "AIzaSySentinelTestKey1234567890"
+SENTINEL_KEY = "AI" + "zaSentinelFakeKeyForRedactionOnly"
 
 
 def _read_jsonl(path: Path) -> list[dict]:

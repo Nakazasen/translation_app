@@ -871,7 +871,7 @@ def test_generic_exception_with_response_429_classifies_quota():
 
 
 def test_quota_error_sanitizes_authorization_header(monkeypatch):
-    secret = "sk-quota-secret-auth-999"
+    secret = "FAKE_OPENAI_API_KEY_FOR_TEST_6"
     provider = OpenAICompatibleProvider(
         enabled=True,
         base_url="http://127.0.0.1:8080/v1",
@@ -1268,7 +1268,7 @@ def test_glossary_terms_passed_to_ai_provider_request(temp_db_path, monkeypatch)
 
 def test_provider_health_snapshot_has_no_raw_keys():
     router = ProviderRouter(cooldown_seconds=60, max_retries=1)
-    secret = "sk-should-not-appear-999"
+    secret = "FAKE_OPENAI_API_KEY_FOR_TEST_7"
     router.register_provider(
         OpenAICompatibleProvider(
             enabled=True,

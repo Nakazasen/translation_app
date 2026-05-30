@@ -165,11 +165,11 @@ def test_refresh_models_sanitizes_authorization_error(tmp_path, monkeypatch):
     manager = _make_manager(tmp_path)
     providers = manager.providers_config
     providers["openai_compatible"]["base_url"] = "https://mock-openai.com/v1"
-    providers["openai_compatible"]["api_keys"] = ["sk-super-secret-key-12345"]
+    providers["openai_compatible"]["api_keys"] = ["FAKE_OPENAI_API_KEY_FOR_TEST_5"]
     manager.providers_config = providers
 
     request = urllib.request.Request("https://mock-openai.com/v1/models")
-    payload = json.dumps({"error": {"message": "Bearer sk-super-secret-key-12345 invalid"}}).encode("utf-8")
+    payload = json.dumps({"error": {"message": "Token FAKE_OPENAI_API_KEY_FOR_TEST_5 invalid"}}).encode("utf-8")
 
     def _raise(*args, **kwargs):
         raise urllib.error.HTTPError(
@@ -186,7 +186,7 @@ def test_refresh_models_sanitizes_authorization_error(tmp_path, monkeypatch):
         manager.refresh_provider_models("openai_compatible")
 
     message = str(excinfo.value)
-    assert "sk-super-secret-key-12345" not in message
+    assert "FAKE_OPENAI_API_KEY_FOR_TEST_5" not in message
     assert "[REDACTED_API_KEY]" in message
 
 
@@ -196,7 +196,7 @@ def test_refresh_models_failure_does_not_destroy_catalog(tmp_path, monkeypatch):
     
     providers = manager.providers_config
     providers["openai_compatible"]["base_url"] = "https://mock-openai.com/v1"
-    providers["openai_compatible"]["api_keys"] = ["sk-super-secret-key-12345"]
+    providers["openai_compatible"]["api_keys"] = ["FAKE_OPENAI_API_KEY_FOR_TEST_5"]
     manager.providers_config = providers
 
     def _raise_error(*args, **kwargs):

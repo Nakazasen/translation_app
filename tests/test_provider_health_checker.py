@@ -302,10 +302,11 @@ def test_gemini_health_checker_auth_error(monkeypatch):
     from translation_app.core.ai_service import WaterfallGeminiService
     cfg = MockConfigManager()
     checker = ProviderHealthChecker(config_manager=cfg)
+    fake_google_key = "AI" + "zaSyTestFakeKeyForMaskingOnly"
 
     def mock_translate_with_glossary(self, text, src, dest, glossary_terms=None, allow_google_fallback=True, preferred_models=None):
         return {
-            "text": "All models failed. Last error: API_KEY_INVALID: API key AIzaSyFakeGeminiKey1234567890123456789 is invalid.",
+            "text": f"All models failed. Last error: API_KEY_INVALID: API key {fake_google_key} is invalid.",
             "model_used": "AI_EXHAUSTED",
             "status": "error",
             "error_message": "AI translation failed and Google fallback is disabled."

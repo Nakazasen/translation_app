@@ -182,7 +182,7 @@ def test_refresh_models_auth_error_is_sanitized(tmp_path, monkeypatch):
     manager.providers_config = providers
 
     request = urllib.request.Request("https://mock.local/v1/models")
-    payload = json.dumps({"error": {"message": "Authorization: Bearer sk-secret-refresh-123 invalid_api_key"}}).encode("utf-8")
+    payload = json.dumps({"error": {"message": "Authorization: Token sk-secret-refresh-123 invalid_api_key"}}).encode("utf-8")
 
     def _raise(*args, **kwargs):
         raise urllib.error.HTTPError(
@@ -200,7 +200,7 @@ def test_refresh_models_auth_error_is_sanitized(tmp_path, monkeypatch):
 
     message = str(excinfo.value)
     assert "sk-secret-refresh-123" not in message
-    assert "Authorization: [REDACTED_API_KEY]" in message
+    assert "Authorization: Token [REDACTED_API_KEY]" in message
 
 
 def test_import_export_catalog_roundtrip_utf8(tmp_path):

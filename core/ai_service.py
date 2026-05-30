@@ -18,6 +18,7 @@ import sys
 import json
 import re
 import time
+import base64
 import logging
 import concurrent.futures
 import urllib.error
@@ -47,6 +48,138 @@ def get_config_path() -> Path:
 
 # Default config path for Translation App
 DEFAULT_CONFIG_PATH = get_config_path()
+
+SECRET_TOP_LEVEL_FIELDS = ("api_key", "api_keys")
+SECRET_PROVIDER_FIELDS = ("api_keys", "api_key_pool", "keys", "api_key")
+SECRET_PROVIDER_ALIASES = {
+    "custom_openai": "openai_compatible",
+    "github_models": "github",
+    "nvidia": "nvidia_nim",
+}
+SECRET_FILE_VERSION = 1
+SECRET_PROTECTION_PLAINTEXT = "plaintext"
+SECRET_PROTECTION_WINDOWS_DPAPI = "windows-dpapi"
+
+
+def get_appdata_config_path() -> Path:
+    """Return the packaged-app config path without depending on sys.frozen."""
+    app_data = os.getenv('APPDATA', os.path.expanduser('~'))
+    return Path(app_data) / 'DichTuDong' / 'config' / 'ai_settings.json'
+
+
+def get_secret_config_path(config_path: Path, use_user_secret_store: bool = False) -> Path:
+    """Resolve the secret store path for a given config file."""
+    resolved = Path(config_path)
+    if use_user_secret_store:
+        app_data = os.getenv('APPDATA', os.path.expanduser('~'))
+        secrets_dir = Path(app_data) / 'DichTuDong' / 'secrets'
+        secrets_dir.mkdir(parents=True, exist_ok=True)
+        return secrets_dir / "ai_secrets.json"
+    return resolved.with_name(f"{resolved.stem}.secrets{resolved.suffix}")
+
+
+def _windows_dpapi_transform(data: bytes, *, protect: bool) -> bytes:
+    """Protect or unprotect bytes with Windows DPAPI for the current user."""
+    import ctypes
+    from ctypes import wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_byte)),
+        ]
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    in_buffer = ctypes.create_string_buffer(data)
+    in_blob = DATA_BLOB(len(data), ctypes.cast(in_buffer, ctypes.POINTER(ctypes.c_byte)))
+    out_blob = DATA_BLOB()
+
+    if protect:
+        ok = crypt32.CryptProtectData(
+            ctypes.byref(in_blob),
+            "Translation App AI secrets",
+            None,
+            None,
+            None,
+            0,
+            ctypes.byref(out_blob),
+        )
+    else:
+        ok = crypt32.CryptUnprotectData(
+            ctypes.byref(in_blob),
+            None,
+            None,
+            None,
+            None,
+            0,
+            ctypes.byref(out_blob),
+        )
+    if not ok:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(out_blob.pbData, ctypes.c_void_p))
+
+
+def _encode_secret_file_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Encode secret payload for disk, using DPAPI on Windows when available."""
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    protection = SECRET_PROTECTION_PLAINTEXT
+    encoded_bytes = raw
+
+    if os.name == "nt":
+        try:
+            encoded_bytes = _windows_dpapi_transform(raw, protect=True)
+            protection = SECRET_PROTECTION_WINDOWS_DPAPI
+        except Exception as exc:
+            logger.warning(f"Falling back to plaintext secret storage: {exc}")
+
+    return {
+        "version": SECRET_FILE_VERSION,
+        "protection": protection,
+        "payload": base64.b64encode(encoded_bytes).decode("ascii"),
+    }
+
+
+def _decode_secret_file_payload_result(payload: Any) -> tuple[Dict[str, Any], bool, bool]:
+    """Decode a secret payload. Returns payload, rewrite flag, and decode-failed flag."""
+    if not isinstance(payload, dict):
+        return {}, False, False
+
+    if (
+        payload.get("version") == SECRET_FILE_VERSION
+        and isinstance(payload.get("protection"), str)
+        and isinstance(payload.get("payload"), str)
+    ):
+        protection = payload.get("protection")
+        try:
+            encoded = base64.b64decode(payload["payload"])
+            if protection == SECRET_PROTECTION_WINDOWS_DPAPI:
+                raw = _windows_dpapi_transform(encoded, protect=False)
+                needs_rewrite = False
+            elif protection == SECRET_PROTECTION_PLAINTEXT:
+                raw = encoded
+                needs_rewrite = os.name == "nt"
+            else:
+                logger.error(f"Unsupported AI secrets protection mode: {protection}")
+                return {}, False, True
+            decoded = json.loads(raw.decode("utf-8"))
+            return decoded if isinstance(decoded, dict) else {}, needs_rewrite, False
+        except Exception as exc:
+            logger.error(f"Failed to decode AI secrets payload: {exc}")
+            return {}, False, True
+
+    # Legacy secret files were raw JSON. Keep reading them and rewrite in the new format.
+    return payload, True, False
+
+
+def _decode_secret_file_payload(payload: Any) -> tuple[Dict[str, Any], bool]:
+    """Decode secret payload from disk. Returns payload plus whether it should be rewritten."""
+    decoded, needs_rewrite, _ = _decode_secret_file_payload_result(payload)
+    return decoded, needs_rewrite
 
 # =============================================================================
 # MODEL ALLOWLIST & CATEGORIZATION
@@ -397,9 +530,349 @@ class AIConfigManager:
     
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        self.secrets_path = self._resolve_secrets_path()
+        self._secrets_need_rewrite = False
+        self._secrets_decode_failed = False
         self._config = None
         self._current_key_index = 0
         self.load_config()
+
+    def _resolve_secrets_path(self) -> Path:
+        """Use the user secret store only for real app config files."""
+        if os.getenv("TRANSLATION_APP_TEST_ISOLATED_CONFIG") == "1":
+            return get_secret_config_path(self.config_path)
+        try:
+            config_resolved = self.config_path.resolve()
+            real_config_paths = {
+                get_config_path().resolve(),
+                get_appdata_config_path().resolve(),
+            }
+            use_user_secret_store = config_resolved in real_config_paths
+        except Exception:
+            use_user_secret_store = False
+        return get_secret_config_path(self.config_path, use_user_secret_store=use_user_secret_store)
+
+    def _load_json_with_backup(self, path: Path, label: str) -> tuple[bool, dict[str, Any] | None]:
+        """Load a JSON file and optionally fall back to its .bak copy."""
+        loaded = False
+        payload = None
+        try:
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+                loaded = True
+                logger.info(f"Loaded {label} from: {path}")
+        except Exception as e:
+            logger.error(f"Failed to load {label}: {e}. Trying backup...")
+
+        if not loaded:
+            bak_path = path.with_suffix(path.suffix + '.bak')
+            try:
+                if bak_path.exists():
+                    with open(bak_path, 'r', encoding='utf-8') as f:
+                        payload = json.load(f)
+                    loaded = True
+                    logger.info(f"Loaded {label} from backup: {bak_path}")
+            except Exception as e_bak:
+                logger.error(f"Failed to load {label} backup: {e_bak}")
+        return loaded, payload
+
+    def _load_json_file(self, path: Path, label: str) -> tuple[bool, dict[str, Any] | None]:
+        """Load a single JSON file without following backup fallback."""
+        try:
+            if path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+                logger.info(f"Loaded {label} from: {path}")
+                return True, payload
+        except Exception as e:
+            logger.error(f"Failed to load {label}: {e}")
+        return False, None
+
+    def _load_secret_payload_with_backup(self, path: Path, label: str) -> tuple[bool, dict[str, Any] | None]:
+        """Load and decode the secret payload, optionally falling back to its .bak copy."""
+        loaded, payload = self._load_json_file(path, label)
+        if loaded:
+            decoded, needs_rewrite, decode_failed = _decode_secret_file_payload_result(payload)
+            if not decode_failed:
+                normalized = self._extract_secrets(decoded)
+                if normalized != decoded:
+                    decoded = normalized
+                    needs_rewrite = True
+                self._secrets_need_rewrite = self._secrets_need_rewrite or needs_rewrite
+                return True, decoded
+            logger.error(f"Failed to decode {label}. Trying backup...")
+
+        bak_path = path.with_suffix(path.suffix + '.bak')
+        loaded, payload = self._load_json_file(bak_path, f"{label} backup")
+        if loaded:
+            decoded, _, decode_failed = _decode_secret_file_payload_result(payload)
+            if not decode_failed:
+                decoded = self._extract_secrets(decoded)
+                self._secrets_need_rewrite = True
+                return True, decoded
+            logger.error(f"Failed to decode {label} backup.")
+        if path.exists() or bak_path.exists():
+            self._secrets_decode_failed = True
+        return False, None
+
+    def _collect_secret_keys(self, payload: Any, *fields: str) -> list[str]:
+        """Collect non-empty secret values from list or scalar fields."""
+        if not isinstance(payload, dict):
+            return []
+        keys: list[str] = []
+        for field in fields:
+            value = payload.get(field)
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                normalized = str(item or "").strip()
+                if normalized and normalized not in keys:
+                    keys.append(normalized)
+        return keys
+
+    def _canonical_provider_name(self, provider_name: Any) -> str:
+        """Normalize provider ids used by older UI/schema variants."""
+        normalized = str(provider_name or "").strip().lower()
+        return SECRET_PROVIDER_ALIASES.get(normalized, normalized)
+
+    def _extract_secrets(self, config_data: Dict[str, Any] | None) -> Dict[str, Any]:
+        """Collect secret-bearing fields from a config payload."""
+        secrets: Dict[str, Any] = {"providers": {}}
+        if not isinstance(config_data, dict):
+            return secrets
+
+        top_level_keys = self._collect_secret_keys(config_data, "api_keys", "api_key")
+        if top_level_keys:
+            secrets["api_keys"] = top_level_keys
+            secrets["api_key"] = top_level_keys[0]
+            secrets["providers"]["gemini"] = {"api_keys": list(top_level_keys)}
+
+        providers = config_data.get("providers")
+        if isinstance(providers, dict):
+            for provider_name, provider_payload in providers.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                keys = self._collect_secret_keys(provider_payload, *SECRET_PROVIDER_FIELDS)
+                if keys:
+                    canonical_name = self._canonical_provider_name(provider_name)
+                    existing = secrets["providers"].setdefault(canonical_name, {}).setdefault("api_keys", [])
+                    for key in keys:
+                        if key not in existing:
+                            existing.append(key)
+
+        legacy_openai = config_data.get("openai_compatible")
+        if isinstance(legacy_openai, dict):
+            legacy_api_key = str(legacy_openai.get("api_key", "") or "").strip()
+            if legacy_api_key:
+                keys = secrets.setdefault("providers", {}).setdefault("openai_compatible", {}).setdefault("api_keys", [])
+                if legacy_api_key not in keys:
+                    keys.append(legacy_api_key)
+
+        if not secrets["providers"]:
+            secrets.pop("providers", None)
+        return secrets
+
+    def _overlay_secrets(self, config_data: Dict[str, Any], secrets_data: Dict[str, Any] | None) -> Dict[str, Any]:
+        """Merge secret payload into the in-memory config."""
+        if not isinstance(config_data, dict) or not isinstance(secrets_data, dict):
+            return config_data
+
+        top_level_keys = [str(item).strip() for item in secrets_data.get("api_keys", [])] if isinstance(secrets_data.get("api_keys"), list) else []
+        top_level_keys = [item for item in top_level_keys if item]
+        top_level_key = str(secrets_data.get("api_key", "") or "").strip()
+        if top_level_keys:
+            config_data["api_keys"] = top_level_keys
+            config_data["api_key"] = top_level_key or top_level_keys[0]
+            providers = config_data.get("providers")
+            if isinstance(providers, dict) and isinstance(providers.get("gemini"), dict):
+                providers["gemini"]["api_keys"] = list(top_level_keys)
+        elif top_level_key:
+            config_data["api_key"] = top_level_key
+            config_data["api_keys"] = [top_level_key]
+            providers = config_data.get("providers")
+            if isinstance(providers, dict) and isinstance(providers.get("gemini"), dict):
+                providers["gemini"]["api_keys"] = [top_level_key]
+
+        providers = config_data.get("providers")
+        secret_providers = secrets_data.get("providers")
+        if isinstance(providers, dict) and isinstance(secret_providers, dict):
+            for provider_name, provider_secret in secret_providers.items():
+                if not isinstance(provider_secret, dict):
+                    continue
+                canonical_name = self._canonical_provider_name(provider_name)
+                provider_entry = providers.get(canonical_name)
+                if not isinstance(provider_entry, dict):
+                    continue
+                secret_keys = provider_secret.get("api_keys")
+                if isinstance(secret_keys, list):
+                    normalized = [str(item).strip() for item in secret_keys if str(item).strip()]
+                    provider_entry["api_keys"] = normalized
+                    if canonical_name == "gemini" and normalized:
+                        config_data["api_keys"] = normalized
+                        config_data["api_key"] = normalized[0]
+
+        openai_provider = config_data.get("providers", {}).get("openai_compatible")
+        if isinstance(openai_provider, dict):
+            openai_keys = openai_provider.get("api_keys", [])
+            if isinstance(openai_keys, list) and openai_keys:
+                legacy_openai = config_data.get("openai_compatible")
+                if isinstance(legacy_openai, dict):
+                    legacy_openai["api_key"] = str(openai_keys[0] or "").strip()
+        return config_data
+
+    def _merge_secret_payloads(
+        self,
+        primary: Dict[str, Any] | None,
+        fallback: Dict[str, Any] | None,
+    ) -> Dict[str, Any]:
+        """Merge two secret payloads while preserving insertion order and uniqueness."""
+        merged: Dict[str, Any] = {"providers": {}}
+
+        def append_unique(target: list[str], values: Any) -> None:
+            if not isinstance(values, list):
+                return
+            for value in values:
+                normalized = str(value or "").strip()
+                if normalized and normalized not in target:
+                    target.append(normalized)
+
+        top_keys: list[str] = []
+        for payload in (primary, fallback):
+            if not isinstance(payload, dict):
+                continue
+            append_unique(top_keys, payload.get("api_keys"))
+            single_key = str(payload.get("api_key", "") or "").strip()
+            if single_key and single_key not in top_keys:
+                top_keys.append(single_key)
+
+        if top_keys:
+            merged["api_keys"] = top_keys
+            merged["api_key"] = top_keys[0]
+            merged["providers"]["gemini"] = {"api_keys": list(top_keys)}
+
+        for payload in (primary, fallback):
+            if not isinstance(payload, dict):
+                continue
+            providers = payload.get("providers")
+            if not isinstance(providers, dict):
+                continue
+            for provider_name, provider_payload in providers.items():
+                if not isinstance(provider_payload, dict):
+                    continue
+                canonical_name = self._canonical_provider_name(provider_name)
+                provider_entry = merged["providers"].setdefault(canonical_name, {})
+                keys = provider_entry.setdefault("api_keys", [])
+                append_unique(keys, provider_payload.get("api_keys"))
+
+        empty_provider_names = [
+            name for name, payload in merged["providers"].items()
+            if not isinstance(payload, dict) or not payload.get("api_keys")
+        ]
+        for name in empty_provider_names:
+            merged["providers"].pop(name, None)
+        if not merged["providers"]:
+            merged.pop("providers", None)
+        return merged
+
+    def _has_secret_payload(self, payload: Dict[str, Any] | None) -> bool:
+        """Check whether a secret payload contains any non-empty secret data."""
+        if not isinstance(payload, dict):
+            return False
+        if str(payload.get("api_key", "") or "").strip():
+            return True
+        keys = payload.get("api_keys", [])
+        if isinstance(keys, list) and any(str(item or "").strip() for item in keys):
+            return True
+        providers = payload.get("providers")
+        if isinstance(providers, dict):
+            for provider_payload in providers.values():
+                if not isinstance(provider_payload, dict):
+                    continue
+                keys = provider_payload.get("api_keys", [])
+                if isinstance(keys, list) and any(str(item or "").strip() for item in keys):
+                    return True
+        return False
+
+    def _get_sanitized_config_for_disk(self) -> Dict[str, Any]:
+        """Return a copy of the config with secrets removed from disk-backed fields."""
+        sanitized = deepcopy(self._config if isinstance(self._config, dict) else self._get_default_config())
+        sanitized["api_key"] = ""
+        sanitized["api_keys"] = []
+
+        providers = sanitized.get("providers")
+        if isinstance(providers, dict):
+            for provider_payload in providers.values():
+                if isinstance(provider_payload, dict):
+                    for field in SECRET_PROVIDER_FIELDS:
+                        if field in provider_payload:
+                            provider_payload[field] = [] if field != "api_key" else ""
+
+        legacy_openai = sanitized.get("openai_compatible")
+        if isinstance(legacy_openai, dict):
+            legacy_openai["api_key"] = ""
+        return sanitized
+
+    def _save_json_atomic(self, path: Path, payload: Dict[str, Any], label: str) -> bool:
+        """Save JSON payload atomically with a .bak backup."""
+        temp_path = path.with_suffix(path.suffix + '.tmp')
+        bak_path = path.with_suffix(path.suffix + '.bak')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+
+            if path.exists():
+                try:
+                    os.replace(path, bak_path)
+                except Exception as bak_err:
+                    logger.warning(f"Failed to backup {label}: {bak_err}")
+
+            os.replace(temp_path, path)
+            logger.info(f"Saved {label} to: {path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save {label}: {e}")
+            if temp_path.exists():
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            return False
+
+    def _write_json_atomic_no_backup(self, path: Path, payload: Dict[str, Any], label: str) -> bool:
+        """Overwrite a JSON file atomically without creating another backup copy."""
+        temp_path = path.with_suffix(path.suffix + '.tmp')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, path)
+            logger.info(f"Saved {label} to: {path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save {label}: {e}")
+            if temp_path.exists():
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            return False
+
+    def _save_secret_payload(self, path: Path, payload: Dict[str, Any]) -> bool:
+        """Save the secret payload using the strongest local protection available."""
+        encoded_payload = _encode_secret_file_payload(payload)
+        ok = self._save_json_atomic(path, encoded_payload, "AI secrets")
+        if not ok:
+            return False
+        bak_path = path.with_suffix(path.suffix + '.bak')
+        if bak_path.exists():
+            self._write_json_atomic_no_backup(bak_path, encoded_payload, "AI secrets backup")
+        self._secrets_need_rewrite = False
+        return True
     
     def _merge_with_defaults(self, config_data: Dict[str, Any]) -> Dict[str, Any]:
         """Merge loaded config with defaults so that missing fields are filled instead of resetting everything."""
@@ -466,52 +939,47 @@ class AIConfigManager:
 
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from JSON file with backup support and corruption protection."""
-        config_loaded = False
-        loaded_data = None
-        
-        # Try loading main config
-        try:
-            if self.config_path.exists():
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    loaded_data = json.load(f)
-                config_loaded = True
-                logger.info(f"✅ Loaded AI config from: {self.config_path}")
-        except Exception as e:
-            logger.error(f"❌ Failed to load main config: {e}. Trying backup...")
-            
-        # Try loading backup config if main failed
-        if not config_loaded:
-            bak_path = self.config_path.with_suffix(self.config_path.suffix + '.bak')
-            try:
-                if bak_path.exists():
-                    with open(bak_path, 'r', encoding='utf-8') as f:
-                        loaded_data = json.load(f)
-                    config_loaded = True
-                    logger.info(f"✅ Loaded AI config from backup: {bak_path}")
-            except Exception as e_bak:
-                logger.error(f"❌ Failed to load backup config: {e_bak}")
-                
+        self.secrets_path = self._resolve_secrets_path()
+        self._secrets_need_rewrite = False
+        self._secrets_decode_failed = False
+        config_loaded, loaded_data = self._load_json_with_backup(self.config_path, "AI config")
+        _, secrets_data = self._load_secret_payload_with_backup(self.secrets_path, "AI secrets")
+        bak_path = self.config_path.with_suffix(self.config_path.suffix + '.bak')
+        _, backup_data = self._load_json_file(bak_path, "AI config backup")
+        legacy_secrets = self._merge_secret_payloads(
+            self._extract_secrets(loaded_data),
+            self._extract_secrets(backup_data),
+        )
+        should_migrate_legacy_secrets = self._has_secret_payload(legacy_secrets)
+        effective_secrets = self._merge_secret_payloads(secrets_data, legacy_secrets) if should_migrate_legacy_secrets else secrets_data
+
         if config_loaded and loaded_data is not None:
             # Detect changes to the api_keys pool
             old_keys = self._config.get("api_keys", []) if self._config else []
-            new_keys = loaded_data.get("api_keys", [])
-            
             self._config = self._merge_with_defaults(loaded_data)
+            self._config = self._overlay_secrets(self._config, effective_secrets)
+            new_keys = self._config.get("api_keys", [])
             
             # If api_keys changed, reset index. Otherwise, retain in-memory index.
             if old_keys != new_keys:
                 self._current_key_index = self._config.get("current_key_index", 0)
+            if should_migrate_legacy_secrets or self._secrets_need_rewrite:
+                self.save_config()
         else:
             if self.config_path.exists() or self.config_path.with_suffix(self.config_path.suffix + '.bak').exists():
                 # Both files are corrupted. Do NOT overwrite. Load default in RAM.
                 logger.error("❌ Both main and backup configs are corrupted. Using defaults in-memory. DO NOT OVERWRITE.")
                 if self._config is None:
                     self._config = self._get_default_config()
+                    self._config = self._overlay_secrets(self._config, effective_secrets)
                     self._current_key_index = 0
+                if self._secrets_need_rewrite and self._has_secret_payload(effective_secrets):
+                    self._save_secret_payload(self.secrets_path, effective_secrets)
             else:
                 # First startup
                 logger.warning(f"⚠️ Config not found, using defaults: {self.config_path}")
                 self._config = self._get_default_config()
+                self._config = self._overlay_secrets(self._config, effective_secrets)
                 self._current_key_index = 0
                 self.save_config()  # Create default config file
                 
@@ -519,36 +987,22 @@ class AIConfigManager:
     
     def save_config(self) -> bool:
         """Save current configuration to JSON file using atomic write."""
-        temp_path = self.config_path.with_suffix(self.config_path.suffix + '.tmp')
-        bak_path = self.config_path.with_suffix(self.config_path.suffix + '.bak')
-        try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # 1. Atomic write to temp file
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(self._config, f, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-                
-            # 2. Backup existing config
-            if self.config_path.exists():
-                try:
-                    os.replace(self.config_path, bak_path)
-                except Exception as bak_err:
-                    logger.warning(f"⚠️ Failed to backup config: {bak_err}")
-            
-            # 3. Rename temp to config
-            os.replace(temp_path, self.config_path)
-            logger.info(f"✅ Saved AI config to: {self.config_path}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ Failed to save config: {e}")
-            if temp_path.exists():
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
+        sanitized_config = self._get_sanitized_config_for_disk()
+        config_ok = self._save_json_atomic(self.config_path, sanitized_config, "AI config")
+        if not config_ok:
             return False
+        bak_path = self.config_path.with_suffix(self.config_path.suffix + '.bak')
+        if bak_path.exists():
+            self._write_json_atomic_no_backup(bak_path, sanitized_config, "AI config backup")
+
+        if self._secrets_decode_failed:
+            logger.error("AI secrets could not be decoded; leaving existing secret store unchanged.")
+            return False
+
+        secrets_payload = self._extract_secrets(self._config)
+        if not secrets_payload:
+            secrets_payload = {"providers": {}}
+        return self._save_secret_payload(self.secrets_path, secrets_payload)
     
     def _get_default_config(self) -> Dict[str, Any]:
         """Return default configuration."""
