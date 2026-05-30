@@ -4123,6 +4123,15 @@ Bước 3: Sử dụng AI Vision
     def _on_mouse_wheel(self, event):
         """Handle global mouse wheel scroll for scrollable canvas widgets."""
         widget = event.widget
+        if isinstance(widget, str):
+            try:
+                widget = self.nametowidget(widget)
+            except Exception:
+                return
+
+        if not widget or not hasattr(widget, "master"):
+            return
+
         current = widget
 
         # Check if the event occurred inside a text, listbox, or treeview
@@ -4130,6 +4139,8 @@ Bước 3: Sử dụng AI Vision
         while current:
             if isinstance(current, (tk.Text, tk.Listbox, ttk.Treeview)):
                 return
+            if not hasattr(current, "master"):
+                break
             current = current.master
 
         # Find the nearest scrollable canvas parent
@@ -4138,6 +4149,8 @@ Bước 3: Sử dụng AI Vision
         while current:
             if isinstance(current, tk.Canvas) and hasattr(current, "yview"):
                 canvas = current
+                break
+            if not hasattr(current, "master"):
                 break
             current = current.master
 
