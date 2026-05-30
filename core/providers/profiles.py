@@ -169,7 +169,7 @@ def get_default_provider_profiles() -> dict[str, dict[str, Any]]:
             "display_name": "SambaNova",
             "base_url": "https://api.sambanova.ai/v1",
             "api_keys": [],
-            "models": ["meta-llama/Llama-3-8B-Instruct", "meta-llama/Llama-3-70B-Instruct"],
+            "models": ["DeepSeek-V3.1", "Llama-4-Maverick-17B-128E-Instruct"],
             "timeout": 15,
             "supports_glossary": True,
         },
