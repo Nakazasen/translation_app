@@ -818,113 +818,413 @@ class MainWindow(ctk.CTk):
             command=self._save_advanced_settings
         ).pack(side=tk.LEFT)
 
-        # --- PHẦN E: HƯỚNG DẪN CHI TIẾT LẤY API KEY ---
-        frame_guide = create_styled_card(scroll_frame, title="📚 Hướng dẫn lấy API Key cho người mới")
+        # --- PHẦN E: THIẾT LẬP NHANH API KEY CHO NGƯỜI MỚI (WIZARD) ---
+        frame_guide = create_styled_card(scroll_frame, title="📚 Hướng dẫn & Thiết lập nhanh API Key (Dành cho Người mới)")
         frame_guide.pack(fill=tk.X, padx=20, pady=(8, 20))
 
-        guide_txt = ctk.CTkTextbox(
-            frame_guide, height=280, wrap="word",
-            font=('Segoe UI', 10),
-            fg_color=('#FFFFFF', '#2E2E33'),
-            text_color=('#1F2937', '#F3F4F6'),
-            border_width=1, border_color=('#E9ECEF', '#2E2E33')
+        self.guide_data = {
+            "gemini": {
+                "name": "Gemini AI (Google)",
+                "difficulty": "Dễ",
+                "difficulty_color": ("#059669", "#34D399"),
+                "free_tier": "Có (Free Tier cực kỳ hào phóng)",
+                "recommend": "Khuyên dùng ngay (Khởi đầu tốt nhất cho mọi người)",
+                "needs": "Khóa API Key",
+                "suggested_model": "gemini-2.5-flash",
+                "url": "https://aistudio.google.com/",
+                "steps": [
+                    "1. Bấm nút '🌐 Mở trang lấy API Key' để truy cập Google AI Studio.",
+                    "2. Đăng nhập bằng tài khoản Google của bạn.",
+                    "3. Chọn 'Create API Key' -> Chọn một dự án -> Sao chép khóa API được tạo ra.",
+                    "4. Bấm nút '🔍 Chọn nhà cung cấp này ở bảng trên' để tự động chuyển sang cấu hình Gemini.",
+                    "5. Dán khóa API vừa sao chép vào ô 'API Keys'.",
+                    "6. Bấm nút 'Thêm Key' rồi bấm '💾 Lưu cấu hình nhà cung cấp' ở phía dưới.",
+                    "7. Chọn chế độ dịch 'Tự động chọn từ pool AI miễn phí' ở phần Cấu hình nhanh."
+                ],
+                "errors": "Lỗi 429 (Hết hạn mức): Gemini Free giới hạn 15 request/phút. App sẽ tự chuyển sang AI khác trong pool nếu bạn cấu hình thêm Groq/OpenRouter."
+            },
+            "groq": {
+                "name": "Groq AI",
+                "difficulty": "Dễ",
+                "difficulty_color": ("#059669", "#34D399"),
+                "free_tier": "Có (Miễn phí hoàn toàn theo hạn mức tốc độ)",
+                "recommend": "Khuyên dùng ngay (Tốc độ dịch siêu tốc, gần như tức thời)",
+                "needs": "Khóa API Key",
+                "suggested_model": "llama3-8b-8192",
+                "url": "https://console.groq.com/keys",
+                "steps": [
+                    "1. Bấm '🌐 Mở trang lấy API Key' để truy cập Groq Console.",
+                    "2. Đăng nhập hoặc tạo tài khoản miễn phí.",
+                    "3. Vào mục 'API Keys' -> Bấm 'Create API Key' -> Copy khóa vừa sinh.",
+                    "4. Bấm nút '🔍 Chọn nhà cung cấp này ở bảng trên'.",
+                    "5. Dán khóa API vào ô 'API Keys' -> Bấm 'Thêm Key' -> Bấm '💾 Lưu cấu hình'.",
+                    "6. Bạn đã sẵn sàng sử dụng Groq trong Pool AI."
+                ],
+                "errors": "Lỗi 401: Key chưa kích hoạt hoặc sai ký tự. Lỗi 429: Hạn mức RPM/TPM của gói free đã hết, hãy chờ 1 phút hoặc để Router tự động chuyển sang AI khác."
+            },
+            "openrouter": {
+                "name": "OpenRouter",
+                "difficulty": "Dễ",
+                "difficulty_color": ("#059669", "#34D399"),
+                "free_tier": "Có nhiều Model miễn phí chất lượng",
+                "recommend": "Khuyên dùng ngay (Kho model phong phú, cập nhật liên tục)",
+                "needs": "Khóa API Key",
+                "suggested_model": "google/gemini-2.5-flash:free",
+                "url": "https://openrouter.ai/keys",
+                "steps": [
+                    "1. Bấm '🌐 Mở trang lấy API Key' để truy cập OpenRouter.",
+                    "2. Đăng nhập bằng tài khoản Google hoặc Github.",
+                    "3. Vào phần 'Keys' -> Chọn 'Create Key' -> Sao chép khóa.",
+                    "4. Bấm nút '🔍 Chọn nhà cung cấp này ở bảng trên'.",
+                    "5. Dán khóa API vào ô 'API Keys' -> Bấm 'Thêm Key' -> Bấm '💾 Lưu cấu hình'."
+                ],
+                "errors": "Lỗi 401: Key không hợp lệ. Lỗi 402: Hết tiền (nếu chọn model trả phí, hãy đảm bảo chọn đúng model có nhãn ':free')."
+            },
+            "deepseek": {
+                "name": "DeepSeek",
+                "difficulty": "Dễ",
+                "difficulty_color": ("#059669", "#34D399"),
+                "free_tier": "Tặng credit dùng thử / Giá cực rẻ",
+                "recommend": "Khuyên dùng ngay (Chất lượng dịch thuật xuất sắc nhất)",
+                "needs": "Khóa API Key",
+                "suggested_model": "deepseek-v4-flash",
+                "url": "https://platform.deepseek.com/api_keys",
+                "steps": [
+                    "1. Bấm '🌐 Mở trang lấy API Key' để đăng nhập DeepSeek Platform.",
+                    "2. Tạo tài khoản -> Vào mục 'API Keys' -> Bấm 'Create API Key'.",
+                    "3. Sao chép khóa -> Bấm '🔍 Chọn nhà cung cấp này ở bảng trên'.",
+                    "4. Dán khóa API vào ô 'API Keys' -> Bấm 'Thêm Key' -> Bấm '💾 Lưu cấu hình'."
+                ],
+                "errors": "Lỗi 402 (Hết số dư): Tài khoản dùng thử đã hết hạn hoặc hết tiền. Hãy nạp một lượng nhỏ (khoảng 2-5$) để dùng cực lâu nhờ giá siêu rẻ."
+            },
+            "mistral": {
+                "name": "Mistral AI",
+                "difficulty": "Dễ",
+                "difficulty_color": ("#059669", "#34D399"),
+                "free_tier": "Có dùng thử hạn chế",
+                "recommend": "Khuyên dùng ngay (Rất tốt cho dịch thuật đa ngôn ngữ)",
+                "needs": "Khóa API Key",
+                "suggested_model": "mistral-tiny",
+                "url": "https://console.mistral.ai/api-keys/",
+                "steps": [
+                    "1. Bấm '🌐 Mở trang lấy API Key' để vào Mistral Console.",
+                    "2. Tạo tài khoản -> Chọn mục 'API Keys' -> Nhấp 'Create new key'.",
+                    "3. Copy key -> Bấm '🔍 Chọn nhà cung cấp này ở bảng trên'.",
+                    "4. Dán khóa API vào ô 'API Keys' -> Bấm 'Thêm Key' -> Bấm '💾 Lưu cấu hình'."
+                ],
+                "errors": "Lỗi 403: Không có quyền truy cập API. Lỗi 429: Vượt quá tốc độ free-tier."
+            },
+            "cerebras": {
+                "name": "Cerebras AI",
+                "difficulty": "Trung bình",
+                "difficulty_color": ("#D97706", "#FBBF24"),
+                "free_tier": "Có (Gói Free beta cực rộng rãi)",
+                "recommend": "Dành cho người dùng nâng cao (Có thể cấu hình sau)",
+                "needs": "Khóa API Key",
+                "suggested_model": "llama3.1-8b",
+                "url": "https://cloud.cerebras.ai/",
+                "steps": [
+                    "1. Đăng ký tài khoản trên Cerebras Cloud.",
+                    "2. Vào dashboard -> Chọn mục 'API Keys' -> Tạo khóa mới.",
+                    "3. Chọn Cerebras trên bảng nhà cung cấp và dán key vào."
+                ],
+                "errors": "Chủ yếu gặp lỗi 429 nếu bạn gửi yêu cầu dịch tệp quá dồn dập."
+            },
+            "sambanova": {
+                "name": "SambaNova Cloud",
+                "difficulty": "Trung bình",
+                "difficulty_color": ("#D97706", "#FBBF24"),
+                "free_tier": "Có (Gói beta miễn phí)",
+                "recommend": "Dành cho người dùng nâng cao (Có thể cấu hình sau)",
+                "needs": "Khóa API Key",
+                "suggested_model": "meta-llama/Llama-3-8B-Instruct",
+                "url": "https://cloud.sambanova.ai/",
+                "steps": [
+                    "1. Truy cập SambaNova Cloud và tạo tài khoản.",
+                    "2. Vào mục 'API Keys' -> Tạo khóa API của bạn.",
+                    "3. Chọn SambaNova ở bảng trên -> Dán khóa -> Thêm Key -> Lưu cấu hình."
+                ],
+                "errors": "Lỗi 429: SambaNova giới hạn tốc độ gắt gao trên tài khoản free."
+            },
+            "cloudflare": {
+                "name": "Cloudflare Workers AI",
+                "difficulty": "Khó",
+                "difficulty_color": ("#DC2626", "#F87171"),
+                "free_tier": "Có (Hạn mức hàng ngày 10k request free)",
+                "recommend": "Dành cho người dùng nâng cao (Yêu cầu kỹ năng cấu hình)",
+                "needs": "API Token + Account ID + Base URL cụ thể",
+                "suggested_model": "@cf/meta/llama-3-8b-instruct",
+                "url": "https://dash.cloudflare.com/",
+                "steps": [
+                    "1. Đăng nhập Cloudflare Dashboard -> Vào 'AI' -> Lấy Account ID của bạn.",
+                    "2. Tạo API Token với quyền 'Workers AI: Read' tại trang quản lý token.",
+                    "3. Chọn Cloudflare ở bảng trên -> Nhập Base URL dạng: https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run",
+                    "4. Điền API Token vào ô 'API Keys' -> Thêm Key -> Lưu cấu hình."
+                ],
+                "errors": "Lỗi 400/Bad Request: URL chứa Account ID sai hoặc Model ID không tồn tại trên Cloudflare AI."
+            },
+            "huggingface": {
+                "name": "HuggingFace Inference API",
+                "difficulty": "Trung bình",
+                "difficulty_color": ("#D97706", "#FBBF24"),
+                "free_tier": "Có (Inference miễn phí cho cộng đồng)",
+                "recommend": "Dành cho người dùng nâng cao (Có thể cấu hình sau)",
+                "needs": "Access Token (Read)",
+                "suggested_model": "meta-llama/Meta-Llama-3-8B-Instruct",
+                "url": "https://huggingface.co/settings/tokens",
+                "steps": [
+                    "1. Đăng nhập HuggingFace -> Vào Settings -> Access Tokens.",
+                    "2. Nhấp 'Create new token' -> Chọn loại 'Read' -> Đặt tên và lưu lại.",
+                    "3. Chọn HuggingFace ở bảng trên -> Dán token vào ô 'API Keys'."
+                ],
+                "errors": "Lỗi 503 (Model loading): Model đang được tải lên server HuggingFace, hãy thử lại sau vài giây hoặc cấu hình model phổ biến khác."
+            },
+            "github": {
+                "name": "GitHub Models",
+                "difficulty": "Khó",
+                "difficulty_color": ("#DC2626", "#F87171"),
+                "free_tier": "Có (Hạn mức reset hàng ngày theo tài khoản Github)",
+                "recommend": "Dành cho người dùng nâng cao (Yêu cầu đăng ký duyệt marketplace)",
+                "needs": "Personal Access Token (classic hoặc fine-grained)",
+                "suggested_model": "meta-llama-3-8b-instruct",
+                "url": "https://github.com/settings/tokens",
+                "steps": [
+                    "1. Đăng ký tài khoản Github và đăng ký quyền truy cập Github Models Marketplace.",
+                    "2. Vào GitHub Settings -> Developer Settings -> Personal Access Tokens -> classic -> Tạo token.",
+                    "3. Chọn GitHub Models ở bảng trên -> Dán token Github làm API key -> Thêm Key."
+                ],
+                "errors": "Lỗi 403: Token không có quyền hoặc tài khoản chưa được phê duyệt truy cập GitHub Models Marketplace."
+            },
+            "ai21": {
+                "name": "AI21 Studio",
+                "difficulty": "Trung bình",
+                "difficulty_color": ("#D97706", "#FBBF24"),
+                "free_tier": "Có dùng thử",
+                "recommend": "Dành cho người dùng nâng cao (Có thể cấu hình sau)",
+                "needs": "Khóa API Key",
+                "suggested_model": "jamba-1.5-mini",
+                "url": "https://studio.ai21.com/",
+                "steps": [
+                    "1. Tạo tài khoản AI21 Studio.",
+                    "2. Sao chép API Key mặc định từ trang quản trị của bạn.",
+                    "3. Chọn AI21 Studio ở bảng trên -> Dán khóa -> Thêm Key -> Lưu cấu hình."
+                ],
+                "errors": "Lỗi 401: API key không hợp lệ hoặc tài khoản đã hết thời hạn dùng thử miễn phí."
+            },
+            "nvidia_nim": {
+                "name": "NVIDIA NIM",
+                "difficulty": "Trung bình",
+                "difficulty_color": ("#D97706", "#FBBF24"),
+                "free_tier": "Có (Tặng 1000 credit trải nghiệm free)",
+                "recommend": "Dành cho người dùng nâng cao (Có thể cấu hình sau)",
+                "needs": "Khóa API Key (nvapi-...)",
+                "suggested_model": "meta/llama-3.1-405b-instruct",
+                "url": "https://build.nvidia.com/",
+                "steps": [
+                    "1. Tạo tài khoản Nvidia Developer.",
+                    "2. Chọn một model bất kỳ -> Chọn 'Get API Key' -> Tạo khóa và lưu lại.",
+                    "3. Chọn NVIDIA NIM ở bảng trên -> Dán khóa nvapi- vào -> Thêm Key."
+                ],
+                "errors": "Lỗi 403: API key bị từ chối hoặc hết hạn mức tín dụng trải nghiệm miễn phí."
+            },
+            "chatanywhere": {
+                "name": "ChatAnyWhere Proxy",
+                "difficulty": "Dễ",
+                "difficulty_color": ("#059669", "#34D399"),
+                "free_tier": "Có (Hạn mức miễn phí 200 req/ngày)",
+                "recommend": "Khuyên dùng ngay (Thích hợp cho học tập/phát triển)",
+                "needs": "Khóa API Key",
+                "suggested_model": "gpt-4o-mini",
+                "url": "https://github.com/chatanywhere/GPT_API_free",
+                "steps": [
+                    "1. Truy cập trang GitHub của ChatAnyWhere.",
+                    "2. Thực hiện theo liên kết hướng dẫn để nhận API key miễn phí.",
+                    "3. Chọn ChatAnyWhere ở bảng trên -> Dán key vào ô 'API Keys'."
+                ],
+                "errors": "Lỗi 429: Hạn mức gọi API miễn phí hàng ngày đã hết. Hãy chờ sang ngày hôm sau."
+            },
+            "openai_compatible": {
+                "name": "OpenAI tùy chỉnh / Local",
+                "difficulty": "Trung bình",
+                "difficulty_color": ("#D97706", "#FBBF24"),
+                "free_tier": "Phụ thuộc nguồn của bạn",
+                "recommend": "Dành cho người dùng nâng cao (Cấu hình model local Ollama/LM Studio)",
+                "needs": "Base URL + Model ID + API Key (nếu có)",
+                "suggested_model": "gpt-4o-mini",
+                "url": "http://localhost:1234/v1",
+                "steps": [
+                    "1. Đảm bảo server local (LM Studio / Ollama) của bạn đang chạy.",
+                    "2. Chọn 'OpenAI tùy chỉnh' ở bảng trên.",
+                    "3. Điền Base URL (ví dụ: http://localhost:1234/v1).",
+                    "4. Điền model ID tương ứng -> Dán key (hoặc nhập 'lm-studio' nếu dùng local) -> Lưu cấu hình."
+                ],
+                "errors": "Lỗi Connection Error: Không thể kết nối tới Base URL. Hãy kiểm tra xem server local đã được khởi động chưa."
+            }
+        }
+
+        # I. Khung giới thiệu "Người mới nên làm gì?"
+        frame_onboard = ctk.CTkFrame(frame_guide, fg_color=("#F3F4F6", "#1E1E22"), corner_radius=8)
+        frame_onboard.pack(fill=tk.X, padx=15, pady=(10, 5))
+
+        lbl_onboard_title = ctk.CTkLabel(
+            frame_onboard, text="💡 Người mới bắt đầu nên làm gì?",
+            font=('Segoe UI', 11, 'bold'),
+            text_color=('#1F2937', '#F3F4F6')
         )
-        guide_txt.pack(fill=tk.BOTH, expand=True, padx=15, pady=(5, 15))
+        lbl_onboard_title.pack(anchor=tk.W, padx=15, pady=(8, 4))
 
-        guide_content = """📚 HƯỚNG DẪN CHI TIẾT LẤY API KEY & CẤU HÌNH CÁC NHÀ CUNG CẤP AI
+        onboard_texts = [
+            "• Bạn KHÔNG CẦN phải lấy đầy đủ cả 15 khóa API để ứng dụng hoạt động.",
+            "• Khuyến nghị bắt đầu: Chỉ cần lấy API key của 3 nhà cung cấp chính: Gemini AI, Groq và OpenRouter.",
+            "• Mở rộng sau: Khi đã quen, bạn có thể đăng ký thêm DeepSeek, Mistral AI, Cerebras, SambaNova...",
+            "• Google Translate: Mặc định được bật và không yêu cầu key, có thể dùng làm dự phòng cuối cùng."
+        ]
+        for t in onboard_texts:
+            lbl_item = ctk.CTkLabel(
+                frame_onboard, text=t,
+                font=('Segoe UI', 10),
+                text_color=('#4B5563', '#9CA3AF'),
+                justify=tk.LEFT,
+                wraplength=650
+            )
+            lbl_item.pack(anchor=tk.W, padx=25, pady=2)
 
-1. Google AI Studio / Gemini
-   - Trang quản lý: https://aistudio.google.com/
-   - Các bước: Đăng nhập bằng tài khoản Google -> Chọn "Create API Key" -> Sao chép khóa.
-   - Cách cấu hình: Chọn "Gemini AI" ở bảng trên -> Dán khóa vào ô "API Keys" -> Nhấn "Thêm Key".
-   - Model gợi ý: gemini-2.5-flash, gemini-1.5-flash.
-   - Quota/Tier: Miễn phí gói free tier nhưng giới hạn RPM (request/phút).
+        # Space
+        ctk.CTkLabel(frame_guide, text="", height=5, fg_color="transparent").pack()
 
-2. Groq AI
-   - Trang quản lý: https://console.groq.com/keys
-   - Các bước: Đăng nhập -> Vào mục "API Keys" -> Chọn "Create API Key".
-   - Cách cấu hình: Chọn "Groq" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-   - Model gợi ý: llama3-8b-8192, mixtral-8x7b-32768.
-   - Quota/Tier: Tốc độ siêu tốc, miễn phí theo hạn mức sử dụng (rate limit).
+        # II. Khung chọn nhà cung cấp
+        frame_select_row = ctk.CTkFrame(frame_guide, fg_color="transparent")
+        frame_select_row.pack(fill=tk.X, padx=15, pady=5)
 
-3. OpenRouter
-   - Trang quản lý: https://openrouter.ai/keys
-   - Các bước: Tạo tài khoản -> Vào mục "Keys" -> Chọn "Create Key".
-   - Cách cấu hình: Chọn "OpenRouter" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-   - Model gợi ý: google/gemini-2.5-flash:free, meta-llama/llama-3-8b-instruct:free.
-   - Quota/Tier: Có rất nhiều model miễn phí hoàn toàn.
+        ctk.CTkLabel(
+            frame_select_row, text="1️⃣ Bước 1: Chọn nhà cung cấp:",
+            font=('Segoe UI', 11, 'bold')
+        ).pack(side=tk.LEFT, padx=(0, 10))
 
-4. Cerebras AI
-   - Trang quản lý: https://cloud.cerebras.ai/
-   - Các bước: Đăng nhập -> Chọn "API Keys" -> Chọn "Create API Key".
-   - Cách cấu hình: Chọn "Cerebras" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-   - Model gợi ý: llama3.1-8b, llama3.1-70b.
-   - Quota/Tier: Tốc độ dịch siêu nhanh trên phần cứng Cerebras CS-3.
+        self.wizard_prov_var = tk.StringVar(value="Gemini AI")
 
-5. Mistral AI
-   - Trang quản lý: https://console.mistral.ai/api-keys/
-   - Các bước: Đăng nhập -> Vào mục "API Keys" -> Nhấp "Create new key".
-   - Cách cấu hình: Chọn "Mistral AI" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-   - Model gợi ý: mistral-tiny, mistral-small-latest.
+        # Display name mapping to internal name
+        self.wizard_display_to_internal = {
+            "Gemini AI": "gemini",
+            "Groq": "groq",
+            "OpenRouter": "openrouter",
+            "DeepSeek": "deepseek",
+            "Mistral AI": "mistral",
+            "Cerebras": "cerebras",
+            "SambaNova": "sambanova",
+            "Cloudflare Workers AI": "cloudflare",
+            "HuggingFace": "huggingface",
+            "GitHub Models": "github",
+            "AI21 Studio": "ai21",
+            "NVIDIA NIM": "nvidia_nim",
+            "ChatAnyWhere": "chatanywhere",
+            "OpenAI tùy chỉnh": "openai_compatible"
+        }
 
-6. SambaNova Cloud
-   - Trang quản lý: https://cloud.sambanova.ai/
-   - Các bước: Đăng nhập -> Vào mục "API Keys" -> Tạo key mới.
-   - Cách cấu hình: Chọn "SambaNova" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-   - Model gợi ý: meta-llama/Llama-3-8B-Instruct, meta-llama/Llama-3-70B-Instruct.
+        # Create dropdown
+        self.wizard_combo = create_language_combobox(
+            frame_select_row, self.wizard_prov_var,
+            list(self.wizard_display_to_internal.keys())
+        )
+        self.wizard_combo.pack(side=tk.LEFT, padx=5)
 
-7. Cloudflare Workers AI
-   - Trang quản lý: https://dash.cloudflare.com/
-   - Các bước: Đăng nhập -> Chọn "AI" -> "Workers AI" -> Tạo API Token có quyền "Workers AI: Read". Lấy thêm Account ID từ Dashboard.
-   - Cách cấu hình: Chọn "Cloudflare Workers AI" ở bảng trên -> Điền Base URL:
-     https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run
-     (Thay {ACCOUNT_ID} bằng mã ID thật của bạn) -> Dán API Token vào ô "API Keys" -> Lưu cấu hình.
-   - Model gợi ý: @cf/meta/llama-3-8b-instruct.
+        # III. Thẻ hướng dẫn chi tiết (Dynamic card)
+        self.frame_wizard_card = ctk.CTkFrame(frame_guide, fg_color=("#F9FAFB", "#2E2E33"), border_width=1, border_color=('#E5E7EB', '#4B5563'), corner_radius=8)
+        self.frame_wizard_card.pack(fill=tk.X, padx=15, pady=8)
 
-8. HuggingFace Inference API
-   - Trang quản lý: https://huggingface.co/settings/tokens
-   - Các bước: Đăng nhập -> Vào "Access Tokens" -> Nhấp "Create new token" (chọn loại Read).
-   - Cách cấu hình: Chọn "HuggingFace" ở bảng trên -> Dán token vào ô "API Keys" -> Nhấn "Thêm Key".
-   - Model gợi ý: meta-llama/Meta-Llama-3-8B-Instruct.
+        # Grid layout for fields in card
+        self.frame_wizard_card.columnconfigure(1, weight=1)
 
-9. GitHub Models
-   - Trang quản lý: https://github.com/settings/tokens
-   - Các bước: Vào Github Settings -> Developer Settings -> Personal Access Tokens -> Tokens (classic) -> Nhấp "Generate new token".
-   - Cách cấu hình: Chọn "GitHub Models" ở bảng trên -> Dán token Github -> Nhấn "Thêm Key".
-   - Model gợi ý: meta-llama-3-8b-instruct, gpt-4o-mini.
+        # 1. Tên
+        self.lbl_wiz_name = ctk.CTkLabel(
+            self.frame_wizard_card, text="Gemini AI",
+            font=('Segoe UI', 13, 'bold'),
+            text_color=('#1E3A5F', '#818CF8')
+        )
+        self.lbl_wiz_name.grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=15, pady=(10, 5))
 
-10. AI21 Studio
-    - Trang quản lý: https://studio.ai21.com/
-    - Các bước: Đăng nhập -> Vào "API key" -> Tạo key.
-    - Cách cấu hình: Chọn "AI21 Studio" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-    - Model gợi ý: jamba-1.5-mini.
+        # 2. Hàng thông số (Mức độ, Miễn phí, Khuyên dùng)
+        self.frame_wiz_stats = ctk.CTkFrame(self.frame_wizard_card, fg_color="transparent")
+        self.frame_wiz_stats.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=15, pady=2)
 
-11. DeepSeek
-    - Trang quản lý: https://platform.deepseek.com/api_keys
-    - Các bước: Tạo tài khoản -> Vào "API Keys" -> Nhấp "Create API Key".
-    - Cách cấu hình: Chọn "DeepSeek" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-    - Model gợi ý: deepseek-v4-flash, deepseek-v4-pro.
+        self.lbl_wiz_diff_lbl = ctk.CTkLabel(self.frame_wiz_stats, text="Độ dễ: ", font=('Segoe UI', 10, 'bold'))
+        self.lbl_wiz_diff_lbl.pack(side=tk.LEFT)
+        self.lbl_wiz_diff = ctk.CTkLabel(self.frame_wiz_stats, text="Dễ", font=('Segoe UI', 10, 'bold'), text_color="#10B981")
+        self.lbl_wiz_diff.pack(side=tk.LEFT, padx=(0, 15))
 
-12. NVIDIA NIM
-    - Trang quản lý: https://build.nvidia.com/
-    - Các bước: Đăng nhập tài khoản Developer -> Chọn model bất kỳ -> Nhấp "Get API Key" -> Nhấp "Generate Key".
-    - Cách cấu hình: Chọn "NVIDIA NIM" ở bảng trên -> Dán key bắt đầu bằng nvapi- -> Nhấn "Thêm Key".
-    - Model gợi ý: meta/llama-3.1-405b-instruct, nvidia/llama-3.1-nemotron-70b-instruct.
+        self.lbl_wiz_free_lbl = ctk.CTkLabel(self.frame_wiz_stats, text="Miễn phí: ", font=('Segoe UI', 10, 'bold'))
+        self.lbl_wiz_free_lbl.pack(side=tk.LEFT)
+        self.lbl_wiz_free = ctk.CTkLabel(self.frame_wiz_stats, text="Có (Free Tier)", font=('Segoe UI', 10), text_color=('#1F2937', '#F3F4F6'))
+        self.lbl_wiz_free.pack(side=tk.LEFT, padx=(0, 15))
 
-13. ChatAnyWhere
-    - Trang quản lý: https://github.com/chatanywhere/GPT_API_free
-    - Các bước: Truy cập link dự án -> Nhận API key miễn phí theo hướng dẫn tại đó.
-    - Cách cấu hình: Chọn "ChatAnyWhere" ở bảng trên -> Dán key -> Nhấn "Thêm Key".
-    - Model gợi ý: gpt-4o-mini, gpt-3.5-turbo.
+        self.lbl_wiz_rec_lbl = ctk.CTkLabel(self.frame_wiz_stats, text="Khuyên dùng: ", font=('Segoe UI', 10, 'bold'))
+        self.lbl_wiz_rec_lbl.pack(side=tk.LEFT)
+        self.lbl_wiz_rec = ctk.CTkLabel(self.frame_wiz_stats, text="Nên dùng", font=('Segoe UI', 10), text_color=('#1F2937', '#F3F4F6'))
+        self.lbl_wiz_rec.pack(side=tk.LEFT)
 
-14. OpenAI tùy chỉnh (OpenAI-compatible custom)
-    - Phù hợp khi bạn chạy model local qua LM Studio hoặc Ollama:
-    - Base URL ví dụ: http://localhost:1234/v1 (LM Studio) hoặc http://localhost:11434/v1 (Ollama).
-    - API Key: Điền "lm-studio" hoặc bỏ trống nếu không cần.
-    - Cách cấu hình: Chọn "OpenAI tùy chỉnh" ở bảng trên -> Điền Base URL -> Dán key -> Thêm Model ID tương ứng -> Lưu cấu hình.
-"""
-        guide_txt.insert(tk.END, guide_content)
-        guide_txt.configure(state=tk.DISABLED)
+        # 3. Thông tin yêu cầu
+        self.lbl_wiz_req_lbl = ctk.CTkLabel(self.frame_wizard_card, text="Cần điền trong app:", font=('Segoe UI', 10, 'bold'))
+        self.lbl_wiz_req_lbl.grid(row=2, column=0, sticky=tk.W, padx=15, pady=2)
+        self.lbl_wiz_req = ctk.CTkLabel(self.frame_wizard_card, text="API Key", font=('Segoe UI', 10))
+        self.lbl_wiz_req.grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
+
+        # 4. Model gợi ý
+        self.lbl_wiz_model_lbl = ctk.CTkLabel(self.frame_wizard_card, text="Model khuyên dùng:", font=('Segoe UI', 10, 'bold'))
+        self.lbl_wiz_model_lbl.grid(row=3, column=0, sticky=tk.W, padx=15, pady=2)
+        self.lbl_wiz_model = ctk.CTkLabel(self.frame_wizard_card, text="gemini-2.5-flash", font=('Segoe UI', 10, 'bold'), text_color=('#3B82F6', '#60A5FA'))
+        self.lbl_wiz_model.grid(row=3, column=1, sticky=tk.W, padx=5, pady=2)
+
+        # 5. Các bước thực hiện
+        self.lbl_wiz_steps_lbl = ctk.CTkLabel(self.frame_wizard_card, text="Các bước thực hiện:", font=('Segoe UI', 10, 'bold'))
+        self.lbl_wiz_steps_lbl.grid(row=4, column=0, sticky=tk.NW, padx=15, pady=(5, 2))
+
+        self.frame_wiz_steps = ctk.CTkFrame(self.frame_wizard_card, fg_color="transparent")
+        self.frame_wiz_steps.grid(row=4, column=1, sticky=tk.W, padx=5, pady=(5, 2))
+
+        # 6. Lỗi thường gặp
+        self.lbl_wiz_err_lbl = ctk.CTkLabel(self.frame_wizard_card, text="Lỗi thường gặp:", font=('Segoe UI', 10, 'bold'), text_color=('#DC2626', '#F87171'))
+        self.lbl_wiz_err_lbl.grid(row=5, column=0, sticky=tk.NW, padx=15, pady=(5, 10))
+        self.lbl_wiz_err = ctk.CTkLabel(self.frame_wizard_card, text="-", font=('Segoe UI', 10, 'italic'), justify=tk.LEFT, wraplength=520)
+        self.lbl_wiz_err.grid(row=5, column=1, sticky=tk.W, padx=5, pady=(5, 10))
+
+        # IV. Thanh công cụ hành động nhanh
+        self.frame_wizard_actions = ctk.CTkFrame(frame_guide, fg_color="transparent")
+        self.frame_wizard_actions.pack(fill=tk.X, padx=15, pady=(5, 15))
+
+        self.btn_wiz_open_link = create_styled_button(
+            self.frame_wizard_actions, text="🌐 Mở trang lấy API Key", command=self._on_wizard_open_link
+        )
+        self.btn_wiz_open_link.pack(side=tk.LEFT, padx=2)
+
+        self.btn_wiz_copy_model = create_styled_button(
+            self.frame_wizard_actions, text="📋 Sao chép Model gợi ý", command=self._on_wizard_copy_model
+        )
+        self.btn_wiz_copy_model.pack(side=tk.LEFT, padx=2)
+
+        self.btn_wiz_focus = create_styled_button(
+            self.frame_wizard_actions, text="🔍 Chọn nhà cung cấp ở trên", command=self._on_wizard_focus_provider
+        )
+        self.btn_wiz_focus.pack(side=tk.LEFT, padx=2)
+
+        # Test Connection button placeholder
+        self.btn_wiz_test_conn = create_styled_button(
+            self.frame_wizard_actions, text="🔌 Kiểm tra kết nối", command=None
+        )
+        self.btn_wiz_test_conn.configure(state=tk.DISABLED)
+        self.btn_wiz_test_conn.pack(side=tk.LEFT, padx=2)
+
+        self.lbl_wiz_test_conn_tip = ctk.CTkLabel(
+            self.frame_wizard_actions, text="💡 Kiểm tra kết nối sẽ được bổ sung ở phase sau.",
+            text_color=self.colors['gray_medium'],
+            font=('Segoe UI', 8, 'italic')
+        )
+        self.lbl_wiz_test_conn_tip.pack(side=tk.LEFT, padx=5)
+
+        # Wire Combobox trace
+        self.wizard_prov_var.trace_add("write", self._on_wizard_selection_changed)
+
+        # Initialize guide content
+        self._on_wizard_selection_changed()
 
         # Initial data loading
         self._refresh_quick_config_summary()
@@ -4161,3 +4461,91 @@ Bước 3: Sử dụng AI Vision
                 canvas.yview_scroll(-1, "units")
             elif event.num == 5:  # Linux scroll down
                 canvas.yview_scroll(1, "units")
+
+    def _on_wizard_selection_changed(self, *args):
+        """Update wizard card content based on selected combobox provider."""
+        display_name = self.wizard_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name or internal_name not in self.guide_data:
+            return
+
+        data = self.guide_data[internal_name]
+
+        # Update labels
+        self.lbl_wiz_name.configure(text=data["name"])
+
+        # Difficulty label with color
+        diff_text = data["difficulty"]
+        diff_color = data.get("difficulty_color", ("#059669", "#34D399"))
+        self.lbl_wiz_diff.configure(text=diff_text, text_color=diff_color)
+
+        self.lbl_wiz_free.configure(text=data["free_tier"])
+        self.lbl_wiz_rec.configure(text=data["recommend"])
+        self.lbl_wiz_req.configure(text=data["needs"])
+        self.lbl_wiz_model.configure(text=data["suggested_model"])
+
+        # Rebuild steps frame
+        for widget in self.frame_wiz_steps.winfo_children():
+            widget.destroy()
+
+        for step in data["steps"]:
+            lbl_step = ctk.CTkLabel(
+                self.frame_wiz_steps, text=step,
+                font=('Segoe UI', 10),
+                text_color=('#1F2937', '#F3F4F6'),
+                justify=tk.LEFT,
+                wraplength=520,
+                anchor=tk.W
+            )
+            lbl_step.pack(anchor=tk.W, fill=tk.X, pady=1)
+
+        self.lbl_wiz_err.configure(text=data["errors"])
+
+    def _on_wizard_open_link(self):
+        """Open the URL of the selected provider in a web browser."""
+        import webbrowser
+        display_name = self.wizard_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name or internal_name not in self.guide_data:
+            return
+        url = self.guide_data[internal_name]["url"]
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            logger.error(f"Error opening wizard URL: {e}")
+
+    def _on_wizard_copy_model(self):
+        """Copy the suggested model name to the clipboard."""
+        display_name = self.wizard_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name or internal_name not in self.guide_data:
+            return
+        model = self.guide_data[internal_name]["suggested_model"]
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(model)
+            self.update()
+            messagebox.showinfo("Sao chép thành công", f"Đã sao chép model '{model}' vào clipboard!")
+        except Exception as e:
+            logger.error(f"Error copying model to clipboard: {e}")
+            messagebox.showerror("Lỗi", f"Không thể sao chép model: {str(e)}")
+
+    def _on_wizard_focus_provider(self):
+        """Select and focus the selected provider in the main Treeview."""
+        display_name = self.wizard_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name:
+            return
+
+        if self.prov_tree.exists(internal_name):
+            self.prov_tree.selection_set(internal_name)
+            self.prov_tree.see(internal_name)
+            self._on_provider_selected()
+        else:
+            # Fallback for search or case mismatch
+            for item in self.prov_tree.get_children():
+                if item.lower() == internal_name.lower():
+                    self.prov_tree.selection_set(item)
+                    self.prov_tree.see(item)
+                    self._on_provider_selected()
+                    break

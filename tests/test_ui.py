@@ -777,3 +777,75 @@ def test_no_mojibake_after_pdf_ui_toggle():
     assert "Xuất báo cáo HTML" in content
     assert "DOCX ổn định" in content
     assert not detect_mojibake(content)
+
+
+def test_wizard_api_key_guide_onboarding():
+    """Verify that the onboarding wizard UI elements are properly set up and functional without errors."""
+    from translation_app.ui.main_window import MainWindow
+    root = MainWindow()
+    root.withdraw()
+    try:
+        # 1. UI has the quick setup section title
+        # 2. Check the onboarding instruction about 15 API keys
+        assert hasattr(root, "guide_data")
+        assert "gemini" in root.guide_data
+        assert "groq" in root.guide_data
+        assert "openrouter" in root.guide_data
+        assert "deepseek" in root.guide_data
+        assert "mistral" in root.guide_data
+
+        # Verify onboarding text content
+        widgets_text = []
+        def traverse(widget):
+            for child in widget.winfo_children():
+                if hasattr(child, "cget"):
+                    try:
+                        text = child.cget("text")
+                        if text:
+                            widgets_text.append(text)
+                    except:
+                        pass
+                traverse(child)
+        traverse(root.tab_ai)
+        full_text = " ".join(widgets_text)
+
+        assert "Bạn KHÔNG CẦN phải lấy đầy đủ" in full_text
+        assert "Gemini AI" in full_text
+        assert "Bước 1: Chọn nhà cung cấp" in full_text
+
+        # 3. Verify step-by-step guides inside guide_data
+        for prov_id in ["gemini", "groq", "openrouter", "deepseek", "mistral"]:
+            prov_info = root.guide_data[prov_id]
+            assert len(prov_info["steps"]) > 0
+            assert prov_info["difficulty"] == "Dễ"
+
+        # 4. Verify selection change callback changes the labels dynamically
+        root.wizard_prov_var.set("Groq")
+        root._on_wizard_selection_changed()
+        assert root.lbl_wiz_name.cget("text") == "Groq AI"
+        assert root.lbl_wiz_diff.cget("text") == "Dễ"
+        assert root.lbl_wiz_model.cget("text") == "llama3-8b-8192"
+
+        # Change to OpenRouter
+        root.wizard_prov_var.set("OpenRouter")
+        root._on_wizard_selection_changed()
+        assert root.lbl_wiz_name.cget("text") == "OpenRouter"
+        assert root.lbl_wiz_model.cget("text") == "google/gemini-2.5-flash:free"
+
+        # 5. Verify copying suggested model works safely (mocking messagebox)
+        root.wizard_prov_var.set("Gemini AI")
+        root._on_wizard_selection_changed()
+        # Mock messagebox showinfo
+        import translation_app.ui.main_window
+        original_showinfo = translation_app.ui.main_window.messagebox.showinfo
+        showinfo_calls = []
+        translation_app.ui.main_window.messagebox.showinfo = lambda title, msg: showinfo_calls.append((title, msg))
+        try:
+            root._on_wizard_copy_model()
+            assert len(showinfo_calls) == 1
+            assert "gemini-2.5-flash" in showinfo_calls[0][1]
+        finally:
+            translation_app.ui.main_window.messagebox.showinfo = original_showinfo
+
+    finally:
+        root.destroy()
