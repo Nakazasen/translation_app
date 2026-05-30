@@ -1147,13 +1147,18 @@ def test_router_disabled_preserves_legacy_translation_path(monkeypatch):
     ai_service = get_ai_service()
     ai_service.config_manager.use_provider_router = False
     service.strategy = "google"
+    original_use_tm = ai_service.config_manager.use_translation_memory
+    ai_service.config_manager.use_translation_memory = False
 
-    monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: (_ for _ in ()).throw(AssertionError("router should stay disabled")))
-    monkeypatch.setattr(GoogleTranslator, "translate", lambda self, text: "legacy-path")
+    try:
+        monkeypatch.setattr(TranslationService, "_get_provider_router", lambda self, _ai_service: (_ for _ in ()).throw(AssertionError("router should stay disabled")))
+        monkeypatch.setattr(GoogleTranslator, "translate", lambda self, text: "legacy-path")
 
-    result = service.translate_text("Hello", "en", "vi")
+        result = service.translate_text("Hello", "en", "vi")
 
-    assert result == "legacy-path"
+        assert result == "legacy-path"
+    finally:
+        ai_service.config_manager.use_translation_memory = original_use_tm
 
 
 def test_google_strategy_legacy_path_does_not_call_router_or_ai(monkeypatch):

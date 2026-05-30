@@ -1,5 +1,6 @@
 import pytest
 import tkinter as tk
+import customtkinter as ctk
 from translation_app.ui.main_window import MainWindow
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.providers import get_default_provider_profiles
@@ -10,7 +11,7 @@ def test_lbl_last_translation_source_exists():
     root.withdraw()
     try:
         assert hasattr(root, "lbl_last_translation_source")
-        assert isinstance(root.lbl_last_translation_source, tk.Label)
+        assert isinstance(root.lbl_last_translation_source, (tk.Label, ctk.CTkLabel))
         assert root.lbl_last_translation_source.cget("text") == ""
     finally:
         root.destroy()

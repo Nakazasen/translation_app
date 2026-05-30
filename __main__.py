@@ -1,10 +1,17 @@
 """
 Main entry point when running as a module: python -m translation_app
 """
+import os
 import sys
 import traceback
 import threading
 from tkinter import messagebox
+
+# Add the current directory's parent to sys.path to enable module imports when run directly
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 from translation_app.utils.logger import setup_logging, logger
 from translation_app.config import config

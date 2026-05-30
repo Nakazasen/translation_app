@@ -89,6 +89,17 @@ class ProviderState:
     success_count: int = 0
     failure_count: int = 0
 
+    # New fields for Phase 5I
+    free_quota: dict[str, Any] = field(default_factory=dict)
+    rpm_limit: int = 0
+    tpm_limit: int = 0
+    daily_limit: int = 0
+    health_status: str = "healthy"
+    last_error_class: str = ""
+    quality_score: float = 5.0
+    latency_score: float = 0.0
+    capabilities: dict[str, Any] = field(default_factory=dict)
+
 
 class ProviderRouter:
     """Runtime-only provider router with cooldown and health tracking."""
@@ -110,7 +121,7 @@ class ProviderRouter:
     def route(self, request: TranslationRequest, policy: Optional[dict[str, Any]] = None) -> TranslationResult:
         policy = policy or {}
         allowed = policy.get("allowed_providers")
-        ordered_names = self._resolve_order(policy.get("provider_order"), allowed)
+        ordered_names = self._resolve_order(policy.get("provider_order"), allowed, policy)
         max_attempts = self.max_retries + 1 if ordered_names else 0
         attempts: list[dict[str, Any]] = []
         total_attempts = 0
@@ -291,6 +302,14 @@ class ProviderRouter:
         state.last_latency_ms = max(0, int(latency_ms or 0))
         state.success_count += 1
 
+        # New dynamic metadata tracking for Phase 5I
+        state.health_status = "healthy"
+        if latency_ms > 0:
+            if state.latency_score <= 0:
+                state.latency_score = float(latency_ms)
+            else:
+                state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
+
     def mark_failure(
         self,
         provider: str,
@@ -310,6 +329,31 @@ class ProviderRouter:
         state.last_error_type = error_type
         state.last_latency_ms = max(0, int(latency_ms or 0))
         state.failure_count += 1
+
+        # New dynamic metadata tracking for Phase 5I
+        state.last_error_class = error_type
+        if error_type == "auth_failure":
+            state.health_status = "dead"
+            # Call AIConfigManager to persistently disable the provider
+            try:
+                from translation_app.core.ai_service import get_ai_service
+                service = get_ai_service()
+                if service and service.config_manager:
+                    service.config_manager.update_provider_enabled(provider, False)
+                    service.config_manager.save_config()
+            except Exception:
+                pass
+        elif error_type in ("quota_rate_limit", "token_limit"):
+            state.health_status = "cooldown"
+        elif error_type in ("timeout", "provider_5xx"):
+            state.health_status = "degraded"
+
+        if latency_ms > 0:
+            if state.latency_score <= 0:
+                state.latency_score = float(latency_ms)
+            else:
+                state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
+
         if error_type in {
             "auth_failure",
             "quota_rate_limit",
@@ -340,9 +384,57 @@ class ProviderRouter:
             state.is_available = True
             state.consecutive_failures = 0
             state.last_error_type = ""
+            state.health_status = "healthy"
 
-    def _resolve_order(self, preferred: Optional[Iterable[str]], allowed: Optional[Iterable[str]]) -> list[str]:
+    def _resolve_order(self, preferred: Optional[Iterable[str]], allowed: Optional[Iterable[str]], policy: Optional[dict[str, Any]] = None) -> list[str]:
+        policy = policy or {}
+        policy_mode = policy.get("mode", "")
         allowed_set = {item for item in (allowed or self._providers.keys()) if item in self._providers}
+
+        # If we have one of the free AI pool policies, we dynamically rank them!
+        if policy_mode in ("ai_pool_auto", "ai_pool_no_google", "ai_pool_with_google_last_resort"):
+            def get_provider_rank(name):
+                # Aggregate states for this provider name
+                provider_states = [s for s in self._provider_states.values() if s.provider_name == name]
+                if not provider_states:
+                    provider_states = [self._ensure_state(name)]
+
+                is_available = any(s.is_available for s in provider_states)
+                is_cooldown = all(self._is_on_cooldown(s) for s in provider_states)
+
+                # Check aggregated health_status
+                health_set = {s.health_status for s in provider_states}
+                if "healthy" in health_set:
+                    health_status = "healthy"
+                elif "degraded" in health_set:
+                    health_status = "degraded"
+                elif "cooldown" in health_set:
+                    health_status = "cooldown"
+                else:
+                    health_status = "dead"
+
+                is_google = (name == "google")
+
+                if not is_available:
+                    status_rank = 4
+                elif is_cooldown:
+                    status_rank = 3
+                elif is_google and policy_mode == "ai_pool_with_google_last_resort":
+                    status_rank = 2
+                elif health_status == "degraded":
+                    status_rank = 1
+                else:
+                    status_rank = 0
+
+                quality = max((getattr(s, "quality_score", 5.0) for s in provider_states), default=5.0)
+                latencies = [getattr(s, "latency_score", 0.0) for s in provider_states if getattr(s, "latency_score", 0.0) > 0]
+                latency = sum(latencies) / len(latencies) if latencies else 500.0
+
+                return (status_rank, -quality, latency)
+
+            sorted_names = sorted(allowed_set, key=get_provider_rank)
+            return sorted_names
+
         order = [name for name in (preferred or self._providers.keys()) if name in allowed_set]
         for name in allowed_set:
             if name not in order:
@@ -360,12 +452,26 @@ class ProviderRouter:
     ) -> ProviderState:
         key = f"{provider}::{model}::{key_index if key_index is not None else -1}"
         if key not in self._provider_states:
+            quality_scores = {
+                "gemini": 9.0,
+                "groq": 7.5,
+                "cerebras": 7.5,
+                "openrouter": 8.0,
+                "mistral": 7.0,
+                "sambanova": 7.5,
+                "github": 7.5,
+                "ai21": 7.5,
+                "cloudflare": 6.5,
+                "huggingface": 6.5,
+                "google": 5.0,
+            }
             self._provider_states[key] = ProviderState(
                 provider_name=provider,
                 display_name=display_name or provider,
                 model=model,
                 key_id=key_id or None,
                 key_index=key_index,
+                quality_score=quality_scores.get(provider, 5.0),
             )
         return self._provider_states[key]
 

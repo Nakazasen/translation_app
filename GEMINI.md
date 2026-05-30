@@ -69,3 +69,45 @@ Trợ lý AI **PHẢI** tuân thủ các quy tắc sau trước khi sinh mã:
 
 * **Background Workers**: Mọi tác vụ tốn thời gian > 0.5s đều phải chạy worker thread.
 * **Progress Feedback**: Luôn cập nhật thanh tiến trình (progress bar) hoặc thông báo trạng thái cho người dùng trong quá trình xử lý dài.
+
+## Hybrid ABW - Antigravity IDE Command Surface
+
+### CRITICAL: Command Recognition
+
+ABW is explicit-invocation only. Normal prompts, plain chat, and non-ABW slash workflows must bypass ABW.
+
+Invoke ABW only when the user explicitly types `/abw...` or runs an `abw` CLI command.
+
+When the user types one of the registered `/abw...` commands below, treat it as a Hybrid ABW workflow command loaded from `~/.gemini/antigravity/global_workflows`.
+Do not silently fall back to a stale local clone when the verified remote snapshot is newer.
+Hybrid ABW commands are authoritative only for `/abw...` inputs.
+
+### Public Commands
+
+/abw-accept, /abw-ask, /abw-audit, /abw-bootstrap, /abw-commands, /abw-eval, /abw-execute, /abw-health, /abw-ingest, /abw-init, /abw-learn, /abw-lint, /abw-meta-audit, /abw-pack, /abw-query, /abw-query-deep, /abw-repair, /abw-resume, /abw-review, /abw-rollback, /abw-setup, /abw-start, /abw-status, /abw-sync, /abw-update, /abw-wrap, /audit, /brainstorm, /code, /customize, /debug, /deploy, /design, /finalization, /help, /next, /plan, /recap, /refactor, /run, /save-brain, /test, /visualize
+
+### Legacy Compatibility Aliases
+
+/abw-health, /abw-ingest, /abw-query, /abw-query-deep, /abw-status
+
+### Hidden By Default
+
+* Internal workflows remain installed on disk but are not part of the default public surface.
+* Set `ABW_INSTALL_DEV_SURFACE=1` before install if you intentionally want the full workflow list exposed for development.
+
+### Runtime Notes
+
+* Installer source mode: LOCAL
+* Source decision: Local clone is clean and already at origin/main
+* Workflow directory: `~/.gemini/antigravity/global_workflows`
+* Skills directory: `~/.gemini/antigravity/skills`
+* MCP config: `~/.gemini/antigravity/mcp_config.json`
+* /abw-update must distinguish repo, workspace, runtime, and MCP sync state separately.
+
+### Fallback Rule
+
+If NotebookLM MCP is unavailable:
+
+* ingest creates draft or pending-grounding artifacts only
+* query falls back to wiki-first answers plus gap logging
+* lint reports reduced grounding capability honestly

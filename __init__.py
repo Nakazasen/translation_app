@@ -3,6 +3,6 @@ Translation Application
 Ứng dụng dịch thuật tự động cho file, văn bản, email và ảnh
 """
 
-__version__ = "6.0.4"
+__version__ = "6.1.0"
 __author__ = "Bùi Đức Vinh"
 

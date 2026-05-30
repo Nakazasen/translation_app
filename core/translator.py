@@ -12,7 +12,7 @@ from translation_app.config import config
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.file_translation_control import FileTranslationStopRequested
 from translation_app.core.provider_router import ProviderRouter, TranslationRequest
-from translation_app.core.providers import GeminiProvider, GoogleTranslateProvider, OpenAICompatibleProvider, build_provider_profiles
+from translation_app.core.providers import GeminiProvider, GoogleTranslateProvider, OpenAICompatibleProvider, CloudflareProvider, HuggingFaceProvider, build_provider_profiles
 from translation_app.utils.error_handler import TranslationServiceError, handle_translation_error
 from translation_app.utils.logger import logger
 
@@ -51,6 +51,9 @@ class TranslationService:
             "chỉ dùng openai tùy chỉnh": "openai_compatible_only",
             "chỉ dùng google translate": "google",
             "nâng cao: dùng thứ tự ưu tiên bên dưới": "ai_waterfall",
+            "tự động chọn từ pool ai miễn phí": "ai_pool_auto",
+            "pool ai miễn phí (không dùng google)": "ai_pool_no_google",
+            "pool ai miễn phí (google làm dự phòng cuối)": "ai_pool_with_google_last_resort",
         }
         old_mapping = {
             "google translate (mặc định)": "google",
@@ -59,6 +62,9 @@ class TranslationService:
             "google -> gemini (waterfall)": "waterfall",
             "gemini ai -> google translate": "ai_waterfall",
             "nâng cao": "ai_waterfall",
+            "ai_pool_auto": "ai_pool_auto",
+            "ai_pool_no_google": "ai_pool_no_google",
+            "ai_pool_with_google_last_resort": "ai_pool_with_google_last_resort",
         }
         self.strategy = mapping.get(str(strategy or "").lower(), old_mapping.get(str(strategy or "").lower(), "waterfall"))
         logger.info(f"Translation strategy changed to: {self.strategy}")
@@ -129,16 +135,39 @@ class TranslationService:
         )
         profiles = build_provider_profiles(config_manager)
         router.register_provider(GeminiProvider(profile=profiles["gemini"]))
-        for provider_name in ("chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"):
-            router.register_provider(OpenAICompatibleProvider(profile=profiles[provider_name]))
+
+        # OpenAI compatible providers
+        openai_names = (
+            "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible",
+            "groq", "cerebras", "openrouter", "mistral", "sambanova", "github", "ai21"
+        )
+        for provider_name in openai_names:
+            if provider_name in profiles:
+                router.register_provider(OpenAICompatibleProvider(profile=profiles[provider_name]))
+
+        # Custom adapters
+        if "cloudflare" in profiles:
+            router.register_provider(CloudflareProvider(profile=profiles["cloudflare"]))
+        if "huggingface" in profiles:
+            router.register_provider(HuggingFaceProvider(profile=profiles["huggingface"]))
+
         router.register_provider(GoogleTranslateProvider())
         self._provider_router = router
         self._provider_router_signature = signature
         return router
 
     def _build_router_policy(self, config_manager) -> dict:
-        order = list(config_manager.provider_order) or ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible", "google"]
-        ai_provider_order = ["gemini", "chatanywhere", "deepseek", "nvidia_nim", "openai_compatible"]
+        default_order = [
+            "gemini", "groq", "cerebras", "openrouter", "mistral", "sambanova",
+            "cloudflare", "huggingface", "github", "ai21", "chatanywhere", "deepseek",
+            "nvidia_nim", "openai_compatible", "google"
+        ]
+        order = list(config_manager.provider_order) or default_order
+        ai_provider_order = [
+            "gemini", "groq", "cerebras", "openrouter", "mistral", "sambanova",
+            "cloudflare", "huggingface", "github", "ai21", "chatanywhere", "deepseek",
+            "nvidia_nim", "openai_compatible"
+        ]
         non_optional_builtin_providers = set()
         strict_strategy_provider = {
             "gemini_only": "gemini",
@@ -147,6 +176,7 @@ class TranslationService:
             "nvidia_nim_only": "nvidia_nim",
             "openai_compatible_only": "openai_compatible",
         }
+
         if self.strategy == "ai":
             allowed = ai_provider_order
         elif self.strategy == "ai_waterfall":
@@ -164,6 +194,14 @@ class TranslationService:
             allowed = ["nvidia_nim"]
         elif self.strategy == "openai_compatible_only":
             allowed = ["openai_compatible"]
+        elif self.strategy == "ai_pool_auto":
+            allowed = ai_provider_order + ["google"]
+            non_optional_builtin_providers.add("google")
+        elif self.strategy == "ai_pool_no_google":
+            allowed = ai_provider_order
+        elif self.strategy == "ai_pool_with_google_last_resort":
+            allowed = ai_provider_order + ["google"]
+            non_optional_builtin_providers.add("google")
         else:
             allowed = [provider for provider in order if provider in set(ai_provider_order + ["google"])]
             if "google" not in allowed:
@@ -174,6 +212,13 @@ class TranslationService:
 
         # Filter out disabled providers
         providers_config = config_manager.providers_config
+
+        # If "google" is disabled in providers config, remove it from non_optional_builtin_providers
+        # UNLESS the legacy "waterfall" or strict "google" strategies are selected.
+        if "google" in non_optional_builtin_providers and self.strategy not in ("waterfall", "google"):
+            if not bool(providers_config.get("google", {}).get("enabled", False)):
+                non_optional_builtin_providers.discard("google")
+
         allowed = [
             p for p in allowed
             if p in non_optional_builtin_providers or bool(providers_config.get(p, {}).get("enabled", False))
@@ -185,8 +230,13 @@ class TranslationService:
             if profile and profile.default_model:
                 strict_provider_models[strict_provider_name] = profile.default_model
 
+        # Determine mode
+        mode = config_manager.provider_router_policy
+        if self.strategy in ("ai_pool_auto", "ai_pool_no_google", "ai_pool_with_google_last_resort"):
+            mode = self.strategy
+
         return {
-            "mode": config_manager.provider_router_policy,
+            "mode": mode,
             "allowed_providers": allowed,
             "provider_order": [provider for provider in order if provider in allowed] or allowed,
             "strict_provider_models": strict_provider_models,

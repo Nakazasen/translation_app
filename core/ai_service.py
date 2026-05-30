@@ -121,6 +121,67 @@ def get_default_provider_model_catalog() -> dict[str, Any]:
                 "default_model": "gemini-3.5-flash",
                 "models": _gemini_catalog_seed(),
             },
+            "groq": {
+                "default_model": "llama3-8b-8192",
+                "models": [
+                    {"id": "llama3-8b-8192", "label": "Llama 3 8B (Groq)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "mixtral-8x7b-32768", "label": "Mixtral 8x7B (Groq)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "gemma2-9b-it", "label": "Gemma 2 9B (Groq)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "cerebras": {
+                "default_model": "llama3.1-8b",
+                "models": [
+                    {"id": "llama3.1-8b", "label": "Llama 3.1 8B (Cerebras)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "llama3.1-70b", "label": "Llama 3.1 70B (Cerebras)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "openrouter": {
+                "default_model": "google/gemini-2.5-flash:free",
+                "models": [
+                    {"id": "google/gemini-2.5-flash:free", "label": "Gemini 2.5 Flash Free (OpenRouter)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "meta-llama/llama-3-8b-instruct:free", "label": "Llama 3 8B Free (OpenRouter)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "mistral": {
+                "default_model": "mistral-tiny",
+                "models": [
+                    {"id": "mistral-tiny", "label": "Mistral Tiny (Mistral)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "mistral-small-latest", "label": "Mistral Small (Mistral)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "sambanova": {
+                "default_model": "meta-llama/Llama-3-8B-Instruct",
+                "models": [
+                    {"id": "meta-llama/Llama-3-8B-Instruct", "label": "Llama 3 8B (SambaNova)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "meta-llama/Llama-3-70B-Instruct", "label": "Llama 3 70B (SambaNova)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "cloudflare": {
+                "default_model": "@cf/meta/llama-3-8b-instruct",
+                "models": [
+                    {"id": "@cf/meta/llama-3-8b-instruct", "label": "Llama 3 8B (Cloudflare)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "huggingface": {
+                "default_model": "meta-llama/Meta-Llama-3-8B-Instruct",
+                "models": [
+                    {"id": "meta-llama/Meta-Llama-3-8B-Instruct", "label": "Llama 3 8B (HuggingFace)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "github": {
+                "default_model": "meta-llama-3-8b-instruct",
+                "models": [
+                    {"id": "meta-llama-3-8b-instruct", "label": "Llama 3 8B (GitHub)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "gpt-4o-mini", "label": "GPT-4o Mini (GitHub)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
+            "ai21": {
+                "default_model": "jamba-1.5-mini",
+                "models": [
+                    {"id": "jamba-1.5-mini", "label": "Jamba 1.5 Mini (AI21)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                ],
+            },
             "chatanywhere": {
                 "default_model": "gpt-4o-mini",
                 "models": [
@@ -378,6 +439,19 @@ class AIConfigManager:
                             merged_strategy.append(def_model.copy())
                             
                     merged[key] = merged_strategy
+                elif key == "providers" and isinstance(config_data[key], dict):
+                    providers_merged = deepcopy(defaults["providers"])
+                    for p_name, p_default in defaults["providers"].items():
+                        p_configured = config_data[key].get(p_name)
+                        if isinstance(p_configured, dict):
+                            p_merged = deepcopy(p_default)
+                            p_merged.update(p_configured)
+                            providers_merged[p_name] = p_merged
+                    merged[key] = providers_merged
+                elif key == "provider_router" and isinstance(config_data[key], dict):
+                    router_merged = deepcopy(defaults["provider_router"])
+                    router_merged.update(config_data[key])
+                    merged[key] = router_merged
                 else:
                     merged[key] = config_data[key]
 
@@ -485,6 +559,15 @@ class AIConfigManager:
             "cooldown_seconds": 300,
             "provider_order": [
                 "gemini",
+                "groq",
+                "cerebras",
+                "openrouter",
+                "mistral",
+                "sambanova",
+                "cloudflare",
+                "huggingface",
+                "github",
+                "ai21",
                 "chatanywhere",
                 "deepseek",
                 "nvidia_nim",

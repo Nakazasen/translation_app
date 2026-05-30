@@ -19,4 +19,8 @@ python-magic-bin>=0.4.14; sys_platform == 'win32'
 
 # AI Waterfall Fallback
 google-generativeai>=0.8.3
+google-genai>=2.7.0
+
+# Modern UI upgrade
+customtkinter>=5.2.0
 

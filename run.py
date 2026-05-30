@@ -7,6 +7,18 @@ import subprocess
 import sys
 import os
 
+# Configure stdout/stderr to use utf-8 to avoid encoding crashes on CP932 terminals
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 def run_app():
     """Run the translation application"""
     try:

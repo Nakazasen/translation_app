@@ -8,6 +8,8 @@ __all__ = [
     "GeminiProvider",
     "GoogleTranslateProvider",
     "OpenAICompatibleProvider",
+    "CloudflareProvider",
+    "HuggingFaceProvider",
     "ProviderProfile",
     "build_provider_profiles",
     "get_default_provider_profiles",
@@ -27,4 +29,12 @@ def __getattr__(name):
         from translation_app.core.providers.openai_compatible_provider import OpenAICompatibleProvider
 
         return OpenAICompatibleProvider
+    if name == "CloudflareProvider":
+        from translation_app.core.providers.cloudflare_provider import CloudflareProvider
+
+        return CloudflareProvider
+    if name == "HuggingFaceProvider":
+        from translation_app.core.providers.huggingface_provider import HuggingFaceProvider
+
+        return HuggingFaceProvider
     raise AttributeError(name)

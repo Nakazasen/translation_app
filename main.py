@@ -1,13 +1,11 @@
 """
 Main entry point for translation application
 """
-import sys
-import traceback
-import threading
-from tkinter import messagebox
-
-# Setup imports for both standalone and module execution
 import os
+import sys
+import threading
+import traceback
+from tkinter import messagebox
 
 # Add the current directory to sys.path for standalone execution
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -92,4 +90,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
