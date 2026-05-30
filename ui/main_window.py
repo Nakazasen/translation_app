@@ -471,6 +471,12 @@ class MainWindow(ctk.CTk):
         frame_move_buttons = ctk.CTkFrame(frame_tree_container, fg_color="transparent")
         frame_move_buttons.pack(side=tk.RIGHT, padx=(10, 0), fill=tk.Y)
 
+        self.btn_move_to_top = create_styled_button(
+            frame_move_buttons, text="▲▲ Lên trên cùng", command=self._move_provider_to_top,
+            width=120
+        )
+        self.btn_move_to_top.pack(pady=5)
+
         self.btn_move_up = create_styled_button(
             frame_move_buttons, text="▲ Di chuyển lên", command=self._move_provider_up,
             width=120
@@ -482,6 +488,12 @@ class MainWindow(ctk.CTk):
             width=120
         )
         self.btn_move_down.pack(pady=5)
+
+        self.btn_move_to_bottom = create_styled_button(
+            frame_move_buttons, text="▼▼ Xuống dưới cùng", command=self._move_provider_to_bottom,
+            width=120
+        )
+        self.btn_move_to_bottom.pack(pady=5)
 
         # Styled Ttk Treeview
         self.prov_tree = ttk.Treeview(frame_tree_container, columns=columns, show="headings", height=6)
@@ -1206,25 +1218,138 @@ class MainWindow(ctk.CTk):
         )
         self.btn_wiz_focus.pack(side=tk.LEFT, padx=2)
 
-        # Test Connection button placeholder
+        # Test Connection button wired to health checker
         self.btn_wiz_test_conn = create_styled_button(
-            self.frame_wizard_actions, text="🔌 Kiểm tra kết nối", command=None
+            self.frame_wizard_actions, text="🔌 Kiểm tra kết nối", command=self._on_wizard_test_connection
         )
-        self.btn_wiz_test_conn.configure(state=tk.DISABLED)
         self.btn_wiz_test_conn.pack(side=tk.LEFT, padx=2)
-
-        self.lbl_wiz_test_conn_tip = ctk.CTkLabel(
-            self.frame_wizard_actions, text="💡 Kiểm tra kết nối sẽ được bổ sung ở phase sau.",
-            text_color=self.colors['gray_medium'],
-            font=('Segoe UI', 8, 'italic')
-        )
-        self.lbl_wiz_test_conn_tip.pack(side=tk.LEFT, padx=5)
 
         # Wire Combobox trace
         self.wizard_prov_var.trace_add("write", self._on_wizard_selection_changed)
 
         # Initialize guide content
         self._on_wizard_selection_changed()
+
+        # --- PHẦN F: KIỂM TRA KẾT NỐI & MODEL (HEALTH CHECKER) ---
+        frame_health = create_styled_card(scroll_frame, title="🛡️ Kiểm tra kết nối & Mô hình (Health Checker)")
+        frame_health.pack(fill=tk.X, padx=20, pady=(8, 20))
+
+        # Row 1: Select provider and model input
+        frame_health_controls = ctk.CTkFrame(frame_health, fg_color="transparent")
+        frame_health_controls.pack(fill=tk.X, padx=15, pady=5)
+
+        ctk.CTkLabel(frame_health_controls, text="Chọn nhà cung cấp:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.health_prov_var = ctk.StringVar(value="Gemini AI")
+
+        # We need a display label matching the catalog list
+        provider_display_names = [
+            "Gemini AI", "Groq", "Cerebras", "OpenRouter", "Mistral AI", "SambaNova",
+            "Cloudflare Workers AI", "HuggingFace", "GitHub Models", "AI21 Studio",
+            "ChatAnyWhere", "DeepSeek", "NVIDIA NIM", "OpenAI tùy chỉnh", "Google Translate"
+        ]
+
+        self.health_prov_combo = ctk.CTkComboBox(
+            frame_health_controls,
+            values=provider_display_names,
+            variable=self.health_prov_var,
+            width=180
+        )
+        self.health_prov_combo.pack(side=tk.LEFT, padx=(0, 15))
+
+        ctk.CTkLabel(frame_health_controls, text="Mô hình tùy chọn:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(0, 5))
+
+        self.health_model_var = ctk.StringVar()
+        self.health_model_combo = ctk.CTkComboBox(
+            frame_health_controls,
+            values=[],
+            variable=self.health_model_var,
+            width=250,
+            state="normal"
+        )
+        self.health_model_combo.pack(side=tk.LEFT)
+        self.entry_health_model = self.health_model_combo
+
+        # Row 2: Action buttons
+        frame_health_actions = ctk.CTkFrame(frame_health, fg_color="transparent")
+        frame_health_actions.pack(fill=tk.X, padx=15, pady=5)
+
+        self.btn_health_provider = create_styled_button(
+            frame_health_actions, text="🔌 Kiểm tra Provider", command=self._on_health_check_provider
+        )
+        self.btn_health_provider.pack(side=tk.LEFT, padx=2)
+
+        self.btn_health_model = create_styled_button(
+            frame_health_actions, text="🎯 Kiểm tra Model", command=self._on_health_check_model
+        )
+        self.btn_health_model.pack(side=tk.LEFT, padx=2)
+
+        self.btn_health_models = create_styled_button(
+            frame_health_actions, text="🔍 Quét Model của Provider", command=self._on_health_check_provider_models
+        )
+        self.btn_health_models.pack(side=tk.LEFT, padx=2)
+
+        self.btn_health_all = create_styled_button(
+            frame_health_actions, text="🌐 Quét toàn bộ AI đã bật", command=self._on_health_check_all_configured
+        )
+        self.btn_health_all.pack(side=tk.LEFT, padx=2)
+
+        self.btn_health_cancel = create_styled_button(
+            frame_health_actions, text="🛑 Dừng kiểm tra", command=self._on_health_cancel,
+            fg_color=("#EF4444", "#DC2626"), hover_color=("#DC2626", "#B91C1C")
+        )
+        self.btn_health_cancel.configure(state=tk.DISABLED)
+        self.btn_health_cancel.pack(side=tk.LEFT, padx=2)
+
+        # Row 3: Status & Progress
+        frame_health_status = ctk.CTkFrame(frame_health, fg_color="transparent")
+        frame_health_status.pack(fill=tk.X, padx=15, pady=5)
+
+        self.lbl_health_status = ctk.CTkLabel(
+            frame_health_status, text="Sẵn sàng thực hiện kiểm tra.",
+            text_color=self.colors['gray_medium'],
+            font=('Segoe UI', 9, 'italic')
+        )
+        self.lbl_health_status.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.progress_health = ctk.CTkProgressBar(frame_health_status, width=200)
+        self.progress_health.configure(mode="indeterminate")
+
+        # Row 4: Results Treeview table
+        frame_health_table = ctk.CTkFrame(frame_health, fg_color="transparent")
+        frame_health_table.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
+
+        columns = ("provider", "model", "status", "latency", "details", "suggestion")
+        self.health_tree = ttk.Treeview(frame_health_table, columns=columns, show="headings", height=6)
+        self.health_tree.heading("provider", text="Nhà cung cấp")
+        self.health_tree.heading("model", text="Mô hình")
+        self.health_tree.heading("status", text="Trạng thái")
+        self.health_tree.heading("latency", text="Thời gian")
+        self.health_tree.heading("details", text="Chi tiết lỗi / Thông báo")
+        self.health_tree.heading("suggestion", text="Gợi ý khắc phục")
+
+        self.health_tree.column("provider", width=120, anchor=tk.W)
+        self.health_tree.column("model", width=180, anchor=tk.W)
+        self.health_tree.column("status", width=150, anchor=tk.CENTER)
+        self.health_tree.column("latency", width=80, anchor=tk.CENTER)
+        self.health_tree.column("details", width=250, anchor=tk.W)
+        self.health_tree.column("suggestion", width=220, anchor=tk.W)
+
+        self.health_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+
+        # Style health tree row categories
+        self.health_tree.tag_configure("ok", foreground="#10B981")
+        self.health_tree.tag_configure("warning", foreground="#D97706")
+        self.health_tree.tag_configure("error", foreground="#DC2626")
+
+        health_scroll = ttk.Scrollbar(frame_health_table, orient=tk.VERTICAL, command=self.health_tree.yview)
+        self.health_tree.configure(yscrollcommand=health_scroll.set)
+        health_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Wire Combobox trace
+        self.health_prov_var.trace_add("write", self._on_health_provider_changed)
+
+        self.health_cancel_event = threading.Event()
 
         # Initial data loading
         self._refresh_quick_config_summary()
@@ -1862,6 +1987,46 @@ class MainWindow(ctk.CTk):
         idx = order.index(p_name)
         if idx < len(order) - 1:
             order[idx], order[idx+1] = order[idx+1], order[idx]
+            self.config_manager.provider_order = order
+            self.config_manager.save_config()
+            self._refresh_providers_tree()
+            self.prov_tree.selection_set(p_name)
+            self._refresh_quick_config_summary()
+
+    def _move_provider_to_top(self):
+        """Move selected provider to the absolute top of the router priority list."""
+        selection = self.prov_tree.selection()
+        if not selection:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một nhà cung cấp để di chuyển.")
+            return
+        p_name = selection[0]
+        order = list(self.config_manager.provider_order)
+        if p_name not in order:
+            return
+        idx = order.index(p_name)
+        if idx > 0:
+            order.remove(p_name)
+            order.insert(0, p_name)
+            self.config_manager.provider_order = order
+            self.config_manager.save_config()
+            self._refresh_providers_tree()
+            self.prov_tree.selection_set(p_name)
+            self._refresh_quick_config_summary()
+
+    def _move_provider_to_bottom(self):
+        """Move selected provider to the absolute bottom of the router priority list."""
+        selection = self.prov_tree.selection()
+        if not selection:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một nhà cung cấp để di chuyển.")
+            return
+        p_name = selection[0]
+        order = list(self.config_manager.provider_order)
+        if p_name not in order:
+            return
+        idx = order.index(p_name)
+        if idx < len(order) - 1:
+            order.remove(p_name)
+            order.append(p_name)
             self.config_manager.provider_order = order
             self.config_manager.save_config()
             self._refresh_providers_tree()
@@ -4549,3 +4714,209 @@ Bước 3: Sử dụng AI Vision
                     self.prov_tree.see(item)
                     self._on_provider_selected()
                     break
+
+    def _on_wizard_test_connection(self):
+        """Forward wizard connection checks directly to health scanner."""
+        selected_provider = self.wizard_prov_var.get()
+        self.health_prov_var.set(selected_provider)
+        self._on_health_check_provider()
+
+    def _on_health_check_provider(self):
+        """Run diagnostics on selected provider default model."""
+        display_name = self.health_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name:
+            return
+        self._run_health_checks_in_background(self._execute_provider_check, internal_name)
+
+    def _on_health_check_model(self):
+        """Run diagnostics on custom model input."""
+        display_name = self.health_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name:
+            return
+        check_model = self.health_model_var.get().strip()
+        if not check_model:
+            messagebox.showerror("Lỗi", "Vui lòng nhập Model ID để kiểm tra.")
+            return
+        self._run_health_checks_in_background(self._execute_model_check, internal_name, check_model)
+
+    def _on_health_check_provider_models(self):
+        """Audit all model pools for the selected provider."""
+        display_name = self.health_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name:
+            return
+        self._run_health_checks_in_background(self._execute_provider_models_check, internal_name)
+
+    def _on_health_check_all_configured(self):
+        """Audit all enabled providers and models in configuration."""
+        self._run_health_checks_in_background(self._execute_all_configured_check)
+
+    def _run_health_checks_in_background(self, target_fn, *args, **kwargs):
+        """Build thread workers with active progress state updates to execute long running HTTP probe checks."""
+        self.health_cancel_event.clear()
+        self._set_health_buttons_state(tk.DISABLED)
+        self.btn_wiz_test_conn.configure(state=tk.DISABLED)
+        self.btn_health_cancel.configure(state=tk.NORMAL)
+
+        self.lbl_health_status.configure(text="⏳ Đang quét kiểm tra kết nối AI, vui lòng đợi...", text_color="#3B82F6")
+        self.progress_health.pack(side=tk.LEFT, padx=5)
+        self.progress_health.start()
+
+        def worker():
+            try:
+                from translation_app.core.provider_health_checker import ProviderHealthChecker
+                checker = ProviderHealthChecker(
+                    config_manager=self.config_manager,
+                    provider_router=getattr(self.translation_service, "_provider_router", None) if self.translation_service else None,
+                    cancel_event=self.health_cancel_event
+                )
+                results = target_fn(checker, *args, **kwargs)
+                self.after(0, self._on_health_check_finished, results)
+            except Exception as e:
+                logger.error(f"Health checker worker thread error: {e}")
+                self.after(0, self._on_health_check_finished, [])
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    def _execute_provider_check(self, checker, provider_id):
+        res = checker.check_provider(provider_id, on_result=lambda r: self.after(0, self._append_single_health_result, r))
+        return [res]
+
+    def _execute_model_check(self, checker, provider_id, model_id):
+        res = checker.check_model(provider_id, model_id, on_result=lambda r: self.after(0, self._append_single_health_result, r))
+        return [res]
+
+    def _execute_provider_models_check(self, checker, provider_id):
+        return checker.check_provider_models(provider_id, on_result=lambda r: self.after(0, self._append_single_health_result, r))
+
+    def _execute_all_configured_check(self, checker):
+        return checker.check_all_configured(on_result=lambda r: self.after(0, self._append_single_health_result, r))
+
+    def _on_health_cancel(self):
+        """Cancel current active health check cooperative thread."""
+        self.health_cancel_event.set()
+        self.lbl_health_status.configure(text="🛑 Đang yêu cầu dừng quét kiểm tra...", text_color="#EF4444")
+        self.btn_health_cancel.configure(state=tk.DISABLED)
+
+    def _append_single_health_result(self, res):
+        """Append a single health result to the Treeview progressively."""
+        if getattr(self, '_is_destroyed', False):
+            return
+
+        status_disp = "❓ Lỗi chưa xác định"
+        tag = "error"
+
+        if res.status == "ok":
+            status_disp = "✅ Sống"
+            tag = "ok"
+        elif res.status == "missing_key":
+            status_disp = "🔐 Thiếu key"
+            tag = "warning"
+        elif res.status == "auth_error":
+            status_disp = "🔑 Sai key / hết quyền"
+            tag = "error"
+        elif res.status == "quota_or_rate_limited":
+            status_disp = "🚦 Hết quota / bị giới hạn tốc độ"
+            tag = "warning"
+        elif res.status == "model_not_found":
+            status_disp = "❌ Model không tồn tại"
+            tag = "error"
+        elif res.status == "endpoint_not_found":
+            status_disp = "🌐 Sai endpoint / base URL"
+            tag = "error"
+        elif res.status == "payload_error":
+            status_disp = "🧾 Payload không hợp lệ"
+            tag = "error"
+        elif res.status == "timeout":
+            status_disp = "⏱ Timeout"
+            tag = "warning"
+        elif res.status == "provider_disabled":
+            status_disp = "🚫 Provider đang tắt"
+            tag = "warning"
+        elif res.status == "cancelled":
+            status_disp = "🛑 Đã dừng"
+            tag = "warning"
+
+        err_msg = res.raw_error_sanitized or res.message
+        latency_disp = f"{res.latency_ms} ms" if res.latency_ms > 0 else "-"
+
+        # Remove existing duplicate row if exists
+        for child in self.health_tree.get_children():
+            vals = self.health_tree.item(child, "values")
+            if vals and vals[0] == res.provider_name and vals[1] == res.model_id:
+                self.health_tree.delete(child)
+
+        self.health_tree.insert(
+            "", 0,  # Insert at top
+            values=(res.provider_name, res.model_id, status_disp, latency_disp, err_msg, res.suggestion),
+            tags=(tag,)
+        )
+
+    def _set_health_buttons_state(self, state):
+        self.btn_health_provider.configure(state=state)
+        self.btn_health_model.configure(state=state)
+        self.btn_health_models.configure(state=state)
+        self.btn_health_all.configure(state=state)
+
+    def _on_health_check_finished(self, results):
+        """Handle rendering the diagnostic outcomes to the Treeview table once check finishes."""
+        if getattr(self, '_is_destroyed', False):
+            return
+
+        self.progress_health.stop()
+        self.progress_health.pack_forget()
+        self._set_health_buttons_state(tk.NORMAL)
+        self.btn_wiz_test_conn.configure(state=tk.NORMAL)
+        self.btn_health_cancel.configure(state=tk.DISABLED)
+
+        if self.health_cancel_event.is_set():
+            self.lbl_health_status.configure(text="Đã dừng quét kiểm tra.", text_color=self.colors['gray_medium'])
+        else:
+            self.lbl_health_status.configure(text="Hoàn tất kiểm tra.", text_color=self.colors['gray_medium'])
+
+        # Refresh configurations trees and summaries
+        self._refresh_quick_config_summary()
+        self._refresh_providers_tree()
+        self._refresh_router_health()
+
+    def _on_health_provider_changed(self, *args):
+        """Update suggestion model list when selected health checker provider shifts."""
+        display_name = self.health_prov_var.get()
+        internal_name = self.wizard_display_to_internal.get(display_name)
+        if not internal_name:
+            return
+
+        # Fetch models from catalog
+        catalog = self.config_manager.get_provider_model_catalog_public()
+        prov_entry = catalog.get("providers", {}).get(internal_name, {})
+        models = prov_entry.get("models", [])
+
+        # Also check configured models in profile
+        pub_data = self.config_manager.get_provider_profiles_public()
+        p_cfg = pub_data.get(internal_name, {})
+        cfg_models = p_cfg.get("models", [])
+
+        unique_models = []
+        for m in models:
+            m_id = m.get("id") if isinstance(m, dict) else m
+            if m_id and m_id not in unique_models:
+                unique_models.append(m_id)
+        for m_id in cfg_models:
+            if m_id and m_id not in unique_models:
+                unique_models.append(m_id)
+
+        # Set default model
+        default_model = p_cfg.get("default_model") or prov_entry.get("default_model") or ""
+
+        if unique_models:
+            self.health_model_combo.configure(values=unique_models)
+            if default_model in unique_models:
+                self.health_model_var.set(default_model)
+            else:
+                self.health_model_var.set(unique_models[0])
+        else:
+            self.health_model_combo.configure(values=[])
+            self.health_model_var.set(default_model)

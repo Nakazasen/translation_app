@@ -137,10 +137,10 @@ def get_default_provider_model_catalog() -> dict[str, Any]:
                 ],
             },
             "openrouter": {
-                "default_model": "google/gemini-2.5-flash:free",
+                "default_model": "meta-llama/llama-3.3-70b-instruct:free",
                 "models": [
-                    {"id": "google/gemini-2.5-flash:free", "label": "Gemini 2.5 Flash Free (OpenRouter)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
-                    {"id": "meta-llama/llama-3-8b-instruct:free", "label": "Llama 3 8B Free (OpenRouter)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "meta-llama/llama-3.3-70b-instruct:free", "label": "Llama 3.3 70B Free (OpenRouter)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
+                    {"id": "meta-llama/llama-3.2-3b-instruct:free", "label": "Llama 3.2 3B Free (OpenRouter)", "enabled": True, "source": "default", "capabilities": {"text": True, "vision": False}},
                 ],
             },
             "mistral": {
@@ -695,11 +695,25 @@ class AIConfigManager:
             configured = raw_providers.get(provider_name, {}) if isinstance(raw_providers, dict) else {}
             has_configured_provider = isinstance(configured, dict) and provider_name in raw_providers
             base_models = configured.get("models", []) if has_configured_provider else default_entry.get("models", [])
+
+            # Auto-migrate deprecated OpenRouter free models to active free models
+            if provider_name == "openrouter":
+                deprecated_ids = {"google/gemini-2.5-flash:free", "meta-llama/llama-3-8b-instruct:free"}
+                has_deprecated = any(isinstance(item, dict) and item.get("id") in deprecated_ids for item in base_models)
+                if has_deprecated or not base_models:
+                    base_models = [item for item in base_models if isinstance(item, dict) and item.get("id") not in deprecated_ids]
+                    for default_m in default_entry.get("models", []):
+                        if not any(isinstance(item, dict) and item.get("id") == default_m["id"] for item in base_models):
+                            base_models.append(default_m)
+
             models = _merge_model_catalog_lists([], base_models)
             default_model = str(
                 (configured.get("default_model", "") if has_configured_provider else default_entry.get("default_model", ""))
                 or ""
             ).strip()
+
+            if provider_name == "openrouter" and default_model in {"google/gemini-2.5-flash:free", "meta-llama/llama-3-8b-instruct:free"}:
+                default_model = "meta-llama/llama-3.3-70b-instruct:free"
             if default_model and not any(item["id"] == default_model for item in models):
                 models.append(
                     {
@@ -840,12 +854,37 @@ class AIConfigManager:
     def provider_order(self) -> List[str]:
         value = self.provider_router_config.get("provider_order", self._config.get("provider_order", []))
         if not isinstance(value, list):
-            return self._get_default_config()["provider_router"]["provider_order"].copy()
-        return [str(item).strip().lower() for item in value if str(item).strip()]
+            value = self._get_default_config()["provider_router"]["provider_order"].copy()
+
+        current_list = [str(item).strip().lower() for item in value if str(item).strip()]
+
+        # All 15 known providers in translation_app
+        all_known = [
+            "gemini", "groq", "cerebras", "openrouter", "mistral", "sambanova",
+            "cloudflare", "huggingface", "github", "ai21", "chatanywhere",
+            "deepseek", "nvidia_nim", "openai_compatible", "google"
+        ]
+
+        # Safely append any missing known providers to the end of the priority order list
+        for p in all_known:
+            if p not in current_list:
+                current_list.append(p)
+
+        return current_list
 
     @provider_order.setter
     def provider_order(self, value: List[str]):
         normalized = [str(item).strip().lower() for item in (value or []) if str(item).strip()]
+
+        all_known = [
+            "gemini", "groq", "cerebras", "openrouter", "mistral", "sambanova",
+            "cloudflare", "huggingface", "github", "ai21", "chatanywhere",
+            "deepseek", "nvidia_nim", "openai_compatible", "google"
+        ]
+        for p in all_known:
+            if p not in normalized:
+                normalized.append(p)
+
         self._config["provider_order"] = normalized
         router_config = self.provider_router_config
         router_config["provider_order"] = normalized

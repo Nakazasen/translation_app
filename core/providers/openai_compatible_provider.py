@@ -108,7 +108,12 @@ class OpenAICompatibleProvider(BaseTranslationProvider):
             "model": candidate.model or self.default_model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "HTTP-Referer": "http://localhost",
+            "X-Title": "AutoTranslator"
+        }
         api_key = self._resolve_api_key(candidate.key_index)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"

@@ -149,7 +149,7 @@ def get_default_provider_profiles() -> dict[str, dict[str, Any]]:
             "display_name": "OpenRouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_keys": [],
-            "models": ["google/gemini-2.5-flash:free", "meta-llama/llama-3-8b-instruct:free"],
+            "models": ["meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.2-3b-instruct:free"],
             "timeout": 15,
             "supports_glossary": True,
         },

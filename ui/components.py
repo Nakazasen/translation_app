@@ -25,14 +25,17 @@ def create_styled_button(
     Returns:
         Styled CTkButton widget
     """
+    fg_color = kwargs.pop('fg_color', ('#4A90E2', '#6366F1'))
+    hover_color = kwargs.pop('hover_color', ('#357ABD', '#4F46E5'))
+
     button = ctk.CTkButton(
         parent,
         text=text,
         command=command,
         font=('Segoe UI', 10, 'bold'),
         corner_radius=8,
-        fg_color=('#4A90E2', '#6366F1'),       # Dynamic Light Blue / Modern Indigo
-        hover_color=('#357ABD', '#4F46E5'),    # Hover states
+        fg_color=fg_color,
+        hover_color=hover_color,
         text_color='#FFFFFF',
         cursor='hand2',
         **kwargs
