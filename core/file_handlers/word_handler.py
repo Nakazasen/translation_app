@@ -9,11 +9,21 @@ from docx.text.paragraph import Paragraph
 
 from translation_app.config import config
 from translation_app.core.file_translation_control import FileTranslationInterrupted, FileTranslationStopRequested
+from translation_app.core.incremental_translation_cache import (
+    clear_incremental_cache,
+    get_cached_translation,
+    load_incremental_cache,
+    record_cached_translation,
+    save_incremental_cache,
+)
 from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.core.translator import TranslationService
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
 from translation_app.core.translation_job import redact_sensitive
+
+
+WORD_DOCX_CACHE_HANDLER = "word_docx"
 
 
 class WordTranslationTarget:
@@ -69,6 +79,7 @@ class WordHandler:
                 logger.warning(f"Large file detected: {file_size_mb:.1f}MB")
 
             doc = Document(input_file)
+            cache_payload = load_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER)
 
             # 1. Collect all translation targets systematically
             if self.progress_callback:
@@ -112,10 +123,10 @@ class WordHandler:
                     continue
 
                 # Perform the actual translation on the target runs
-                success = self._translate_target_runs(target, src_lang, dest_lang)
+                success, provider_calls = self._translate_target_runs(target, input_file, src_lang, dest_lang, cache_payload)
                 if success:
                     report["translated_candidates"] += 1
-                    api_requests += 1
+                    api_requests += provider_calls
                 else:
                     report["failed_candidates"] += 1
 
@@ -145,6 +156,7 @@ class WordHandler:
             if self.progress_callback:
                 self.progress_callback("Saving translated Word document...", 95)
             doc.save(output_file)
+            clear_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER)
 
             logger.info(f"Word translation completed: {output_file}")
             if self.progress_callback:
@@ -176,7 +188,7 @@ class WordHandler:
         processed_element_ids: Set[int] = set()
         targets: List[WordTranslationTarget] = []
 
-        def _add_paragraph_target(p: Paragraph, location: str):
+        def _add_paragraph_target(p: Paragraph, location: str, target_id: str):
             if id(p._element) in processed_element_ids:
                 return
             processed_element_ids.add(id(p._element))
@@ -195,7 +207,6 @@ class WordHandler:
                 can_translate = False
                 skip_reason = "matches_skip_patterns"
 
-            target_id = f"word_{location}_{len(targets)}"
             targets.append(
                 WordTranslationTarget(
                     target_id=target_id,
@@ -208,32 +219,33 @@ class WordHandler:
             )
 
         # 1. Collect body paragraphs
-        for p in doc.paragraphs:
-            _add_paragraph_target(p, "body")
+        for paragraph_index, p in enumerate(doc.paragraphs):
+            _add_paragraph_target(p, "body", f"body:p:{paragraph_index}")
 
         # 2. Collect tables recursively
-        def _traverse_table(table, location: str = "table"):
-            for row in table.rows:
-                for cell in row.cells:
-                    for p in cell.paragraphs:
-                        _add_paragraph_target(p, location)
-                    for nested in cell.tables:
-                        _traverse_table(nested, "nested_table")
+        def _traverse_table(table, table_path: str, location: str = "table"):
+            for row_index, row in enumerate(table.rows):
+                for col_index, cell in enumerate(row.cells):
+                    cell_path = f"{table_path}:r:{row_index}:c:{col_index}"
+                    for paragraph_index, p in enumerate(cell.paragraphs):
+                        _add_paragraph_target(p, location, f"{cell_path}:p:{paragraph_index}")
+                    for nested_index, nested in enumerate(cell.tables):
+                        _traverse_table(nested, f"{cell_path}:nested:{nested_index}", "nested_table")
 
-        for table in doc.tables:
-            _traverse_table(table)
+        for table_index, table in enumerate(doc.tables):
+            _traverse_table(table, f"table:{table_index}")
 
         # 3. Collect headers
-        for section in doc.sections:
+        for section_index, section in enumerate(doc.sections):
             if section.header is not None:
-                for p in section.header.paragraphs:
-                    _add_paragraph_target(p, "header")
+                for paragraph_index, p in enumerate(section.header.paragraphs):
+                    _add_paragraph_target(p, "header", f"header:{section_index}:p:{paragraph_index}")
 
         # 4. Collect footers
-        for section in doc.sections:
+        for section_index, section in enumerate(doc.sections):
             if section.footer is not None:
-                for p in section.footer.paragraphs:
-                    _add_paragraph_target(p, "footer")
+                for paragraph_index, p in enumerate(section.footer.paragraphs):
+                    _add_paragraph_target(p, "footer", f"footer:{section_index}:p:{paragraph_index}")
 
         # 5. Collect textboxes via XML parsing using document namespace maps
         try:
@@ -242,26 +254,44 @@ class WordHandler:
             xpath_txbx = etree.XPath("//w:txbxContent", namespaces=namespaces)
             xpath_p = etree.XPath(".//w:p", namespaces=namespaces)
             txbx_contents = xpath_txbx(doc.element)
-            for txbx in txbx_contents:
-                for p_elem in xpath_p(txbx):
+            for textbox_index, txbx in enumerate(txbx_contents):
+                for paragraph_index, p_elem in enumerate(xpath_p(txbx)):
                     if id(p_elem) not in processed_element_ids:
                         p_obj = Paragraph(p_elem, doc)
-                        _add_paragraph_target(p_obj, "textbox")
+                        _add_paragraph_target(p_obj, "textbox", f"textbox:{textbox_index}:p:{paragraph_index}")
         except Exception as exc:
             logger.warning(f"Failed to scan XML textboxes: {exc}")
 
         return targets
 
-    def _translate_target_runs(self, target: WordTranslationTarget, src_lang: str, dest_lang: str) -> bool:
+    def _translate_target_runs(
+        self,
+        target: WordTranslationTarget,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> tuple[bool, int]:
         """Translate individual runs of a target paragraph while preserving run-level formatting."""
         getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
         original_text = target.text
         if self._should_skip_text(original_text):
-            return False
+            return False, 0
 
         # If the paragraph has no runs but has text, translate paragraph text directly
         if not target.paragraph.runs and original_text.strip():
             try:
+                cached_translation = get_cached_translation(
+                    cache_payload,
+                    target.target_id,
+                    src_lang,
+                    dest_lang,
+                    original_text,
+                )
+                if cached_translation is not None:
+                    target.paragraph.text = cached_translation
+                    return True, 0
+
                 translated_text = self.translation_service.translate_long_text(
                     original_text,
                     src_lang,
@@ -269,49 +299,79 @@ class WordHandler:
                 )
                 if translated_text != original_text:
                     target.paragraph.text = translated_text
-                    return True
-                return self._is_unchanged_translation_acceptable(original_text)
+                    record_cached_translation(cache_payload, target.target_id, src_lang, dest_lang, original_text, translated_text)
+                    save_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER, cache_payload)
+                    return True, 1
+                acceptable = self._is_unchanged_translation_acceptable(original_text)
+                if acceptable:
+                    record_cached_translation(cache_payload, target.target_id, src_lang, dest_lang, original_text, translated_text)
+                    save_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER, cache_payload)
+                return acceptable, 1 if acceptable else 0
+            except FileTranslationStopRequested:
+                raise
             except Exception as exc:
                 logger.warning(f"Error translating Word paragraph: {exc}")
-                return False
+                return False, 0
 
         eligible_runs = self._collect_translatable_runs(target.paragraph.runs)
         if self._should_translate_fragmented_runs_as_block(target.paragraph.runs, eligible_runs):
-            return self._translate_fragmented_paragraph(target, src_lang, dest_lang)
+            return self._translate_fragmented_paragraph(target, input_file, src_lang, dest_lang, cache_payload)
 
         translated_any = False
         acceptable_unchanged = False
         all_failed = True
         has_run = False
+        provider_calls = 0
 
-        for run in eligible_runs:
+        for run_index, run in enumerate(eligible_runs):
             getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
             run_text = run.text
 
             has_run = True
             try:
+                segment_id = target.target_id if len(eligible_runs) == 1 else f"{target.target_id}:r:{run_index}"
+                cached_translation = get_cached_translation(
+                    cache_payload,
+                    segment_id,
+                    src_lang,
+                    dest_lang,
+                    run_text,
+                )
+                if cached_translation is not None:
+                    run.text = cached_translation
+                    translated_any = True
+                    all_failed = False
+                    continue
+
                 translated_text = self.translation_service.translate_long_text(
                     run_text,
                     src_lang,
                     dest_lang,
                 )
+                provider_calls += 1
                 if translated_text != run_text:
                     run.text = translated_text
                     translated_any = True
+                    record_cached_translation(cache_payload, segment_id, src_lang, dest_lang, run_text, translated_text)
+                    save_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER, cache_payload)
                 elif self._is_unchanged_translation_acceptable(run_text):
                     acceptable_unchanged = True
+                    record_cached_translation(cache_payload, segment_id, src_lang, dest_lang, run_text, translated_text)
+                    save_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER, cache_payload)
                 all_failed = False
+            except FileTranslationStopRequested:
+                raise
             except Exception as exc:
                 logger.warning(f"Error translating Word run in target {target.target_id}: {exc}")
 
         if not has_run:
-            return False
+            return False, 0
 
         # If there were runs to translate and they all failed, report translation failure for this segment
         if all_failed:
-            return False
+            return False, 0
 
-        return translated_any or acceptable_unchanged or not has_run
+        return translated_any or acceptable_unchanged or not has_run, provider_calls
 
     def _collect_translatable_runs(self, runs: List[Any]) -> List[Any]:
         eligible_runs: List[Any] = []
@@ -340,22 +400,52 @@ class WordHandler:
         total_chars = sum(len((run.text or "").strip()) for run in eligible_runs)
         return total_chars >= self._FRAGMENTED_RUN_MIN_TOTAL_CHARS
 
-    def _translate_fragmented_paragraph(self, target: WordTranslationTarget, src_lang: str, dest_lang: str) -> bool:
+    def _translate_fragmented_paragraph(
+        self,
+        target: WordTranslationTarget,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> tuple[bool, int]:
         getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
         original_text = target.text
         try:
+            cached_translation = get_cached_translation(
+                cache_payload,
+                target.target_id,
+                src_lang,
+                dest_lang,
+                original_text,
+            )
+            if cached_translation is not None:
+                self._apply_fragmented_translation(target, cached_translation)
+                return True, 0
+
             translated_text = self.translation_service.translate_long_text(
                 original_text,
                 src_lang,
                 dest_lang,
             )
+        except FileTranslationStopRequested:
+            raise
         except Exception as exc:
             logger.warning(f"Error translating fragmented Word paragraph in target {target.target_id}: {exc}")
-            return False
+            return False, 0
 
         if translated_text == original_text:
-            return self._is_unchanged_translation_acceptable(original_text)
+            acceptable = self._is_unchanged_translation_acceptable(original_text)
+            if acceptable:
+                record_cached_translation(cache_payload, target.target_id, src_lang, dest_lang, original_text, translated_text)
+                save_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER, cache_payload)
+            return acceptable, 1 if acceptable else 0
 
+        self._apply_fragmented_translation(target, translated_text)
+        record_cached_translation(cache_payload, target.target_id, src_lang, dest_lang, original_text, translated_text)
+        save_incremental_cache(input_file, src_lang, dest_lang, WORD_DOCX_CACHE_HANDLER, cache_payload)
+        return True, 1
+
+    def _apply_fragmented_translation(self, target: WordTranslationTarget, translated_text: str) -> None:
         first_run = None
         for run in target.paragraph.runs:
             if self._run_has_field_markup(run):
@@ -367,7 +457,6 @@ class WordHandler:
             run.text = ""
         if first_run is None:
             target.paragraph.text = translated_text
-        return True
 
     def _save_partial_document(self, doc: Optional[Document], output_file: str, status: str) -> tuple[bool, Optional[Exception]]:
         if doc is None:
