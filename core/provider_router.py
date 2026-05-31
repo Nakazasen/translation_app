@@ -422,11 +422,14 @@ class ProviderRouter:
             payload = asdict(state)
             provider = providers.get(state.provider_name)
             provider_available = True
+            provider_enabled = True
             if provider is not None:
+                provider_enabled = bool(getattr(provider, "enabled", True))
                 try:
                     provider_available = bool(provider.is_available())
                 except Exception:
                     provider_available = False
+            payload["enabled"] = provider_enabled
             payload["is_configured"] = provider_available
             payload["is_available"] = state.is_available and provider_available and not self._is_on_cooldown(state, now)
             payload["cooldown_until"] = round(state.cooldown_until, 3) if state.cooldown_until else 0.0

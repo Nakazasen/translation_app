@@ -426,7 +426,7 @@ class MainWindow(ctk.CTk):
 
         ai_entries = [
             entry for entry in self.ai_health_list
-            if entry.get("provider_name") != "google"
+            if entry.get("provider_name") != "google" and entry.get("enabled", True)
         ]
         if not ai_entries:
             ctk.CTkLabel(
@@ -519,11 +519,11 @@ class MainWindow(ctk.CTk):
     def _check_and_adapt_translation_buttons(self):
         ai_entries = [
             entry for entry in self.ai_health_list
-            if entry.get("provider_name") != "google"
+            if entry.get("provider_name") != "google" and entry.get("enabled", True)
         ]
         google_entries = [
             entry for entry in self.ai_health_list
-            if entry.get("provider_name") == "google"
+            if entry.get("provider_name") == "google" and entry.get("enabled", True)
         ]
         if self._translation_strategy_allows_google():
             considered = ai_entries + google_entries
