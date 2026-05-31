@@ -188,6 +188,7 @@ class CloudflareProvider(BaseTranslationProvider):
                 error_type=classify_error(exc, status_code=status_code, response_body=body),
                 error_message=f"HTTP {status_code}: {sanitized}",
                 latency_ms=round((time.time() - started) * 1000),
+                retry_after_seconds=_extract_retry_after_seconds(exc),
             )
         except Exception as exc:
             sanitized = _sanitize_error_detail(str(exc), api_token)
@@ -227,3 +228,17 @@ def _sanitize_error_detail(detail: str, api_key: str = "") -> str:
     )
     sanitized = re.sub(r"Bearer\s+[^\s,;]+", "Bearer [REDACTED_API_KEY]", sanitized, flags=re.IGNORECASE)
     return sanitized[:300]
+
+
+def _extract_retry_after_seconds(error: Exception) -> float | None:
+    headers = getattr(error, "headers", None) or getattr(error, "hdrs", None)
+    get_header = getattr(headers, "get", None)
+    if not callable(get_header):
+        return None
+    raw_value = get_header("Retry-After") or get_header("retry-after")
+    if raw_value is None:
+        return None
+    try:
+        return max(0.0, float(str(raw_value).strip()))
+    except ValueError:
+        return None

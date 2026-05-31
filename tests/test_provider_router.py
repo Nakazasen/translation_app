@@ -87,6 +87,7 @@ class DummyProvider(BaseTranslationProvider):
             error_type=response.get("error_type", ""),
             error_message=response.get("error_message", ""),
             latency_ms=response.get("latency_ms", 0),
+            retry_after_seconds=response.get("retry_after_seconds"),
         )
 
 
@@ -221,6 +222,29 @@ def test_router_marks_quota_error_cooldown():
     gemini_state = next(item for item in snapshot if item["provider_name"] == "gemini")
     assert gemini_state["last_error_type"] == "quota_rate_limit"
     assert gemini_state["cooldown_until"] > 0
+    assert 0 < gemini_state["cooldown_until"] - time.time() <= 20
+
+
+def test_router_uses_retry_after_for_quota_cooldown():
+    router = ProviderRouter(cooldown_seconds=300, max_retries=2)
+    failing = DummyProvider(
+        "gemini",
+        [{"status": "error", "error_type": "quota_rate_limit", "retry_after_seconds": 7}],
+    )
+    fallback = DummyProvider("google", [{"status": "success", "text": "ok"}])
+    router.register_provider(failing)
+    router.register_provider(fallback)
+
+    result = router.route(
+        TranslationRequest(text="hello", source_lang="en", target_lang="vi"),
+        {"allowed_providers": ["gemini", "google"], "provider_order": ["gemini", "google"]},
+    )
+
+    assert result.status == "success"
+    snapshot = router.get_health_snapshot()
+    gemini_state = next(item for item in snapshot if item["provider_name"] == "gemini")
+    remaining = gemini_state["cooldown_until"] - time.time()
+    assert 0 < remaining <= 8
 
 
 def test_strict_ai_policy_never_uses_google():
@@ -1352,6 +1376,50 @@ def test_router_skips_quota_cooled_provider_on_next_route():
     assert second_result.attempts[0]["provider"] == "gemini"
     assert second_result.attempts[0]["reason"] == "cooldown"
     assert gemini.calls == 1
+
+
+def test_router_throttles_fast_free_provider_per_model_key(monkeypatch):
+    router = ProviderRouter(cooldown_seconds=60, max_retries=0)
+    groq = DummyProvider("groq", [{"status": "success", "text": "ok"}])
+    router.register_provider(groq)
+    sleeps = []
+    monotonic_values = iter([100.0, 100.1])
+
+    monkeypatch.setattr("translation_app.core.provider_router.time.monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr("translation_app.core.provider_router.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    for text in ("first", "second"):
+        result = router.route(
+            TranslationRequest(text=text, source_lang="en", target_lang="vi"),
+            {"allowed_providers": ["groq"], "provider_order": ["groq"]},
+        )
+        assert result.status == "success"
+
+    assert sleeps == pytest.approx([1.4])
+
+
+def test_translate_long_text_retries_quota_with_adaptive_backoff(monkeypatch):
+    service = TranslationService()
+    calls = []
+    sleeps = []
+
+    def flaky_translate(text, src_lang, dest_lang):
+        calls.append(text)
+        if len(calls) < 3:
+            raise RuntimeError("quota_rate_limit: 429 too many requests")
+        return "translated"
+
+    try:
+        monkeypatch.setattr(service, "translate_text", flaky_translate)
+        monkeypatch.setattr("translation_app.core.translator.time.sleep", lambda seconds: sleeps.append(seconds))
+
+        result = service.translate_long_text("hello", "en", "vi", max_length=100)
+
+        assert result == "translated"
+        assert len(calls) == 3
+        assert sleeps == [25, 50]
+    finally:
+        service.shutdown(wait=True)
 
 
 def test_disabled_provider_is_skipped():

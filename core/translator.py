@@ -5,6 +5,7 @@ Translation service orchestration for TM, glossary, and provider routing.
 import concurrent.futures
 import re
 import threading
+import time
 from typing import Optional
 
 from deep_translator import GoogleTranslator
@@ -16,6 +17,10 @@ from translation_app.core.provider_router import ProviderRouter, TranslationRequ
 from translation_app.core.providers import GeminiProvider, GoogleTranslateProvider, OpenAICompatibleProvider, CloudflareProvider, HuggingFaceProvider, build_provider_profiles
 from translation_app.utils.error_handler import TranslationServiceError, handle_translation_error
 from translation_app.utils.logger import logger
+
+
+QUOTA_RETRY_ATTEMPTS = 3
+QUOTA_BACKOFF_SECONDS = 25
 
 
 class TranslationService:
@@ -478,7 +483,10 @@ class TranslationService:
                     retry_length,
                 )
                 return self.translate_long_text(text, src_lang, dest_lang, max_length=retry_length)
-            raise TranslationServiceError(result.error_message or "Translation failed via provider router.")
+            error_message = result.error_message or "Translation failed via provider router."
+            if result.error_type:
+                error_message = f"{result.error_type}: {error_message}"
+            raise TranslationServiceError(error_message)
 
         if self.strategy == "ai_waterfall":
             logger.info("Mode: AI -> GOOGLE - Attempting Gemini first...")
@@ -647,7 +655,7 @@ class TranslationService:
                 result.append(chunk)
             else:
                 try:
-                    result.append(self.translate_text(chunk, src_lang, dest_lang))
+                    result.append(self._translate_text_with_adaptive_quota_retry(chunk, src_lang, dest_lang))
                 except Exception as exc:
                     error_msg = str(exc).lower()
                     if "text length" in error_msg or "5000" in error_msg or "token" in error_msg or "context" in error_msg:
@@ -658,7 +666,7 @@ class TranslationService:
                             self.raise_if_file_translation_stopped()
                             if sub_chunk.strip():
                                 try:
-                                    result.append(self.translate_text(sub_chunk, src_lang, dest_lang))
+                                    result.append(self._translate_text_with_adaptive_quota_retry(sub_chunk, src_lang, dest_lang))
                                 except FileTranslationStopRequested:
                                     raise
                                 except Exception as nested_exc:
@@ -672,6 +680,31 @@ class TranslationService:
             start += max_length
 
         return "".join(result)
+
+    def _translate_text_with_adaptive_quota_retry(self, text: str, src_lang: str, dest_lang: str) -> str:
+        last_exception: Exception | None = None
+        for attempt in range(1, QUOTA_RETRY_ATTEMPTS + 1):
+            self.raise_if_file_translation_stopped()
+            try:
+                return self.translate_text(text, src_lang, dest_lang)
+            except FileTranslationStopRequested:
+                raise
+            except Exception as exc:
+                last_exception = exc
+                if not _is_quota_rate_limit_error(exc) or attempt >= QUOTA_RETRY_ATTEMPTS:
+                    raise
+                sleep_seconds = QUOTA_BACKOFF_SECONDS * attempt
+                logger.warning(
+                    "Quota/rate limit while translating segment; backing off %s second(s) before retry %s/%s.",
+                    sleep_seconds,
+                    attempt + 1,
+                    QUOTA_RETRY_ATTEMPTS,
+                )
+                time.sleep(sleep_seconds)
+
+        if last_exception is not None:
+            raise last_exception
+        return text
 
     def translate_batch(self, texts: list[str], src_lang: str, dest_lang: str) -> list[str]:
         if not texts:
@@ -724,3 +757,20 @@ def get_translation_service() -> TranslationService:
 def set_translation_service(service: TranslationService):
     global _translation_service
     _translation_service = service
+
+
+def _is_quota_rate_limit_error(error: Exception) -> bool:
+    detail = str(error or "").lower()
+    return any(
+        token in detail
+        for token in (
+            "quota_rate_limit",
+            "quota",
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "429",
+            "rpm",
+            "tpm",
+        )
+    )

@@ -148,6 +148,7 @@ class OpenAICompatibleProvider(BaseTranslationProvider):
                 error_type=classify_error(exc, status_code=status_code, response_body=normalized_detail or raw_detail),
                 error_message=_format_http_error_message(status_code, detail),
                 latency_ms=round((time.time() - started) * 1000),
+                retry_after_seconds=_extract_retry_after_seconds(exc),
             )
         except Exception as exc:
             status_code, raw_detail = _extract_http_error_context(exc)
@@ -266,6 +267,22 @@ def _extract_status_code(error: Exception) -> int | None:
     if isinstance(status_code, int):
         return status_code
     return None
+
+
+def _extract_retry_after_seconds(error: Exception) -> float | None:
+    headers = getattr(error, "headers", None) or getattr(error, "hdrs", None)
+    if headers is None:
+        return None
+    get_header = getattr(headers, "get", None)
+    if not callable(get_header):
+        return None
+    raw_value = get_header("Retry-After") or get_header("retry-after")
+    if raw_value is None:
+        return None
+    try:
+        return max(0.0, float(str(raw_value).strip()))
+    except ValueError:
+        return None
 
 
 def _format_http_error_message(status_code: int | None, detail: str) -> str:

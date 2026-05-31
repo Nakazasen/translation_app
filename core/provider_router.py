@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import time
 import threading
+from email.utils import parsedate_to_datetime
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -79,6 +81,13 @@ TOKEN_LIMIT_HINTS = (
     "max tokens",
 )
 PROVIDER_5XX_HINTS = ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")
+DEFAULT_QUOTA_COOLDOWN_SECONDS = 15.0
+DEFAULT_TRANSIENT_COOLDOWN_SECONDS = 15.0
+PROVIDER_MIN_INTERVALS_SECONDS = {
+    "groq": 1.5,
+    "sambanova": 1.5,
+    "deepseek": 2.0,
+}
 
 
 @dataclass
@@ -103,6 +112,7 @@ class TranslationResult:
     error_type: str = ""
     error_message: str = ""
     latency_ms: int = 0
+    retry_after_seconds: Optional[float] = None
     from_cache: bool = False
     attempts: list[dict[str, Any]] = field(default_factory=list)
 
@@ -137,11 +147,13 @@ class ProviderState:
 class ProviderRouter:
     """Runtime-only provider router with cooldown and health tracking."""
 
-    def __init__(self, cooldown_seconds: int = 300, max_retries: int = 2):
+    def __init__(self, cooldown_seconds: int = 300, max_retries: int = 2, quota_cooldown_seconds: float = DEFAULT_QUOTA_COOLDOWN_SECONDS):
         self.cooldown_seconds = max(1, int(cooldown_seconds))
+        self.quota_cooldown_seconds = max(1.0, float(quota_cooldown_seconds))
         self.max_retries = max(0, int(max_retries))
         self._providers: dict[str, Any] = {}
         self._provider_states: dict[str, ProviderState] = {}
+        self._last_request_at: dict[str, float] = {}
         self._lock = threading.RLock()
 
     def register_provider(self, provider: Any) -> None:
@@ -251,6 +263,7 @@ class ProviderRouter:
                     continue
 
                 provider_attempts += 1
+                self._throttle_candidate(provider.name, candidate)
                 result = provider.translate(request, candidate)
                 result.provider = result.provider or provider.name
                 result.model = result.model or candidate.model or getattr(provider, "default_model", "")
@@ -290,6 +303,7 @@ class ProviderRouter:
                     key_index=candidate.key_index,
                     key_id=candidate.key_id,
                     display_name=getattr(provider, "display_name", provider.name),
+                    retry_after_seconds=result.retry_after_seconds,
                 )
                 provider.mark_failure(candidate, result.error_type or "error")
                 attempts.append(
@@ -303,6 +317,7 @@ class ProviderRouter:
                         "reason": result.error_type or "error",
                         "message": result.error_message,
                         "latency_ms": result.latency_ms,
+                        "retry_after_seconds": result.retry_after_seconds,
                     }
                 )
 
@@ -361,6 +376,7 @@ class ProviderRouter:
         key_index: int | None = None,
         key_id: str | None = None,
         display_name: str = "",
+        retry_after_seconds: float | None = None,
     ) -> None:
         error_type = classify_error(error)
         with self._lock:
@@ -389,17 +405,9 @@ class ProviderRouter:
                 else:
                     state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
 
-            if error_type in {
-                "auth_failure",
-                "quota_rate_limit",
-                "timeout",
-                "transport_error",
-                "model_unavailable",
-                "model_error",
-                "provider_5xx",
-                "unknown_transport_error",
-            }:
-                state.cooldown_until = time.time() + self.cooldown_seconds
+            cooldown_seconds = self._cooldown_seconds_for_error(error_type, error, retry_after_seconds)
+            if cooldown_seconds > 0:
+                state.cooldown_until = time.time() + cooldown_seconds
 
         if error_type == "auth_failure":
             # Call AIConfigManager to persistently disable the provider.
@@ -543,6 +551,40 @@ class ProviderRouter:
         current = now if now is not None else time.time()
         return state.cooldown_until > current
 
+    def _cooldown_seconds_for_error(self, error_type: str, error: Any, retry_after_seconds: float | None = None) -> float:
+        if error_type == "quota_rate_limit":
+            parsed_retry_after = _extract_retry_after_seconds(error)
+            return max(1.0, float(retry_after_seconds or parsed_retry_after or self.quota_cooldown_seconds))
+        if error_type in {"timeout", "transport_error", "unknown_transport_error"}:
+            return DEFAULT_TRANSIENT_COOLDOWN_SECONDS
+        if error_type in {"auth_failure", "model_unavailable", "model_error", "provider_5xx"}:
+            return float(self.cooldown_seconds)
+        return 0.0
+
+    def _throttle_candidate(self, provider_name: str, candidate: Any) -> None:
+        min_interval = _provider_min_interval_seconds(provider_name, getattr(candidate, "model", ""))
+        if min_interval <= 0:
+            return
+
+        throttle_key = (
+            f"{provider_name}:"
+            f"{getattr(candidate, 'model', '')}:"
+            f"{getattr(candidate, 'key_id', '') or getattr(candidate, 'key_index', -1)}"
+        )
+        sleep_seconds = 0.0
+        with self._lock:
+            now = time.monotonic()
+            last_request = self._last_request_at.get(throttle_key, 0.0)
+            earliest = last_request + min_interval
+            if earliest > now:
+                sleep_seconds = earliest - now
+                self._last_request_at[throttle_key] = earliest
+            else:
+                self._last_request_at[throttle_key] = now
+
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
     def _filter_candidates(self, provider: Any, candidates: list[Any], policy: dict[str, Any]) -> list[Any]:
         strict_model = self._get_strict_provider_model(policy, provider.name)
         if not strict_model:
@@ -639,3 +681,72 @@ def _build_error_detail(error: Any, response_body: Any = None) -> str:
         parts.append(str(error))
 
     return " ".join(part for part in parts if part).lower()
+
+
+def _provider_min_interval_seconds(provider_name: str, model: str = "") -> float:
+    detail = f"{provider_name} {model}".lower()
+    for token, interval in PROVIDER_MIN_INTERVALS_SECONDS.items():
+        if token in detail:
+            return interval
+    return 0.0
+
+
+def _extract_retry_after_seconds(error: Any) -> float | None:
+    if isinstance(error, dict):
+        for key in ("retry_after_seconds", "retry_after", "retry-after", "Retry-After"):
+            parsed = _parse_retry_after_value(error.get(key))
+            if parsed is not None:
+                return parsed
+
+    for attr_name in ("retry_after_seconds", "retry_after"):
+        parsed = _parse_retry_after_value(getattr(error, attr_name, None))
+        if parsed is not None:
+            return parsed
+
+    headers = getattr(error, "headers", None) or getattr(error, "hdrs", None)
+    if headers is not None:
+        get_header = getattr(headers, "get", None)
+        if callable(get_header):
+            parsed = _parse_retry_after_value(get_header("Retry-After") or get_header("retry-after"))
+            if parsed is not None:
+                return parsed
+        try:
+            parsed = _parse_retry_after_value(headers["Retry-After"])
+            if parsed is not None:
+                return parsed
+        except Exception:
+            pass
+
+    response = getattr(error, "response", None)
+    response_headers = getattr(response, "headers", None)
+    if response_headers is not None:
+        get_header = getattr(response_headers, "get", None)
+        if callable(get_header):
+            parsed = _parse_retry_after_value(get_header("Retry-After") or get_header("retry-after"))
+            if parsed is not None:
+                return parsed
+
+    return None
+
+
+def _parse_retry_after_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+
+    try:
+        retry_at = parsedate_to_datetime(text)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return None
