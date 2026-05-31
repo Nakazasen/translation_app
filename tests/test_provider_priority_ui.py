@@ -1,6 +1,7 @@
 import pytest
 import tkinter as tk
 import customtkinter as ctk
+import time
 from translation_app.ui.main_window import MainWindow
 from translation_app.core.ai_service import get_ai_service
 from translation_app.core.providers import get_default_provider_profiles
@@ -36,12 +37,16 @@ def test_translate_paragraph_updates_telemetry_label(monkeypatch):
         root.entry_paragraph_input.delete("1.0", tk.END)
         root.entry_paragraph_input.insert(tk.END, "Xin chào")
         root.translate_paragraph()
+        deadline = time.time() + 2
+        while time.time() < deadline and not root.lbl_last_translation_source.cget("text"):
+            root.update()
+            time.sleep(0.01)
 
         # Telemetry label must be updated
         telemetry = root.lbl_last_translation_source.cget("text")
         assert "DeepSeek" in telemetry
         assert "deepseek-chat" in telemetry
-        assert "Fallback: 1 lần" in telemetry
+        assert "Fallback: 1 lan" in telemetry
     finally:
         root.destroy()
 

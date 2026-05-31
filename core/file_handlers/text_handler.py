@@ -3,6 +3,13 @@ Text file handler for translation
 """
 from translation_app.config import config
 from translation_app.core.file_translation_control import FileTranslationInterrupted, FileTranslationStopRequested
+from translation_app.core.incremental_translation_cache import (
+    clear_incremental_cache,
+    get_cached_translation,
+    load_incremental_cache,
+    record_cached_translation,
+    save_incremental_cache,
+)
 from translation_app.core.translator import TranslationService
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
@@ -39,24 +46,46 @@ class TextHandler:
             
             # Read input file safely
             input_text = safe_read_text(input_file)
+            cache_payload = load_incremental_cache(input_file, src_lang, dest_lang, "text")
 
             translated_parts = []
             max_length = config.max_text_length
             start = 0
             while start < len(input_text):
                 getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
-                chunk = input_text[start:start + max_length]
+                end = min(start + max_length, len(input_text))
+                chunk = input_text[start:end]
+                segment_id = f"chunk:{start}:{end}"
                 if not chunk.strip() or len(chunk.strip()) < 2:
                     translated_parts.append(chunk)
                 else:
-                    translated_parts.append(
-                        self.translation_service.translate_text(chunk, src_lang, dest_lang)
+                    cached_translation = get_cached_translation(
+                        cache_payload,
+                        segment_id,
+                        src_lang,
+                        dest_lang,
+                        chunk,
                     )
+                    if cached_translation is not None:
+                        translated_parts.append(cached_translation)
+                    else:
+                        translated = self.translation_service.translate_text(chunk, src_lang, dest_lang)
+                        translated_parts.append(translated)
+                        record_cached_translation(
+                            cache_payload,
+                            segment_id,
+                            src_lang,
+                            dest_lang,
+                            chunk,
+                            translated,
+                        )
+                        save_incremental_cache(input_file, src_lang, dest_lang, "text", cache_payload)
                 start += max_length
 
             # Write output file safely
             safe_write_text(output_file, "".join(translated_parts))
-            
+            clear_incremental_cache(input_file, src_lang, dest_lang, "text")
+
             logger.info(f"Text file translation completed: {output_file}")
         except FileTranslationStopRequested as exc:
             partial_text = "".join(locals().get("translated_parts", []))
@@ -80,5 +109,4 @@ class TextHandler:
             error_msg = f"Error translating text file: {e}"
             logger.error(error_msg)
             raise FileProcessingError(error_msg, original_error=e) from e
-
 

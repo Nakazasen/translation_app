@@ -3,6 +3,7 @@ Translation service orchestration for TM, glossary, and provider routing.
 """
 
 import concurrent.futures
+import re
 import threading
 from typing import Optional
 
@@ -38,6 +39,17 @@ class TranslationService:
             "attempts": []
         }
         logger.info(f"TranslationService initialized with {self.max_workers} workers. Strategy: {self.strategy}")
+
+    @staticmethod
+    def estimate_token_count(text: str) -> int:
+        """Return a conservative token estimate for pre-flight routing decisions."""
+        if not text:
+            return 0
+        normalized = str(text)
+        words = len(re.findall(r"\S+", normalized))
+        by_words = int(words * 1.35)
+        by_chars = int(len(normalized) / 3.8)
+        return max(1, by_words, by_chars)
 
     def set_strategy(self, strategy: str):
         """Update translation strategy at runtime."""
@@ -347,6 +359,14 @@ class TranslationService:
         if not text.strip():
             return text
 
+        if len(text) > config.max_text_length:
+            logger.info(
+                "Pre-flight split: text is %s chars / ~%s tokens, chunking before provider routing.",
+                len(text),
+                self.estimate_token_count(text),
+            )
+            return self.translate_long_text(text, src_lang, dest_lang, max_length=config.max_text_length)
+
         from translation_app.core.translation_memory import get_tm_manager
 
         ai_service = get_ai_service()
@@ -449,6 +469,15 @@ class TranslationService:
                 "fallback_count": len([a for a in result.attempts if a.get("status") == "failed"]),
                 "attempts": result.attempts
             }
+            if result.error_type == "token_limit" and len(text) > 800:
+                retry_length = max(400, min(config.max_text_length // 2, max(400, len(text) // 2)))
+                logger.warning(
+                    "Provider reported token/context limit for %s chars / ~%s tokens; retrying in %s-char chunks.",
+                    len(text),
+                    self.estimate_token_count(text),
+                    retry_length,
+                )
+                return self.translate_long_text(text, src_lang, dest_lang, max_length=retry_length)
             raise TranslationServiceError(result.error_message or "Translation failed via provider router.")
 
         if self.strategy == "ai_waterfall":
@@ -621,9 +650,10 @@ class TranslationService:
                     result.append(self.translate_text(chunk, src_lang, dest_lang))
                 except Exception as exc:
                     error_msg = str(exc).lower()
-                    if "text length" in error_msg or "5000" in error_msg:
+                    if "text length" in error_msg or "5000" in error_msg or "token" in error_msg or "context" in error_msg:
                         logger.warning(f"Chunk too long ({len(chunk)} chars), splitting in translate_long_text...")
-                        sub_chunks = [chunk[i:i + 4000] for i in range(0, len(chunk), 4000)]
+                        split_size = max(400, min(4000, max(400, len(chunk) // 2)))
+                        sub_chunks = [chunk[i:i + split_size] for i in range(0, len(chunk), split_size)]
                         for sub_chunk in sub_chunks:
                             self.raise_if_file_translation_stopped()
                             if sub_chunk.strip():

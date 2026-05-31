@@ -216,11 +216,17 @@ class MainWindow(ctk.CTk):
         self._file_translation_control: Optional[FileTranslationControl] = None
         self._selected_file_paths: list[str] = []
         self._selected_file_display_value: str = ""
+        self.ai_health_list = []
+        self.live_status_bar = None
+        self._live_status_after_id = None
+        self._paragraph_translation_in_progress = False
+        self._paragraph_translation_result = None
 
         # Setup UI
         self.setup_window()
         self.setup_theme()
         self.create_widgets()
+        self._poll_live_status_bar()
 
         # Bind global mouse wheel events for smooth scrolling
         self.bind_all("<MouseWheel>", self._on_mouse_wheel)
@@ -244,6 +250,15 @@ class MainWindow(ctk.CTk):
 
     def create_widgets(self):
         """Create all UI widgets"""
+        self.live_status_bar = ctk.CTkFrame(
+            self,
+            fg_color=('#F8FAFC', '#1E1E22'),
+            corner_radius=8,
+            height=42,
+        )
+        self.live_status_bar.pack(fill=tk.X, padx=10, pady=(10, 0))
+        self.live_status_bar.pack_propagate(False)
+
         # Create CTkTabview for modern tabs with premium pill selector styling
         self.tabview = ctk.CTkTabview(
             self,
@@ -256,7 +271,7 @@ class MainWindow(ctk.CTk):
             segmented_button_unselected_hover_color=self.colors['gray'],
             text_color=self.colors['gray_dark']
         )
-        self.tabview.pack(expand=True, fill="both", padx=10, pady=10)
+        self.tabview.pack(expand=True, fill="both", padx=10, pady=(8, 10))
 
         # Add tabs
         self.tabview.add("Dịch file")
@@ -351,6 +366,183 @@ class MainWindow(ctk.CTk):
                 self._auto_refresh_provider_models_on_startup()
         except Exception:
             pass
+
+    def _get_provider_display_name(self, provider: str) -> str:
+        provider_display_names = {
+            "gemini": "Gemini AI",
+            "chatanywhere": "ChatAnyWhere",
+            "deepseek": "DeepSeek",
+            "nvidia_nim": "NVIDIA NIM",
+            "openai_compatible": "OpenAI tuy chinh",
+            "groq": "Groq",
+            "cerebras": "Cerebras",
+            "openrouter": "OpenRouter",
+            "mistral": "Mistral AI",
+            "sambanova": "SambaNova",
+            "cloudflare": "Cloudflare",
+            "huggingface": "HuggingFace",
+            "github": "GitHub Models",
+            "ai21": "AI21",
+            "google": "Google Translate",
+            "translation_memory": "TM Cache",
+        }
+        return provider_display_names.get(str(provider or "").lower(), str(provider or "AI"))
+
+    def _format_cooldown_remaining(self, cooldown_until: float) -> str:
+        remaining = max(0, int(float(cooldown_until or 0) - time.time()))
+        if remaining <= 0:
+            return ""
+        minutes, seconds = divmod(remaining, 60)
+        if minutes:
+            return f"{minutes}m{seconds:02d}s"
+        return f"{seconds}s"
+
+    def _poll_live_status_bar(self):
+        """Refresh provider health for the always-visible AI status bar."""
+        if getattr(self, '_is_destroyed', False):
+            return
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:
+            return
+
+        try:
+            from translation_app.core.ai_service import get_ai_service
+            router = self.translation_service._get_provider_router(get_ai_service())
+            self.ai_health_list = router.get_health_snapshot()
+            self._update_live_status_bar_ui()
+            self._check_and_adapt_translation_buttons()
+        except Exception as exc:
+            logger.debug(f"Failed to poll live AI status: {exc}")
+
+        self._live_status_after_id = self.after(15000, self._poll_live_status_bar)
+
+    def _update_live_status_bar_ui(self):
+        if not self.live_status_bar:
+            return
+        for child in self.live_status_bar.winfo_children():
+            child.destroy()
+
+        ai_entries = [
+            entry for entry in self.ai_health_list
+            if entry.get("provider_name") != "google"
+        ]
+        if not ai_entries:
+            ctk.CTkLabel(
+                self.live_status_bar,
+                text="AI status: no providers loaded yet",
+                font=('Segoe UI', 10),
+                text_color=self.colors['gray_medium'],
+            ).pack(side=tk.LEFT, padx=12)
+            return
+
+        ctk.CTkLabel(
+            self.live_status_bar,
+            text="AI:",
+            font=('Segoe UI', 10, 'bold'),
+            text_color=self.colors['gray_dark'],
+        ).pack(side=tk.LEFT, padx=(12, 6))
+
+        shown = 0
+        for entry in ai_entries[:6]:
+            provider = entry.get("provider_name", "")
+            model = entry.get("model", "")
+            status = entry.get("health_status", "healthy")
+            is_configured = bool(entry.get("is_configured", True))
+            is_available = bool(entry.get("is_available", True))
+            cooldown = self._format_cooldown_remaining(entry.get("cooldown_until", 0))
+
+            if not is_configured:
+                label = f"{self._get_provider_display_name(provider)}: not configured"
+                fg = ('#FEE2E2', '#3B1F23')
+                color = '#B91C1C'
+            elif status == "cooldown" or cooldown:
+                label = f"{self._get_provider_display_name(provider)}: cooldown {cooldown}".strip()
+                fg = ('#FEF3C7', '#3A2D14')
+                color = '#B45309'
+            elif status == "dead" or not is_available:
+                label = f"{self._get_provider_display_name(provider)}: blocked"
+                fg = ('#FEE2E2', '#3B1F23')
+                color = '#B91C1C'
+            elif status == "degraded":
+                label = f"{self._get_provider_display_name(provider)}: degraded"
+                fg = ('#E0F2FE', '#173044')
+                color = '#0369A1'
+            else:
+                latency = int(entry.get("last_latency_ms", 0) or 0)
+                suffix = f" {latency}ms" if latency else ""
+                model_hint = f" {model}" if model else ""
+                label = f"{self._get_provider_display_name(provider)}:{model_hint}{suffix}"
+                fg = ('#DCFCE7', '#14351F')
+                color = '#047857'
+
+            badge = ctk.CTkLabel(
+                self.live_status_bar,
+                text=label,
+                font=('Segoe UI', 9),
+                text_color=color,
+                fg_color=fg,
+                corner_radius=6,
+            )
+            badge.pack(side=tk.LEFT, padx=3, ipadx=8, ipady=3)
+            shown += 1
+
+        remaining = len(ai_entries) - shown
+        if remaining > 0:
+            ctk.CTkLabel(
+                self.live_status_bar,
+                text=f"+{remaining}",
+                font=('Segoe UI', 9, 'bold'),
+                text_color=self.colors['gray_medium'],
+            ).pack(side=tk.LEFT, padx=6)
+
+    def _translation_strategy_allows_google(self) -> bool:
+        strategy = getattr(self.translation_service, "strategy", "")
+        return strategy in {
+            "waterfall",
+            "ai_waterfall",
+            "google",
+            "ai_pool_auto",
+            "ai_pool_with_google_last_resort",
+        }
+
+    def _provider_entry_is_blocked(self, entry: dict) -> bool:
+        if not bool(entry.get("is_configured", True)):
+            return True
+        if not bool(entry.get("is_available", True)):
+            return True
+        if entry.get("health_status") in {"cooldown", "dead"}:
+            return True
+        return self._format_cooldown_remaining(entry.get("cooldown_until", 0)) != ""
+
+    def _check_and_adapt_translation_buttons(self):
+        ai_entries = [
+            entry for entry in self.ai_health_list
+            if entry.get("provider_name") != "google"
+        ]
+        google_entries = [
+            entry for entry in self.ai_health_list
+            if entry.get("provider_name") == "google"
+        ]
+        if self._translation_strategy_allows_google():
+            considered = ai_entries + google_entries
+        else:
+            considered = ai_entries
+
+        all_blocked = bool(considered) and all(self._provider_entry_is_blocked(entry) for entry in considered)
+
+        if all_blocked:
+            if hasattr(self, "button_translate_file") and not self._file_translation_in_progress:
+                self.button_translate_file.configure(state=tk.DISABLED, text="COOLDOWN / NO PROVIDER")
+            if hasattr(self, "button_translate_paragraph") and not self._paragraph_translation_in_progress:
+                self.button_translate_paragraph.configure(state=tk.DISABLED, text="COOLDOWN / NO PROVIDER")
+            return
+
+        if hasattr(self, "button_translate_file") and not self._file_translation_in_progress:
+            self.button_translate_file.configure(state=tk.NORMAL, text="Dich File")
+        if hasattr(self, "button_translate_paragraph") and not self._paragraph_translation_in_progress:
+            self.button_translate_paragraph.configure(state=tk.NORMAL, text="Dich van ban")
 
     def setup_ai_tab(self):
         """Setup the AI Configuration tab with Unified Provider settings using CustomTkinter."""
@@ -2065,6 +2257,15 @@ class MainWindow(ctk.CTk):
         )
         self.button_browse_file.pack(side=tk.LEFT)
 
+        self.lbl_file_token_estimate = ctk.CTkLabel(
+            card_file_lang,
+            text="",
+            font=('Segoe UI', 9),
+            justify=tk.LEFT,
+            text_color=self.colors['gray_medium'],
+        )
+        self.lbl_file_token_estimate.pack(fill=tk.X, padx=15, pady=(0, 8), anchor=tk.W)
+
         # Languages Row
         frame_lang_row = ctk.CTkFrame(card_file_lang, fg_color="transparent")
         frame_lang_row.pack(fill=tk.X, padx=15, pady=(0, 15))
@@ -2341,16 +2542,26 @@ class MainWindow(ctk.CTk):
             height=110, corner_radius=8
         )
         self.entry_paragraph_input.pack(fill=tk.X)
+        self.entry_paragraph_input.bind("<KeyRelease>", self._estimate_paragraph_tokens)
+
+        self.lbl_para_token_estimate = ctk.CTkLabel(
+            frame_text_input,
+            text="",
+            font=('Segoe UI', 9),
+            justify=tk.LEFT,
+            text_color=self.colors['gray_medium'],
+        )
+        self.lbl_para_token_estimate.pack(fill=tk.X, pady=(4, 0), anchor=tk.W)
 
         # Action buttons row
         frame_buttons_para = ctk.CTkFrame(card_input, fg_color="transparent")
         frame_buttons_para.pack(fill=tk.X, padx=15, pady=(0, 15))
 
-        button_translate_paragraph = create_styled_button(
+        self.button_translate_paragraph = create_styled_button(
             frame_buttons_para, text="⚡ Dịch văn bản",
             command=self.translate_paragraph
         )
-        button_translate_paragraph.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.button_translate_paragraph.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
 
         button_clear_paragraph = create_styled_button(
             frame_buttons_para, text="🧹 Xóa nội dung",
@@ -2678,6 +2889,7 @@ class MainWindow(ctk.CTk):
             self.entry_file_path.insert(0, self._selected_file_display_value)
             if self._file_translation_in_progress:
                 self.entry_file_path.configure(state=tk.DISABLED)
+        self._update_file_token_estimate(normalized_paths)
 
     def _get_selected_file_paths(self) -> list[str]:
         current_value = self.entry_file_path.get().strip() if hasattr(self, "entry_file_path") else ""
@@ -2686,6 +2898,41 @@ class MainWindow(ctk.CTk):
         if not current_value:
             return []
         return [current_value]
+
+    def _update_file_token_estimate(self, file_paths: list[str]) -> None:
+        label = getattr(self, "lbl_file_token_estimate", None)
+        if label is None:
+            return
+        if not file_paths:
+            label.configure(text="")
+            return
+
+        total_bytes = 0
+        large_files = []
+        for path in file_paths:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            total_bytes += size
+            ext = os.path.splitext(path)[1].lower()
+            if ext in {".pdf", ".xlsx", ".xls", ".pptx", ".docx"} and size > 2 * 1024 * 1024:
+                large_files.append(os.path.basename(path))
+
+        approx_tokens = max(1, int(total_bytes / 4)) if total_bytes else 0
+        if large_files:
+            preview = ", ".join(large_files[:2])
+            if len(large_files) > 2:
+                preview += f", +{len(large_files) - 2}"
+            label.configure(
+                text=f"Large workload: {len(file_paths)} file(s), ~{approx_tokens:,} raw-token estimate. App will translate in chunks; watch cooldown status. ({preview})",
+                text_color="#B45309",
+            )
+        else:
+            label.configure(
+                text=f"Selected {len(file_paths)} file(s), ~{approx_tokens:,} raw-token estimate.",
+                text_color=self.colors['gray_medium'],
+            )
 
     def _set_file_translation_busy(self, is_busy: bool, status_text: str = "") -> None:
         self._file_translation_in_progress = bool(is_busy)
@@ -2708,6 +2955,8 @@ class MainWindow(ctk.CTk):
                 widget.configure(state=tk.DISABLED if is_busy else "readonly")
         if status_text:
             self.label_file_status.configure(text=status_text)
+        if not is_busy:
+            self._check_and_adapt_translation_buttons()
 
     def _request_pause_file_translation(self) -> None:
         if self._file_translation_control is None:
@@ -3086,9 +3335,91 @@ class MainWindow(ctk.CTk):
         return self._export_pdf_report("html")
 
 
+    def _estimate_paragraph_tokens(self, event=None):
+        label = getattr(self, "lbl_para_token_estimate", None)
+        if label is None:
+            return
+        text = self.entry_paragraph_input.get("1.0", tk.END).strip()
+        if not text:
+            label.configure(text="")
+            return
+
+        token_est = self.translation_service.estimate_token_count(text)
+        if len(text) > config.max_text_length:
+            label.configure(
+                text=f"Large input: ~{token_est:,} tokens. App will split into chunks before routing.",
+                text_color="#B45309",
+            )
+        elif token_est < 1500:
+            label.configure(
+                text=f"Light input: ~{token_est:,} tokens.",
+                text_color="#047857",
+            )
+        else:
+            label.configure(
+                text=f"Medium input: ~{token_est:,} tokens. Smart Router may fallback if a provider is rate-limited.",
+                text_color="#0369A1",
+            )
+
+    def _set_paragraph_translation_busy(self, is_busy: bool) -> None:
+        self._paragraph_translation_in_progress = bool(is_busy)
+        if hasattr(self, "button_translate_paragraph"):
+            self.button_translate_paragraph.configure(
+                state=tk.DISABLED if is_busy else tk.NORMAL,
+                text="Dang dich..." if is_busy else "Dich van ban",
+            )
+        if not is_busy:
+            self._check_and_adapt_translation_buttons()
+
+    def _update_translation_source_label(self) -> None:
+        metadata = self.translation_service.last_translation_metadata
+        provider = metadata.get("provider", "")
+        model = metadata.get("model", "")
+        fallbacks = metadata.get("fallback_count", 0)
+
+        if provider:
+            display_provider = self._get_provider_display_name(provider)
+            text_info = f"Translated by: {display_provider}"
+            if model and model != "none":
+                text_info += f" / {model}"
+            if fallbacks > 0:
+                text_info += f" (Fallback: {fallbacks} lan)"
+            self.lbl_last_translation_source.configure(text=text_info)
+        else:
+            self.lbl_last_translation_source.configure(text="")
+
+    def _on_paragraph_translation_success(self, translated_text: str) -> None:
+        self.entry_paragraph_output.delete("1.0", tk.END)
+        self.entry_paragraph_output.insert(tk.END, translated_text)
+        self._update_translation_source_label()
+        self._set_paragraph_translation_busy(False)
+
+    def _on_paragraph_translation_failed(self, exc: Exception) -> None:
+        error_msg = handle_translation_error(exc, "Dich doan van")
+        self._set_paragraph_translation_busy(False)
+        messagebox.showerror("Loi", error_msg)
+
+    def _poll_paragraph_translation_result(self) -> None:
+        if getattr(self, '_is_destroyed', False):
+            return
+        result = self._paragraph_translation_result
+        if result is None:
+            if self._paragraph_translation_in_progress:
+                self.after(50, self._poll_paragraph_translation_result)
+            return
+
+        self._paragraph_translation_result = None
+        status, payload = result
+        if status == "success":
+            self._on_paragraph_translation_success(payload)
+        else:
+            self._on_paragraph_translation_failed(payload)
+
 
     def translate_paragraph(self):
         """Translate paragraph"""
+        if self._paragraph_translation_in_progress:
+            return
         input_text = self.entry_paragraph_input.get("1.0", tk.END).strip()
         if not input_text:
             messagebox.showwarning("Cảnh báo", "Vui lòng nhập đoạn văn để dịch.")
@@ -3099,44 +3430,21 @@ class MainWindow(ctk.CTk):
 
         try:
             LanguageValidator.validate_language_pair(src_lang, dest_lang)
-            translated_text = self.translation_service.translate_text(input_text, src_lang, dest_lang)
+            self._set_paragraph_translation_busy(True)
+            self._paragraph_translation_result = None
             self.entry_paragraph_output.delete("1.0", tk.END)
-            self.entry_paragraph_output.insert(tk.END, translated_text)
+            self.entry_paragraph_output.insert(tk.END, "Dang dich...")
+            self.after(50, self._poll_paragraph_translation_result)
 
-            # Show translation source telemetry
-            metadata = self.translation_service.last_translation_metadata
-            provider = metadata.get("provider", "")
-            model = metadata.get("model", "")
-            fallbacks = metadata.get("fallback_count", 0)
+            def translate_thread():
+                try:
+                    translated_text = self.translation_service.translate_text(input_text, src_lang, dest_lang)
+                    self._paragraph_translation_result = ("success", translated_text)
+                except Exception as exc:
+                    self._paragraph_translation_result = ("error", exc)
 
-            if provider:
-                display_provider = {
-                    "gemini": "Gemini AI",
-                    "chatanywhere": "ChatAnyWhere",
-                    "deepseek": "DeepSeek",
-                    "nvidia_nim": "NVIDIA NIM",
-                    "openai_compatible": "OpenAI tùy chỉnh",
-                    "groq": "Groq",
-                    "cerebras": "Cerebras",
-                    "openrouter": "OpenRouter",
-                    "mistral": "Mistral AI",
-                    "sambanova": "SambaNova",
-                    "cloudflare": "Cloudflare Workers AI",
-                    "huggingface": "HuggingFace",
-                    "github": "GitHub Models",
-                    "ai21": "AI21 Studio",
-                    "google": "Google Translate",
-                    "translation_memory": "Bộ nhớ dịch (TM Cache)"
-                }.get(provider, provider)
-
-                text_info = f"Được dịch bởi: {display_provider}"
-                if model and model != "none":
-                    text_info += f" / {model}"
-                if fallbacks > 0:
-                    text_info += f" (Fallback: {fallbacks} lần)"
-                self.lbl_last_translation_source.configure(text=text_info)
-            else:
-                self.lbl_last_translation_source.configure(text="")
+            threading.Thread(target=translate_thread, daemon=True).start()
+            return
         except Exception as e:
             error_msg = handle_translation_error(e, "Dịch đoạn văn")
             messagebox.showerror("Lỗi", error_msg)
@@ -4542,6 +4850,12 @@ Bước 3: Sử dụng AI Vision
         # Clean up specific other after references if any
         if hasattr(self, '_provider_model_poll_after_ids'):
             self._provider_model_poll_after_ids.clear()
+        if getattr(self, '_live_status_after_id', None):
+            try:
+                super().after_cancel(self._live_status_after_id)
+            except Exception:
+                pass
+            self._live_status_after_id = None
         self._auto_refresh_after_id = None
 
         # Force Tcl/Tk to process all pending deletions and release handles immediately

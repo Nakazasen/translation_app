@@ -16,6 +16,13 @@ from typing import Optional, List, Dict, Any
 
 from translation_app.core.translator import TranslationService
 from translation_app.core.file_translation_control import FileTranslationInterrupted, FileTranslationStopRequested
+from translation_app.core.incremental_translation_cache import (
+    clear_incremental_cache,
+    get_cached_translation,
+    load_incremental_cache,
+    record_cached_translation,
+    save_incremental_cache,
+)
 from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.core.translation_job import get_translation_job_manager
 from translation_app.core.translation_memory import get_segment_hash
@@ -94,7 +101,16 @@ class ExcelHandler:
 
         return observer
 
-    def _translate_sheet_with_job(self, sheet, input_file: str, src_lang: str, dest_lang: str, job_manager, job_id: str) -> None:
+    def _translate_sheet_with_job(
+        self,
+        sheet,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        job_manager,
+        job_id: str,
+        cache_payload: dict,
+    ) -> None:
         logger.info(f"Processing sheet: {sheet.title}")
 
         if sheet.title in self._images_backup:
@@ -108,6 +124,34 @@ class ExcelHandler:
         for cell in cells_to_translate:
             getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
             segment_id = self._make_segment_id(sheet.title, cell.coordinate)
+            original_text = str(cell.value)
+            cached_translation = get_cached_translation(
+                cache_payload,
+                segment_id,
+                src_lang,
+                dest_lang,
+                original_text,
+            )
+            if cached_translation is not None:
+                cell.value = cached_translation
+                job_manager.record_checkpoint(
+                    job_id,
+                    "segment_completed",
+                    file=input_file,
+                    sheet=sheet.title,
+                    cell=cell.coordinate,
+                    segment_id=segment_id,
+                    status="cached",
+                )
+                job_manager.update_progress(
+                    job_id,
+                    completed_delta=1,
+                    current_file=input_file,
+                    current_sheet=sheet.title,
+                    current_segment_id=segment_id,
+                )
+                continue
+
             job_manager.record_checkpoint(
                 job_id,
                 "segment_started",
@@ -125,17 +169,26 @@ class ExcelHandler:
             )
             task = self.translation_service.executor.submit(
                 self.translation_service.translate_long_text,
-                str(cell.value),
+                original_text,
                 src_lang,
                 dest_lang,
             )
-            cell_tasks[task] = (cell, segment_id, str(cell.value))
+            cell_tasks[task] = (cell, segment_id, original_text)
 
         for task, (cell, segment_id, original_text) in cell_tasks.items():
             try:
                 getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
                 translated_text = task.result(timeout=self.translation_service.timeout)
                 cell.value = translated_text
+                record_cached_translation(
+                    cache_payload,
+                    segment_id,
+                    src_lang,
+                    dest_lang,
+                    original_text,
+                    translated_text,
+                )
+                save_incremental_cache(input_file, src_lang, dest_lang, "excel", cache_payload)
                 job_manager.record_checkpoint(
                     job_id,
                     "segment_completed",
@@ -206,6 +259,7 @@ class ExcelHandler:
         job_manager.update_job_status(job_id, "running")
         self._images_backup = {}
         self.translation_service.set_runtime_observer(self._create_job_observer(job_manager, job_id))
+        cache_payload = load_incremental_cache(input_file, src_lang, dest_lang, "excel")
         wb = None
 
         try:
@@ -315,7 +369,7 @@ class ExcelHandler:
 
             # Process all sheets
             for sheet in wb.worksheets:
-                self._translate_sheet_with_job(sheet, input_file, src_lang, dest_lang, job_manager, job_id)
+                self._translate_sheet_with_job(sheet, input_file, src_lang, dest_lang, job_manager, job_id, cache_payload)
                 
                 logger.info("Skipping Excel image OCR/write-back to preserve layout during hardening phase")
                 
@@ -344,6 +398,7 @@ class ExcelHandler:
             logger.info(f"Excel translation completed: {output_file}")
             logger.info(f"Images preserved: {total_images_before} -> {total_images_saved}")
             job_manager.mark_completed(job_id)
+            clear_incremental_cache(input_file, src_lang, dest_lang, "excel")
             
             if total_images_saved < total_images_before:
                 logger.warning(f"Warning: Some images may not have been preserved correctly ({total_images_before} -> {total_images_saved})")

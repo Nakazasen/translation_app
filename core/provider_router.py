@@ -5,6 +5,7 @@ Minimal provider router for translation requests.
 from __future__ import annotations
 
 import time
+import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
@@ -22,7 +23,28 @@ AUTH_HINTS = (
     "api key",
     "invalid key",
 )
-QUOTA_HINTS = ("429", "quota", "rate limit", "rate_limit", "resource exhausted", "too many requests")
+QUOTA_HINTS = (
+    "429",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "resource exhausted",
+    "too many requests",
+    "requests per day",
+    "request per day",
+    "rpd",
+    "requests per minute",
+    "request per minute",
+    "rpm",
+    "tokens per minute",
+    "token per minute",
+    "tpm",
+    "daily limit",
+    "daily quota",
+    "free tier",
+    "insufficient quota",
+    "rate_limit_exceeded",
+)
 TIMEOUT_HINTS = ("timeout", "timed out")
 TRANSPORT_HINTS = (
     "connection failed",
@@ -44,7 +66,18 @@ TRANSPORT_HINTS = (
 )
 MODEL_UNAVAILABLE_HINTS = ("404", "410", "not found", "model unavailable")
 MODEL_ERROR_HINTS = ("invalid model", "model not found", "unknown model", "unsupported model")
-TOKEN_LIMIT_HINTS = ("token limit", "token_limit", "prompt token", "context length")
+TOKEN_LIMIT_HINTS = (
+    "token limit",
+    "token_limit",
+    "prompt token",
+    "context length",
+    "context window",
+    "maximum context",
+    "too many tokens",
+    "input is too long",
+    "reduce the input",
+    "max tokens",
+)
 PROVIDER_5XX_HINTS = ("500", "502", "503", "504", "server error", "bad gateway", "service unavailable", "gateway timeout")
 
 
@@ -109,24 +142,29 @@ class ProviderRouter:
         self.max_retries = max(0, int(max_retries))
         self._providers: dict[str, Any] = {}
         self._provider_states: dict[str, ProviderState] = {}
+        self._lock = threading.RLock()
 
     def register_provider(self, provider: Any) -> None:
-        self._providers[provider.name] = provider
-        self._ensure_state(
-            provider.name,
-            getattr(provider, "default_model", ""),
-            display_name=getattr(provider, "display_name", provider.name),
-        )
+        with self._lock:
+            self._providers[provider.name] = provider
+            state = self._ensure_state(
+                provider.name,
+                getattr(provider, "default_model", ""),
+                display_name=getattr(provider, "display_name", provider.name),
+            )
+            try:
+                state.is_available = bool(provider.is_available())
+            except Exception:
+                state.is_available = False
 
     def route(self, request: TranslationRequest, policy: Optional[dict[str, Any]] = None) -> TranslationResult:
         policy = policy or {}
         allowed = policy.get("allowed_providers")
         ordered_names = self._resolve_order(policy.get("provider_order"), allowed, policy)
-        max_attempts = self.max_retries + 1 if ordered_names else 0
+        max_attempts_per_provider = self.max_retries + 1 if ordered_names else 0
         attempts: list[dict[str, Any]] = []
-        total_attempts = 0
 
-        if max_attempts <= 0:
+        if max_attempts_per_provider <= 0:
             return TranslationResult(
                 status="error",
                 error_type="no_provider_available",
@@ -135,19 +173,21 @@ class ProviderRouter:
             )
 
         for provider_name in ordered_names:
-            provider = self._providers.get(provider_name)
+            with self._lock:
+                provider = self._providers.get(provider_name)
             if provider is None:
                 continue
 
             if not provider.is_available():
                 model_name = getattr(provider, "default_model", "")
-                state = self._ensure_state(
-                    provider.name,
-                    model_name,
-                    display_name=getattr(provider, "display_name", provider.name),
-                )
-                state.is_available = False
-                state.last_error_type = "unavailable"
+                with self._lock:
+                    state = self._ensure_state(
+                        provider.name,
+                        model_name,
+                        display_name=getattr(provider, "display_name", provider.name),
+                    )
+                    state.is_available = False
+                    state.last_error_type = "unavailable"
                 attempts.append(
                     {
                         "provider": provider.name,
@@ -182,18 +222,21 @@ class ProviderRouter:
                 )
                 continue
 
+            provider_attempts = 0
             for candidate in candidates:
-                if total_attempts >= max_attempts:
+                if provider_attempts >= max_attempts_per_provider:
                     break
 
-                state = self._ensure_state(
-                    provider.name,
-                    candidate.model or getattr(provider, "default_model", ""),
-                    key_index=candidate.key_index,
-                    key_id=candidate.key_id,
-                    display_name=getattr(provider, "display_name", provider.name),
-                )
-                if self._is_on_cooldown(state):
+                with self._lock:
+                    state = self._ensure_state(
+                        provider.name,
+                        candidate.model or getattr(provider, "default_model", ""),
+                        key_index=candidate.key_index,
+                        key_id=candidate.key_id,
+                        display_name=getattr(provider, "display_name", provider.name),
+                    )
+                    is_on_cooldown = self._is_on_cooldown(state)
+                if is_on_cooldown:
                     attempts.append(
                         {
                             "provider": provider.name,
@@ -207,7 +250,7 @@ class ProviderRouter:
                     )
                     continue
 
-                total_attempts += 1
+                provider_attempts += 1
                 result = provider.translate(request, candidate)
                 result.provider = result.provider or provider.name
                 result.model = result.model or candidate.model or getattr(provider, "default_model", "")
@@ -263,11 +306,8 @@ class ProviderRouter:
                     }
                 )
 
-            if total_attempts >= max_attempts:
-                break
-
         final_attempt = attempts[-1] if attempts else {}
-        error_message = str(final_attempt.get("message", "No translation provider succeeded."))
+        error_message = str(final_attempt.get("message") or self._build_exhausted_message(attempts))
         strict_model = self._get_strict_provider_model(policy, str(final_attempt.get("provider", "")))
         if strict_model and str(final_attempt.get("model", "")) == strict_model and final_attempt.get("status") == "failed":
             display_name = str(final_attempt.get("display_name", final_attempt.get("provider", "provider")))
@@ -293,22 +333,23 @@ class ProviderRouter:
         key_id: str | None = None,
         display_name: str = "",
     ) -> None:
-        state = self._ensure_state(provider, model, key_index=key_index, key_id=key_id, display_name=display_name)
-        state.model = model or state.model
-        state.is_available = True
-        state.cooldown_until = 0.0
-        state.consecutive_failures = 0
-        state.last_error_type = ""
-        state.last_latency_ms = max(0, int(latency_ms or 0))
-        state.success_count += 1
+        with self._lock:
+            state = self._ensure_state(provider, model, key_index=key_index, key_id=key_id, display_name=display_name)
+            state.model = model or state.model
+            state.is_available = True
+            state.cooldown_until = 0.0
+            state.consecutive_failures = 0
+            state.last_error_type = ""
+            state.last_latency_ms = max(0, int(latency_ms or 0))
+            state.success_count += 1
 
-        # New dynamic metadata tracking for Phase 5I
-        state.health_status = "healthy"
-        if latency_ms > 0:
-            if state.latency_score <= 0:
-                state.latency_score = float(latency_ms)
-            else:
-                state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
+            # New dynamic metadata tracking for Phase 5I
+            state.health_status = "healthy"
+            if latency_ms > 0:
+                if state.latency_score <= 0:
+                    state.latency_score = float(latency_ms)
+                else:
+                    state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
 
     def mark_failure(
         self,
@@ -321,20 +362,47 @@ class ProviderRouter:
         key_id: str | None = None,
         display_name: str = "",
     ) -> None:
-        state = self._ensure_state(provider, model, key_index=key_index, key_id=key_id, display_name=display_name)
         error_type = classify_error(error)
-        state.model = model or state.model
-        state.is_available = error_type != "auth_failure"
-        state.consecutive_failures += 1
-        state.last_error_type = error_type
-        state.last_latency_ms = max(0, int(latency_ms or 0))
-        state.failure_count += 1
+        with self._lock:
+            state = self._ensure_state(provider, model, key_index=key_index, key_id=key_id, display_name=display_name)
+            state.model = model or state.model
+            state.is_available = error_type != "auth_failure"
+            state.consecutive_failures += 1
+            state.last_error_type = error_type
+            state.last_latency_ms = max(0, int(latency_ms or 0))
+            state.failure_count += 1
 
-        # New dynamic metadata tracking for Phase 5I
-        state.last_error_class = error_type
+            # New dynamic metadata tracking for Phase 5I
+            state.last_error_class = error_type
+            if error_type == "auth_failure":
+                state.health_status = "dead"
+            elif error_type == "quota_rate_limit":
+                state.health_status = "cooldown"
+            elif error_type == "token_limit":
+                state.health_status = "degraded"
+            elif error_type in ("timeout", "provider_5xx"):
+                state.health_status = "degraded"
+
+            if latency_ms > 0:
+                if state.latency_score <= 0:
+                    state.latency_score = float(latency_ms)
+                else:
+                    state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
+
+            if error_type in {
+                "auth_failure",
+                "quota_rate_limit",
+                "timeout",
+                "transport_error",
+                "model_unavailable",
+                "model_error",
+                "provider_5xx",
+                "unknown_transport_error",
+            }:
+                state.cooldown_until = time.time() + self.cooldown_seconds
+
         if error_type == "auth_failure":
-            state.health_status = "dead"
-            # Call AIConfigManager to persistently disable the provider
+            # Call AIConfigManager to persistently disable the provider.
             try:
                 from translation_app.core.ai_service import get_ai_service
                 service = get_ai_service()
@@ -343,48 +411,37 @@ class ProviderRouter:
                     service.config_manager.save_config()
             except Exception:
                 pass
-        elif error_type in ("quota_rate_limit", "token_limit"):
-            state.health_status = "cooldown"
-        elif error_type in ("timeout", "provider_5xx"):
-            state.health_status = "degraded"
-
-        if latency_ms > 0:
-            if state.latency_score <= 0:
-                state.latency_score = float(latency_ms)
-            else:
-                state.latency_score = 0.8 * state.latency_score + 0.2 * float(latency_ms)
-
-        if error_type in {
-            "auth_failure",
-            "quota_rate_limit",
-            "token_limit",
-            "timeout",
-            "transport_error",
-            "model_unavailable",
-            "model_error",
-            "provider_5xx",
-            "unknown_transport_error",
-        }:
-            state.cooldown_until = time.time() + self.cooldown_seconds
 
     def get_health_snapshot(self) -> list[dict[str, Any]]:
         snapshots = []
         now = time.time()
-        for state in self._provider_states.values():
+        with self._lock:
+            states = list(self._provider_states.values())
+            providers = dict(self._providers)
+        for state in states:
             payload = asdict(state)
-            payload["is_available"] = state.is_available and not self._is_on_cooldown(state, now)
+            provider = providers.get(state.provider_name)
+            provider_available = True
+            if provider is not None:
+                try:
+                    provider_available = bool(provider.is_available())
+                except Exception:
+                    provider_available = False
+            payload["is_configured"] = provider_available
+            payload["is_available"] = state.is_available and provider_available and not self._is_on_cooldown(state, now)
             payload["cooldown_until"] = round(state.cooldown_until, 3) if state.cooldown_until else 0.0
             snapshots.append(payload)
         snapshots.sort(key=lambda item: (item["provider_name"], item["model"]))
         return snapshots
 
     def reset_cooldowns(self) -> None:
-        for state in self._provider_states.values():
-            state.cooldown_until = 0.0
-            state.is_available = True
-            state.consecutive_failures = 0
-            state.last_error_type = ""
-            state.health_status = "healthy"
+        with self._lock:
+            for state in self._provider_states.values():
+                state.cooldown_until = 0.0
+                state.is_available = True
+                state.consecutive_failures = 0
+                state.last_error_type = ""
+                state.health_status = "healthy"
 
     def _resolve_order(self, preferred: Optional[Iterable[str]], allowed: Optional[Iterable[str]], policy: Optional[dict[str, Any]] = None) -> list[str]:
         policy = policy or {}
@@ -395,9 +452,10 @@ class ProviderRouter:
         if policy_mode in ("ai_pool_auto", "ai_pool_no_google", "ai_pool_with_google_last_resort"):
             def get_provider_rank(name):
                 # Aggregate states for this provider name
-                provider_states = [s for s in self._provider_states.values() if s.provider_name == name]
-                if not provider_states:
-                    provider_states = [self._ensure_state(name)]
+                with self._lock:
+                    provider_states = [s for s in self._provider_states.values() if s.provider_name == name]
+                    if not provider_states:
+                        provider_states = [self._ensure_state(name)]
 
                 is_available = any(s.is_available for s in provider_states)
                 is_cooldown = all(self._is_on_cooldown(s) for s in provider_states)
@@ -450,30 +508,31 @@ class ProviderRouter:
         key_id: str | None = None,
         display_name: str = "",
     ) -> ProviderState:
-        key = f"{provider}::{model}::{key_index if key_index is not None else -1}"
-        if key not in self._provider_states:
-            quality_scores = {
-                "gemini": 9.0,
-                "groq": 7.5,
-                "cerebras": 7.5,
-                "openrouter": 8.0,
-                "mistral": 7.0,
-                "sambanova": 7.5,
-                "github": 7.5,
-                "ai21": 7.5,
-                "cloudflare": 6.5,
-                "huggingface": 6.5,
-                "google": 5.0,
-            }
-            self._provider_states[key] = ProviderState(
-                provider_name=provider,
-                display_name=display_name or provider,
-                model=model,
-                key_id=key_id or None,
-                key_index=key_index,
-                quality_score=quality_scores.get(provider, 5.0),
-            )
-        return self._provider_states[key]
+        with self._lock:
+            key = f"{provider}::{model}::{key_index if key_index is not None else -1}"
+            if key not in self._provider_states:
+                quality_scores = {
+                    "gemini": 9.0,
+                    "groq": 7.5,
+                    "cerebras": 7.5,
+                    "openrouter": 8.0,
+                    "mistral": 7.0,
+                    "sambanova": 7.5,
+                    "github": 7.5,
+                    "ai21": 7.5,
+                    "cloudflare": 6.5,
+                    "huggingface": 6.5,
+                    "google": 5.0,
+                }
+                self._provider_states[key] = ProviderState(
+                    provider_name=provider,
+                    display_name=display_name or provider,
+                    model=model,
+                    key_id=key_id or None,
+                    key_index=key_index,
+                    quality_score=quality_scores.get(provider, 5.0),
+                )
+            return self._provider_states[key]
 
     def _is_on_cooldown(self, state: ProviderState, now: Optional[float] = None) -> bool:
         if state.cooldown_until <= 0:
@@ -496,6 +555,28 @@ class ProviderRouter:
         if not isinstance(strict_provider_models, dict):
             return ""
         return str(strict_provider_models.get(provider_name, "") or "").strip()
+
+    def _build_exhausted_message(self, attempts: list[dict[str, Any]]) -> str:
+        if not attempts:
+            return "No eligible translation provider is configured or available."
+
+        failed = [attempt for attempt in attempts if attempt.get("status") == "failed"]
+        skipped = [attempt for attempt in attempts if attempt.get("status") == "skipped"]
+        quota_count = sum(1 for attempt in failed if attempt.get("reason") == "quota_rate_limit")
+        token_count = sum(1 for attempt in failed if attempt.get("reason") == "token_limit")
+        cooldown_count = sum(1 for attempt in skipped if attempt.get("reason") == "cooldown")
+        unavailable_count = sum(1 for attempt in skipped if attempt.get("reason") == "unavailable")
+
+        parts = ["No translation provider succeeded."]
+        if quota_count:
+            parts.append(f"{quota_count} attempt(s) hit quota/rate/RPD limits.")
+        if token_count:
+            parts.append(f"{token_count} attempt(s) hit model context/token limits.")
+        if cooldown_count:
+            parts.append(f"{cooldown_count} provider candidate(s) were cooling down.")
+        if unavailable_count:
+            parts.append(f"{unavailable_count} provider(s) were unavailable or not configured.")
+        return " ".join(parts)
 
 
 def classify_error(error: Any, status_code: int | None = None, response_body: Any = None) -> str:
