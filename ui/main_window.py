@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 import os
 import re
+import json
 import time
 from datetime import datetime
 from typing import Optional
@@ -32,6 +33,7 @@ from translation_app.utils.validators import FileValidator, LanguageValidator
 from translation_app.utils.error_handler import FileProcessingError, handle_translation_error
 from translation_app.utils.logger import logger
 from translation_app.config import config
+from translation_app.core.incremental_translation_cache import get_cache_path
 
 
 # Universal Tkinter after-callback tracker to prevent Tcl "invalid command name" spam during teardown
@@ -4188,15 +4190,16 @@ Bước 3: Sử dụng AI Vision
             width=150
         ).pack(side=tk.LEFT, padx=(0, 10))
 
-        resume_btn = create_styled_button(
+        self.resume_job_button = create_styled_button(
             frame_buttons, text="⏯️ Tiếp tục", command=self._resume_selected_job,
             width=100
         )
-        resume_btn.configure(state="disabled")
-        resume_btn.pack(side=tk.LEFT)
+        self.resume_job_button.configure(state="disabled")
+        self.resume_job_button.pack(side=tk.LEFT)
 
         ctk.CTkLabel(
-            frame_buttons, text="* Tiếp tục (Resume) là tính năng nâng cao cho các bản cập nhật kế tiếp.",
+            frame_buttons,
+            text="* Tiếp tục sẽ chạy lại file và tự dùng cache/checkpoint nếu còn hợp lệ.",
             font=('Segoe UI', 8, 'italic'), text_color=self.colors['gray_medium']
         ).pack(side=tk.LEFT, padx=15)
 
@@ -4246,10 +4249,16 @@ Bước 3: Sử dụng AI Vision
             job = summary.get("job", {})
             progress = summary.get("progress", {})
 
+            resume_label = self._get_resume_status_label(summary)
+            cache_summary = self._get_incremental_cache_summary(job)
+            cache_info = self._format_incremental_cache_summary(cache_summary)
+
             detail_info = (
                 f"Job ID: {job_id}\n"
                 f"Ngôn ngữ: {job.get('source_lang', 'auto')} -> {job.get('target_lang', 'vi')}  |  Chiến lược: {job.get('strategy', 'waterfall')}\n"
+                f"Trạng thái tiếp tục: {resume_label}\n"
                 f"Tiến độ: {progress.get('percent', 0.0)}% ({progress.get('completed_segments', 0)} / {progress.get('total_segments', 0)} phân đoạn)  |  Lỗi: {progress.get('failed_segments', 0)} phân đoạn\n"
+                f"Cache đã lưu: {cache_info}\n"
                 f"File đang dịch: {progress.get('current_file', 'None')}\n"
                 f"Sheet/Tab đang dịch: {progress.get('current_sheet', 'None')}\n"
                 f"Ghi chú: {job.get('notes', '')}"
@@ -4259,7 +4268,12 @@ Bước 3: Sử dụng AI Vision
             self.job_detail_text.delete("1.0", tk.END)
             self.job_detail_text.insert(tk.END, detail_info)
             self.job_detail_text.configure(state="disabled")
+            if hasattr(self, "resume_job_button"):
+                button_state = "normal" if summary.get("can_resume") else "disabled"
+                self.resume_job_button.configure(state=button_state)
         except Exception as e:
+            if hasattr(self, "resume_job_button"):
+                self.resume_job_button.configure(state="disabled")
             logger.error(f"Error loading job detail in UI: {e}")
 
     def _open_selected_job_folder(self):
@@ -4329,6 +4343,79 @@ Bước 3: Sử dụng AI Vision
                 )
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể tải các phân đoạn lỗi: {str(e)}")
+
+    def _get_resume_status_label(self, summary):
+        """Return a non-technical Vietnamese resume status label."""
+        if summary.get("can_resume"):
+            return "Có thể tiếp tục bằng cache/checkpoint đã lưu"
+        status = summary.get("job", {}).get("status", "")
+        if status == "completed":
+            return "Đã hoàn tất"
+        if status == "cancelled":
+            return "Đã hủy"
+        return "Chưa sẵn sàng để tiếp tục"
+
+    def _resolve_cache_handler_name(self, job_type, input_path):
+        """Resolve job/file metadata to an incremental cache handler name."""
+        normalized_type = str(job_type or "").lower()
+        suffix = os.path.splitext(str(input_path or ""))[1].lower()
+        if normalized_type in {"text", "txt"} or suffix == ".txt":
+            return "text"
+        if normalized_type in {"excel", "xlsx", "xlsm"} or suffix in {".xlsx", ".xlsm"}:
+            return "excel"
+        if normalized_type in {"excel_com", "xls"} or suffix == ".xls":
+            return "excel_com"
+        if normalized_type in {"word", "word_docx", "docx"} or suffix == ".docx":
+            return "word_docx"
+        if normalized_type in {"pptx", "powerpoint"} or suffix == ".pptx":
+            return "pptx"
+        if normalized_type in {"pdf_experimental", "pdf_experimental_text_block"}:
+            return "pdf_experimental_text_block"
+        return None
+
+    def _get_incremental_cache_summary(self, job):
+        """Read safe cache metadata only; never expose source or translated text."""
+        totals = {"files_with_cache": 0, "segments": 0, "latest_updated_at": "", "handlers": set()}
+        input_files = [str(path) for path in job.get("input_files", []) if str(path).strip()]
+        src_lang = job.get("source_lang", "")
+        dest_lang = job.get("target_lang", "")
+        job_type = job.get("job_type", "")
+
+        for input_path in input_files:
+            if not os.path.exists(input_path):
+                continue
+            handler_name = self._resolve_cache_handler_name(job_type, input_path)
+            if not handler_name:
+                continue
+            try:
+                cache_path = get_cache_path(input_path, src_lang, dest_lang, handler_name)
+                if not cache_path.exists():
+                    continue
+                with cache_path.open("r", encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                segments = payload.get("segments") if isinstance(payload, dict) else {}
+                segment_count = len(segments) if isinstance(segments, dict) else 0
+                totals["files_with_cache"] += 1
+                totals["segments"] += segment_count
+                totals["handlers"].add(str(payload.get("handler") or handler_name))
+                updated_at = str(payload.get("updated_at") or "")
+                if updated_at > totals["latest_updated_at"]:
+                    totals["latest_updated_at"] = updated_at
+            except Exception as exc:
+                logger.debug(f"Không thể đọc tóm tắt incremental cache: {exc}")
+        return totals
+
+    def _format_incremental_cache_summary(self, cache_summary):
+        """Format safe cache metadata for the Jobs tab detail box."""
+        if not cache_summary.get("files_with_cache"):
+            return "Chưa tìm thấy cache hợp lệ"
+        updated_at = cache_summary.get("latest_updated_at") or "không rõ thời điểm"
+        handlers = ", ".join(sorted(cache_summary.get("handlers") or [])) or "không rõ handler"
+        return (
+            f"{cache_summary.get('segments', 0)} phân đoạn trong "
+            f"{cache_summary.get('files_with_cache', 0)} file; "
+            f"handler: {handlers}; cập nhật: {updated_at}"
+        )
 
     def _resume_selected_job(self):
         selection = self.jobs_tree.selection()

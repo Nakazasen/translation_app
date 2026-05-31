@@ -520,6 +520,40 @@ def test_resume_selected_job_reloads_file_and_runs_translation(monkeypatch, tmp_
         root.destroy()
 
 
+def test_jobs_tab_shows_resumable_state_and_safe_cache_summary(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    manager = TranslationJobManager(tmp_path / "jobs")
+    cache_payload = {
+        "handler": "word_docx",
+        "updated_at": "2026-05-31T10:00:00",
+        "segments": {
+            "unit-1": {"source_text": "secret source", "translated_text": "secret translation"},
+            "unit-2": {"source_text": "hidden source", "translated_text": "hidden translation"},
+        },
+    }
+    try:
+        root.job_manager = manager
+        job = manager.create_job([str(input_path)], tmp_path, "en", "vi", "waterfall", job_type="word")
+        manager.update_job_status(job["job_id"], "paused")
+        cache_path = tmp_path / "resume-cache.json"
+        cache_path.write_text(json.dumps(cache_payload), encoding="utf-8")
+        monkeypatch.setattr("translation_app.ui.main_window.get_cache_path", lambda *args: cache_path)
+
+        root._refresh_jobs_list()
+        root.jobs_tree.selection_set(job["job_id"])
+        root._on_job_selected()
+
+        detail = root.job_detail_text.get("1.0", "end")
+        assert root.resume_job_button.cget("state") == "normal"
+        assert "Trạng thái tiếp tục: Có thể tiếp tục" in detail
+        assert "Cache đã lưu: 2 phân đoạn" in detail
+        assert "word_docx" in detail
+        assert "secret source" not in detail
+        assert "secret translation" not in detail
+    finally:
+        root.destroy()
+
+
 def test_translate_file_error_callback_does_not_raise_nameerror(monkeypatch, tmp_path):
     root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
     errors = []

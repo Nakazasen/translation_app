@@ -14,6 +14,7 @@
 - 🔄 **Waterfall Logic**: Tự động chuyển đổi máy dịch nếu máy chính gặp lỗi hoặc giới hạn.
 - 📄 **Preserve Formatting**: Dịch file giữ nguyên định dạng (Styles, Images, Layouts).
 - 🧪 **PDF experimental text/block resume**: Chế độ PDF experimental có cache tiếp tục cho từng đơn vị văn bản/block rõ ràng; không áp dụng cho OCR/image PDF hoặc full layout-preserving PDF.
+- 🧭 **Công việc đang dở dễ theo dõi**: Tab Công việc hiển thị trạng thái có thể tiếp tục và tóm tắt cache/checkpoint an toàn, giúp người dùng tiếp tục job bị dừng mà không cần đọc file kỹ thuật.
 - 👁️ **AI Vision**: Sử dụng Prompt đặc biệt để dịch các file PDF "khó nhằn" (PDF Scan, bảng biểu phức tạp).
 - 📧 **Outlook Integration**: Dịch trực tiếp email từ Outlook chỉ với một click.
 - 🖼️ **Advanced OCR**: Nhận diện chữ viết từ ảnh (Ja, En, Vi, Zh) độ chính xác cao.
