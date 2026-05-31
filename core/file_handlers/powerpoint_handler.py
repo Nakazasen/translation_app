@@ -7,10 +7,20 @@ from typing import Any, Dict
 from pptx import Presentation
 
 from translation_app.core.file_translation_control import FileTranslationInterrupted, FileTranslationStopRequested
+from translation_app.core.incremental_translation_cache import (
+    clear_incremental_cache,
+    get_cached_translation,
+    load_incremental_cache,
+    record_cached_translation,
+    save_incremental_cache,
+)
 from translation_app.core.ocr_handler import get_ocr_handler
 from translation_app.core.translator import TranslationService
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
+
+
+PPTX_CACHE_HANDLER = "pptx"
 
 
 class PowerPointHandler:
@@ -35,19 +45,41 @@ class PowerPointHandler:
         try:
             logger.info(f"Starting PowerPoint translation: {input_file}")
             prs = Presentation(input_file)
+            cache_payload = load_incremental_cache(input_file, src_lang, dest_lang, PPTX_CACHE_HANDLER)
+            translation_failures = 0
+            api_requests = 0
 
-            for slide in prs.slides:
+            for slide_index, slide in enumerate(prs.slides):
                 getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
-                self._translate_shapes_in_slide(slide, src_lang, dest_lang)
-                self._translate_notes(slide, src_lang, dest_lang)
+                shape_stats = self._translate_shapes_in_slide(
+                    slide,
+                    slide_index,
+                    input_file,
+                    src_lang,
+                    dest_lang,
+                    cache_payload,
+                )
+                notes_stats = self._translate_notes(
+                    slide,
+                    slide_index,
+                    input_file,
+                    src_lang,
+                    dest_lang,
+                    cache_payload,
+                )
+                translation_failures += shape_stats["failed"] + notes_stats["failed"]
+                api_requests += shape_stats["provider_calls"] + notes_stats["provider_calls"]
 
             logger.info("Skipping PowerPoint image OCR/write-back to preserve layout during hardening phase")
             logger.info("Skipping PowerPoint diagram/SmartArt deep translation in hardening phase")
 
             prs.save(output_file)
+            if translation_failures == 0:
+                clear_incremental_cache(input_file, src_lang, dest_lang, PPTX_CACHE_HANDLER)
             logger.info(f"PowerPoint translation completed: {output_file}")
 
             return {
+                "api_requests": api_requests,
                 "images_processed": 0,
                 "images_skipped": 0,
                 "diagrams_translated": 0,
@@ -65,77 +97,256 @@ class PowerPointHandler:
             logger.error(error_msg)
             raise FileProcessingError(error_msg, original_error=exc) from exc
 
-    def _translate_shapes_in_slide(self, slide, src_lang: str, dest_lang: str) -> None:
-        for shape in slide.shapes:
+    def _translate_shapes_in_slide(
+        self,
+        slide,
+        slide_index: int,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> dict[str, int]:
+        stats = {"failed": 0, "provider_calls": 0}
+        for shape_index, shape in enumerate(slide.shapes):
             getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
-            self._translate_single_shape(shape, src_lang, dest_lang)
+            shape_key = self._make_shape_key(shape, shape_index)
+            self._add_stats(
+                stats,
+                self._translate_single_shape(
+                    shape,
+                    f"slide:{slide_index}:shape:{shape_key}",
+                    input_file,
+                    src_lang,
+                    dest_lang,
+                    cache_payload,
+                ),
+            )
+        return stats
 
-    def _translate_single_shape(self, shape, src_lang: str, dest_lang: str) -> None:
+    def _translate_single_shape(
+        self,
+        shape,
+        shape_path: str,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> dict[str, int]:
+        stats = {"failed": 0, "provider_calls": 0}
         try:
             shape_type = shape.shape_type
 
             if shape_type == 6 and hasattr(shape, "shapes"):
-                for sub_shape in shape.shapes:
-                    self._translate_single_shape(sub_shape, src_lang, dest_lang)
-                return
+                for sub_index, sub_shape in enumerate(shape.shapes):
+                    sub_key = self._make_shape_key(sub_shape, sub_index)
+                    self._add_stats(
+                        stats,
+                        self._translate_single_shape(
+                            sub_shape,
+                            f"{shape_path}:group:{sub_key}",
+                            input_file,
+                            src_lang,
+                            dest_lang,
+                            cache_payload,
+                        ),
+                    )
+                return stats
 
             if hasattr(shape, "has_table") and shape.has_table:
-                for row in shape.table.rows:
-                    for cell in row.cells:
+                for row_index, row in enumerate(shape.table.rows):
+                    for col_index, cell in enumerate(row.cells):
                         if cell.text_frame is not None:
-                            self._translate_text_frame(cell.text_frame, src_lang, dest_lang)
-                return
+                            self._add_stats(
+                                stats,
+                                self._translate_text_frame(
+                                    cell.text_frame,
+                                    f"{shape_path}:table:r:{row_index}:c:{col_index}",
+                                    input_file,
+                                    src_lang,
+                                    dest_lang,
+                                    cache_payload,
+                                ),
+                            )
+                return stats
 
             if hasattr(shape, "has_chart") and shape.has_chart:
                 logger.info("Skipping chart translation to preserve chart structure during hardening phase")
-                return
+                return stats
 
             if shape_type == 14 and not getattr(shape, "has_table", False):
                 logger.info("Skipping SmartArt/diagram translation to preserve layout during hardening phase")
-                return
+                return stats
 
             if hasattr(shape, "text_frame") and shape.text_frame is not None:
-                self._translate_text_frame(shape.text_frame, src_lang, dest_lang)
+                self._add_stats(
+                    stats,
+                    self._translate_text_frame(
+                        shape.text_frame,
+                        shape_path,
+                        input_file,
+                        src_lang,
+                        dest_lang,
+                        cache_payload,
+                    ),
+                )
+        except FileTranslationStopRequested:
+            raise
         except Exception as exc:
             logger.warning(f"Error processing PowerPoint shape: {exc}")
+            stats["failed"] += 1
+        return stats
 
-    def _translate_text_frame(self, text_frame, src_lang: str, dest_lang: str) -> None:
-        for paragraph in text_frame.paragraphs:
+    def _translate_text_frame(
+        self,
+        text_frame,
+        frame_path: str,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> dict[str, int]:
+        stats = {"failed": 0, "provider_calls": 0}
+        for paragraph_index, paragraph in enumerate(text_frame.paragraphs):
             getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
+            paragraph_path = f"{frame_path}:p:{paragraph_index}"
             eligible_runs = self._collect_translatable_runs(paragraph.runs)
             if self._should_translate_fragmented_runs_as_block(paragraph.runs, eligible_runs):
-                self._translate_fragmented_paragraph(paragraph, src_lang, dest_lang)
+                self._add_stats(
+                    stats,
+                    self._translate_fragmented_paragraph(
+                        paragraph,
+                        paragraph_path,
+                        input_file,
+                        src_lang,
+                        dest_lang,
+                        cache_payload,
+                    ),
+                )
                 continue
 
-            for run in eligible_runs:
+            if not paragraph.runs and (paragraph.text or "").strip() and not self._should_skip_text(paragraph.text):
+                self._add_stats(
+                    stats,
+                    self._translate_paragraph_text(
+                        paragraph,
+                        paragraph_path,
+                        input_file,
+                        src_lang,
+                        dest_lang,
+                        cache_payload,
+                    ),
+                )
+                continue
+
+            for run_index, run in enumerate(paragraph.runs):
+                if self._should_skip_text(run.text):
+                    continue
                 getattr(self.translation_service, "raise_if_file_translation_stopped", lambda: None)()
                 original_text = run.text
                 try:
-                    translated_text = self.translation_service.translate_long_text(
-                        original_text,
+                    segment_id = f"{paragraph_path}:r:{run_index}"
+                    translated_text = get_cached_translation(
+                        cache_payload,
+                        segment_id,
                         src_lang,
                         dest_lang,
+                        original_text,
                     )
+                    if translated_text is None:
+                        translated_text = self.translation_service.translate_long_text(
+                            original_text,
+                            src_lang,
+                            dest_lang,
+                        )
+                        stats["provider_calls"] += 1
+                        record_cached_translation(
+                            cache_payload,
+                            segment_id,
+                            src_lang,
+                            dest_lang,
+                            original_text,
+                            translated_text,
+                        )
+                        save_incremental_cache(input_file, src_lang, dest_lang, PPTX_CACHE_HANDLER, cache_payload)
+                except FileTranslationStopRequested:
+                    raise
                 except Exception as exc:
                     logger.warning(f"Error translating PowerPoint run: {exc}")
+                    stats["failed"] += 1
                     continue
                 if translated_text != original_text:
                     run.text = translated_text
+        return stats
 
-    def _translate_notes(self, slide, src_lang: str, dest_lang: str) -> None:
+    def _translate_paragraph_text(
+        self,
+        paragraph,
+        segment_id: str,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> dict[str, int]:
+        stats = {"failed": 0, "provider_calls": 0}
+        original_text = paragraph.text
+        try:
+            translated_text = get_cached_translation(
+                cache_payload,
+                segment_id,
+                src_lang,
+                dest_lang,
+                original_text,
+            )
+            if translated_text is None:
+                translated_text = self.translation_service.translate_long_text(
+                    original_text,
+                    src_lang,
+                    dest_lang,
+                )
+                stats["provider_calls"] += 1
+                record_cached_translation(cache_payload, segment_id, src_lang, dest_lang, original_text, translated_text)
+                save_incremental_cache(input_file, src_lang, dest_lang, PPTX_CACHE_HANDLER, cache_payload)
+        except FileTranslationStopRequested:
+            raise
+        except Exception as exc:
+            logger.warning(f"Error translating PowerPoint paragraph: {exc}")
+            stats["failed"] += 1
+            return stats
+
+        if translated_text != original_text:
+            paragraph.text = translated_text
+        return stats
+
+    def _translate_notes(
+        self,
+        slide,
+        slide_index: int,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> dict[str, int]:
+        stats = {"failed": 0, "provider_calls": 0}
         try:
             notes_slide = slide.notes_slide
         except Exception:
-            return
+            return stats
 
         if notes_slide is None:
-            return
+            return stats
 
         notes_text_frame = getattr(notes_slide, "notes_text_frame", None)
         if notes_text_frame is None:
-            return
+            return stats
 
-        self._translate_text_frame(notes_text_frame, src_lang, dest_lang)
+        return self._translate_text_frame(
+            notes_text_frame,
+            f"slide:{slide_index}:notes",
+            input_file,
+            src_lang,
+            dest_lang,
+            cache_payload,
+        )
 
     def _save_partial_presentation(self, prs, output_file: str, status: str) -> tuple[bool, Exception | None]:
         if prs is None:
@@ -191,20 +402,43 @@ class PowerPointHandler:
         total_chars = sum(len((run.text or "").strip()) for run in eligible_runs)
         return total_chars >= self._FRAGMENTED_RUN_MIN_TOTAL_CHARS
 
-    def _translate_fragmented_paragraph(self, paragraph, src_lang: str, dest_lang: str) -> None:
+    def _translate_fragmented_paragraph(
+        self,
+        paragraph,
+        segment_id: str,
+        input_file: str,
+        src_lang: str,
+        dest_lang: str,
+        cache_payload: dict,
+    ) -> dict[str, int]:
+        stats = {"failed": 0, "provider_calls": 0}
         original_text = paragraph.text
         try:
-            translated_text = self.translation_service.translate_long_text(
-                original_text,
+            translated_text = get_cached_translation(
+                cache_payload,
+                segment_id,
                 src_lang,
                 dest_lang,
+                original_text,
             )
+            if translated_text is None:
+                translated_text = self.translation_service.translate_long_text(
+                    original_text,
+                    src_lang,
+                    dest_lang,
+                )
+                stats["provider_calls"] += 1
+                record_cached_translation(cache_payload, segment_id, src_lang, dest_lang, original_text, translated_text)
+                save_incremental_cache(input_file, src_lang, dest_lang, PPTX_CACHE_HANDLER, cache_payload)
+        except FileTranslationStopRequested:
+            raise
         except Exception as exc:
             logger.warning(f"Error translating fragmented PowerPoint paragraph: {exc}")
-            return
+            stats["failed"] += 1
+            return stats
 
         if translated_text == original_text:
-            return
+            return stats
 
         first_run = None
         for run in paragraph.runs:
@@ -213,3 +447,14 @@ class PowerPointHandler:
                 run.text = translated_text
                 continue
             run.text = ""
+        return stats
+
+    def _make_shape_key(self, shape, fallback_index: int) -> str:
+        shape_id = getattr(shape, "shape_id", None)
+        if shape_id is not None:
+            return str(shape_id)
+        return str(fallback_index)
+
+    def _add_stats(self, target: dict[str, int], source: dict[str, int]) -> None:
+        target["failed"] += source.get("failed", 0)
+        target["provider_calls"] += source.get("provider_calls", 0)
