@@ -4331,8 +4331,44 @@ Bước 3: Sử dụng AI Vision
             messagebox.showerror("Lỗi", f"Không thể tải các phân đoạn lỗi: {str(e)}")
 
     def _resume_selected_job(self):
-        # Reserved command placeholder
-        pass
+        selection = self.jobs_tree.selection()
+        if not selection:
+            messagebox.showwarning("Canh bao", "Vui long chon mot Job de tiep tuc.")
+            return
+        if self._file_translation_in_progress:
+            messagebox.showwarning("Canh bao", "Dang dich file. Vui long cho tac vu hien tai hoan tat.")
+            return
+
+        job_id = selection[0]
+        try:
+            summary = self.job_manager.get_job_summary(job_id)
+            if not summary.get("can_resume"):
+                messagebox.showinfo("Thong tin", "Job nay da hoan tat hoac da huy, khong the tiep tuc.")
+                return
+
+            job = summary.get("job", {})
+            file_paths = [str(path) for path in job.get("input_files", []) if str(path).strip()]
+            missing_files = [path for path in file_paths if not os.path.exists(path)]
+            if not file_paths:
+                messagebox.showerror("Loi", "Job nay khong con thong tin file dau vao de tiep tuc.")
+                return
+            if missing_files:
+                preview = "\n".join(missing_files[:3])
+                messagebox.showerror("Loi", f"Khong tim thay file dau vao cua Job:\n{preview}")
+                return
+
+            self._set_selected_file_paths(file_paths)
+            if job.get("source_lang"):
+                self.src_lang_file.set(job.get("source_lang"))
+            if job.get("target_lang"):
+                self.dest_lang_file.set(job.get("target_lang"))
+
+            self.job_manager.record_checkpoint(job_id, "job_resumed", status="cache_retry_started")
+            self._refresh_jobs_list()
+            self.label_file_status.configure(text=f"Dang tiep tuc job {job_id} bang cache/checkpoint da luu...")
+            self.translate_file()
+        except Exception as exc:
+            messagebox.showerror("Loi", f"Khong the tiep tuc Job: {str(exc)}")
 
     def setup_glossary_tab(self):
         """Setup the Glossary tab using CustomTkinter with Slate Card Layout."""

@@ -488,6 +488,38 @@ def test_translate_file_cancel_keeps_partial_output_notice(monkeypatch, tmp_path
         root.destroy()
 
 
+def test_resume_selected_job_reloads_file_and_runs_translation(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    manager = TranslationJobManager(tmp_path / "jobs")
+    calls = []
+    try:
+        root.job_manager = manager
+        job = manager.create_job([str(input_path)], tmp_path, "en", "vi", "waterfall", job_type="word")
+        manager.update_job_status(job["job_id"], "paused")
+        root._refresh_jobs_list()
+        root.jobs_tree.selection_set(job["job_id"])
+
+        monkeypatch.setattr(
+            root.word_handler,
+            "translate",
+            lambda file_path, output_file, src_lang, dest_lang: calls.append((file_path, output_file, src_lang, dest_lang)),
+        )
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root._resume_selected_job()
+
+        assert calls
+        assert calls[0][0] == str(input_path)
+        assert calls[0][2:] == ("en", "vi")
+        checkpoints = (tmp_path / "jobs" / job["job_id"] / "checkpoints.jsonl").read_text(encoding="utf-8")
+        assert "job_resumed" in checkpoints
+        assert manager.load_job(job["job_id"])["status"] == "paused"
+    finally:
+        root.destroy()
+
+
 def test_translate_file_error_callback_does_not_raise_nameerror(monkeypatch, tmp_path):
     root, _ = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
     errors = []
