@@ -39,9 +39,18 @@ from translation_app.core.file_handlers.pdf_translation_plan import (
 from translation_app.core.file_handlers.pdf_text_fit import PDFTextFitRequest, PDFTextFitResult, fit_text_to_bbox
 from translation_app.core.file_handlers.pdf_text_fit import summarize_fit_results
 from translation_app.core.file_handlers.word_handler import WordHandler
+from translation_app.core.incremental_translation_cache import (
+    clear_incremental_cache,
+    get_cached_translation,
+    load_incremental_cache,
+    record_cached_translation,
+    save_incremental_cache,
+)
 from translation_app.core.ocr_handler import OCRHandler
 from translation_app.utils.error_handler import FileProcessingError
 from translation_app.utils.logger import logger
+
+PDF_EXPERIMENTAL_CACHE_HANDLER = "pdf_experimental_text_block"
 
 # Suppress PDF library warnings globally
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -483,10 +492,17 @@ class PDFHandler:
                         "Blank, scanned, or layout-heavy PDFs are not supported."
                     )
 
+                cache_payload = load_incremental_cache(
+                    input_file,
+                    src_lang,
+                    dest_lang,
+                    PDF_EXPERIMENTAL_CACHE_HANDLER,
+                )
                 doc = fitz.open(input_file)
                 try:
                     translated_units = 0
                     translated_blocks = 0
+                    translation_failures = 0
                     fit_results: List[PDFTextFitResult] = []
                     overflow_blocks = 0
                     overflow_units = 0
@@ -501,10 +517,46 @@ class PDFHandler:
                             )
 
                         for unit in units:
-                            translated_text = self.translation_service.translate_long_text(
-                                unit["text"], src_lang, dest_lang
-                            )
-                            unit["translated_text"] = translated_text if translated_text else unit["text"]
+                            source_text = unit["text"]
+                            segment_id = self._experimental_pdf_segment_id(unit)
+                            try:
+                                translated_text = get_cached_translation(
+                                    cache_payload,
+                                    segment_id,
+                                    src_lang,
+                                    dest_lang,
+                                    source_text,
+                                )
+                                if translated_text is None:
+                                    translated_text = self.translation_service.translate_long_text(
+                                        source_text, src_lang, dest_lang
+                                    )
+                                    record_cached_translation(
+                                        cache_payload,
+                                        segment_id,
+                                        src_lang,
+                                        dest_lang,
+                                        source_text,
+                                        translated_text,
+                                    )
+                                    save_incremental_cache(
+                                        input_file,
+                                        src_lang,
+                                        dest_lang,
+                                        PDF_EXPERIMENTAL_CACHE_HANDLER,
+                                        cache_payload,
+                                    )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Error translating experimental PDF unit %s on page %s: %s",
+                                    unit.get("unit_id"),
+                                    unit.get("page_number"),
+                                    exc,
+                                )
+                                translation_failures += 1
+                                continue
+
+                            unit["translated_text"] = translated_text if translated_text else source_text
                             translated_units += 1
                             translated_blocks += int(unit.get("source_block_count", 0) or 0)
                             for rect in unit["redact_rects"]:
@@ -518,6 +570,8 @@ class PDFHandler:
                             )
 
                         for unit in units:
+                            if "translated_text" not in unit:
+                                continue
                             fit_result = self._insert_translated_unit(page, unit)
                             fit_results.append(fit_result)
                             if fit_result.overflow:
@@ -525,6 +579,13 @@ class PDFHandler:
                                 overflow_blocks += int(unit.get("source_block_count", 0) or 0)
 
                     doc.save(output_file)
+                    if translation_failures == 0:
+                        clear_incremental_cache(
+                            input_file,
+                            src_lang,
+                            dest_lang,
+                            PDF_EXPERIMENTAL_CACHE_HANDLER,
+                        )
                 finally:
                     doc.close()
 
@@ -1349,6 +1410,14 @@ class PDFHandler:
             "source_block_ids": list(unit.source_block_ids),
             "language_hint": None,
         }
+
+    def _experimental_pdf_segment_id(self, unit: Dict[str, Any]) -> str:
+        """Build a stable cache segment ID for an experimental PDF text/block unit."""
+        block_ids = ",".join(str(block_id) for block_id in unit.get("source_block_ids", []))
+        return (
+            f"page:{unit.get('page_index')}:unit:{unit.get('unit_id')}:"
+            f"type:{unit.get('unit_type')}:blocks:{block_ids}"
+        )
 
     def _unit_bbox_from_blocks(self, blocks: List[PDFBlockModel]) -> Tuple[float, float, float, float]:
         if not blocks:
