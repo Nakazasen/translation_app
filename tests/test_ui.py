@@ -488,6 +488,30 @@ def test_translate_file_cancel_keeps_partial_output_notice(monkeypatch, tmp_path
         root.destroy()
 
 
+def test_translate_file_creates_visible_job_for_docx(monkeypatch, tmp_path):
+    root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
+    manager = TranslationJobManager(tmp_path / "jobs")
+    infos = []
+    try:
+        root.job_manager = manager
+        monkeypatch.setattr(root.word_handler, "translate", lambda *args, **kwargs: None)
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: infos.append(args))
+        monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+        root.translate_file()
+
+        jobs = manager.list_jobs(limit=10)
+        assert len(jobs) == 1
+        assert jobs[0]["job_type"] == "word_docx"
+        assert jobs[0]["status"] == "completed"
+        assert root.jobs_tree.exists(jobs[0]["job_id"])
+        assert root.jobs_tree.selection() == (jobs[0]["job_id"],)
+        assert "Đã tải 1 job" in root.jobs_empty_label.cget("text")
+        assert str(input_path) in root.job_detail_text.get("1.0", "end")
+        assert infos
+    finally:
+        root.destroy()
+
 def test_resume_selected_job_reloads_file_and_runs_translation(monkeypatch, tmp_path):
     root, input_path = _prepare_translate_file_ui(monkeypatch, tmp_path, ".docx")
     manager = TranslationJobManager(tmp_path / "jobs")

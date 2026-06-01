@@ -3012,18 +3012,79 @@ class MainWindow(ctk.CTk):
             if use_pdf_experimental:
                 output_ext = '.pdf'
 
+            job_type_map = {
+                '.txt': 'text',
+                '.docx': 'word_docx',
+                '.doc': 'word_docx',
+                '.pptx': 'pptx',
+                '.ppt': 'pptx',
+                '.pdf': 'pdf_experimental_text_block' if use_pdf_experimental else 'pdf',
+                '.xlsx': 'excel',
+                '.xls': 'excel',
+            }
+
             tasks.append(
                 {
                     "input_file": file_path,
                     "output_file": f"{base}_translated_{today_str}{output_ext}",
                     "handler": handler,
                     "ext_lower": ext_lower,
+                    "job_type": job_type_map.get(ext_lower, "unknown"),
                     "use_ai_vision": use_ai_vision,
                     "use_pdf_experimental": use_pdf_experimental,
                     "pages_per_batch": int(self.ai_vision_pages_per_batch.get()) if use_ai_vision else 4,
                 }
             )
         return tasks
+
+    def _should_create_ui_job_for_task(self, task: dict) -> bool:
+        """Return whether the UI must create a tracking job for this task."""
+        return task.get("job_type") != "excel"
+
+    def _create_ui_translation_job(self, task: dict, src_lang: str, dest_lang: str) -> Optional[str]:
+        """Create a visible Jobs-tab record for handlers without native job tracking."""
+        if not self._should_create_ui_job_for_task(task):
+            return None
+
+        try:
+            job = self.job_manager.create_job(
+                input_files=[task["input_file"]],
+                output_dir=os.path.dirname(os.path.abspath(task["output_file"])),
+                source_lang=src_lang,
+                target_lang=dest_lang,
+                strategy=getattr(self.translation_service, "strategy", "waterfall"),
+                job_type=task.get("job_type", "unknown"),
+                notes="Job dịch file được tạo từ giao diện Công việc",
+            )
+            job_id = job["job_id"]
+            self.job_manager.update_job_status(job_id, "running")
+            self.job_manager.update_progress(
+                job_id,
+                total_segments=1,
+                current_file=task["input_file"],
+            )
+            return job_id
+        except Exception as exc:
+            logger.warning(f"Không thể tạo job hiển thị trên tab Công việc: {exc}")
+            return None
+
+    def _finish_ui_translation_job(self, job_id: Optional[str], task: dict, error: Optional[Exception] = None) -> None:
+        """Finalize a UI-created tracking job after file translation."""
+        if not job_id:
+            return
+
+        try:
+            if error is None:
+                self.job_manager.update_progress(job_id, completed_delta=1, current_file=task["input_file"])
+                self.job_manager.mark_completed(job_id)
+            elif isinstance(error, FileTranslationInterrupted):
+                self.job_manager.update_job_status(job_id, error.status)
+                self.job_manager.record_checkpoint(job_id, "job_paused", status=error.status)
+            else:
+                self.job_manager.update_progress(job_id, failed_delta=1, current_file=task["input_file"])
+                self.job_manager.mark_failed(job_id, str(error))
+        except Exception as exc:
+            logger.warning(f"Không thể cập nhật job hiển thị trên tab Công việc: {exc}")
 
     def _format_file_translation_error(self, task: dict, exc: Exception) -> str:
         if task.get("use_pdf_experimental") and isinstance(exc, FileProcessingError):
@@ -3116,7 +3177,9 @@ class MainWindow(ctk.CTk):
                     else:
                         update_progress(f"Đang chuẩn bị dịch '{os.path.basename(file_path)}'...", 2)
 
+                    ui_job_id = None
                     try:
+                        ui_job_id = self._create_ui_translation_job(task, src_lang, dest_lang)
                         if task["use_ai_vision"]:
                             self.pdf_handler.progress_callback = update_progress
                             self.pdf_handler.translate_with_ai_vision(
@@ -3138,13 +3201,16 @@ class MainWindow(ctk.CTk):
                         else:
                             handler.translate(file_path, output_file, src_lang, dest_lang)
 
+                        self._finish_ui_translation_job(ui_job_id, task)
                         successes.append(task)
                     except FileTranslationInterrupted as exc:
+                        self._finish_ui_translation_job(ui_job_id, task, exc)
                         if task["use_pdf_experimental"] and self.pdf_handler.last_pdf_qa_report:
                             self._remember_pdf_report_context(file_path, output_file)
                         interruption = (exc, len(successes))
                         break
                     except Exception as exc:
+                        self._finish_ui_translation_job(ui_job_id, task, exc)
                         if task["use_pdf_experimental"] and self.pdf_handler.last_pdf_qa_report:
                             self._remember_pdf_report_context(file_path, output_file)
                         failures.append((task, self._format_file_translation_error(task, exc)))
@@ -3229,6 +3295,8 @@ class MainWindow(ctk.CTk):
                     self._file_translation_control = None
                     self.progress_file.set(0)
                     self._set_file_translation_busy(False)
+                    if hasattr(self, "_refresh_jobs_list"):
+                        self._refresh_jobs_list()
                     self.label_file_status.configure(text="Dịch file thất bại.")
                     messagebox.showerror("Lỗi", handle_translation_error(caught_error, "Dịch file"))
 
@@ -4139,15 +4207,23 @@ Bước 3: Sử dụng AI Vision
 
         create_styled_button(
             frame_action_top, text="🔄 Làm mới danh sách", command=self._refresh_jobs_list,
-            width=140
+            width=170
         ).pack(side=tk.RIGHT)
+
+        self.jobs_empty_label = ctk.CTkLabel(
+            card_list,
+            text="Đang tải lịch sử job...",
+            font=('Segoe UI', 10, 'bold'),
+            text_color=('#334155', '#CBD5E1')
+        )
+        self.jobs_empty_label.pack(fill=tk.X, padx=15, pady=(0, 8))
 
         # Styled Ttk Treeview
         frame_tree = ctk.CTkFrame(card_list, fg_color="transparent")
         frame_tree.pack(fill=tk.X, padx=15, pady=(0, 15))
 
         columns = ("job_id", "job_type", "status", "progress", "created_at")
-        self.jobs_tree = ttk.Treeview(frame_tree, columns=columns, show="headings", height=6)
+        self.jobs_tree = ttk.Treeview(frame_tree, columns=columns, show="headings", height=10)
         self.jobs_tree.heading("job_id", text="Mã công việc (Job ID)")
         self.jobs_tree.heading("job_type", text="Loại")
         self.jobs_tree.heading("status", text="Trạng thái")
@@ -4191,8 +4267,8 @@ Bước 3: Sử dụng AI Vision
         ).pack(side=tk.LEFT, padx=(0, 10))
 
         self.resume_job_button = create_styled_button(
-            frame_buttons, text="⏯️ Tiếp tục", command=self._resume_selected_job,
-            width=100
+            frame_buttons, text="⏯️ Tiếp tục job đã chọn", command=self._resume_selected_job,
+            width=170
         )
         self.resume_job_button.configure(state="disabled")
         self.resume_job_button.pack(side=tk.LEFT)
@@ -4212,20 +4288,37 @@ Bước 3: Sử dụng AI Vision
         for item in self.jobs_tree.get_children():
             self.jobs_tree.delete(item)
 
+        if hasattr(self, "jobs_empty_label"):
+            self.jobs_empty_label.configure(text="Đang tải lịch sử công việc...")
+        if hasattr(self, "resume_job_button"):
+            self.resume_job_button.configure(state="disabled")
+
         try:
             jobs = self.job_manager.list_jobs(limit=50)
+            if not jobs:
+                if hasattr(self, "jobs_empty_label"):
+                    self.jobs_empty_label.configure(
+                        text="Chưa có lịch sử job. Hãy dịch file hoặc nhấn Làm mới sau khi tác vụ nền chạy."
+                    )
+                self._clear_job_detail_text("Chọn một job trong danh sách để xem cache, lỗi và thao tác tiếp tục.")
+                return
+
+            first_job_id = None
             for j in jobs:
                 job_id = j.get("job_id")
+                if not job_id:
+                    continue
+                if first_job_id is None:
+                    first_job_id = job_id
                 job_type = j.get("job_type", "unknown")
                 status = j.get("status", "pending")
 
-                # Fetch progress percent
                 progress_percent = 0.0
                 try:
                     summary = self.job_manager.get_job_summary(job_id)
                     progress_percent = summary.get("progress", {}).get("percent", 0.0)
-                except:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"Không thể đọc tiến độ job {job_id}: {exc}")
 
                 created_at = j.get("created_at", "")
                 if created_at and "T" in created_at:
@@ -4235,8 +4328,29 @@ Bước 3: Sử dụng AI Vision
                     "", tk.END, iid=job_id,
                     values=(job_id, job_type, status, f"{progress_percent}%", created_at)
                 )
+
+            if hasattr(self, "jobs_empty_label"):
+                self.jobs_empty_label.configure(
+                    text=f"Đã tải {len(jobs)} job gần nhất. Chọn job để xem chi tiết hoặc bấm Tiếp tục khi có thể resume."
+                )
+            if first_job_id:
+                self.jobs_tree.selection_set(first_job_id)
+                self.jobs_tree.focus(first_job_id)
+                self.jobs_tree.see(first_job_id)
+                self._on_job_selected()
         except Exception as e:
+            if hasattr(self, "jobs_empty_label"):
+                self.jobs_empty_label.configure(text="Không thể tải lịch sử job. Xem log để biết chi tiết.")
             logger.error(f"Failed to load jobs list in UI: {e}")
+
+    def _clear_job_detail_text(self, message: str) -> None:
+        """Show a neutral Jobs-tab detail message."""
+        if not hasattr(self, "job_detail_text"):
+            return
+        self.job_detail_text.configure(state="normal")
+        self.job_detail_text.delete("1.0", tk.END)
+        self.job_detail_text.insert(tk.END, message)
+        self.job_detail_text.configure(state="disabled")
 
     def _on_job_selected(self, event=None):
         selection = self.jobs_tree.selection()
