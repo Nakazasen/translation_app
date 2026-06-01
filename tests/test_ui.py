@@ -195,6 +195,173 @@ def test_text_tab_work_prompt_security_regression():
     assert "Bearer" not in prompt
 
 
+class _ImageUxHarness:
+    """Minimal harness for Phase 5N-A image UX helpers."""
+
+    from translation_app.ui.main_window import MainWindow
+
+    IMAGE_EMPTY_OCR_TEXT = MainWindow.IMAGE_EMPTY_OCR_TEXT
+    _get_editable_image_ocr_text = MainWindow._get_editable_image_ocr_text
+    _set_image_ocr_text = MainWindow._set_image_ocr_text
+    _copy_text_to_clipboard = MainWindow._copy_text_to_clipboard
+    _save_text_with_dialog = MainWindow._save_text_with_dialog
+    copy_image_ocr_text = MainWindow.copy_image_ocr_text
+    copy_translated_image_text = MainWindow.copy_translated_image_text
+    save_image_ocr_text = MainWindow.save_image_ocr_text
+    save_translated_image_text = MainWindow.save_translated_image_text
+    _get_translated_image_output_text = MainWindow._get_translated_image_output_text
+    _set_image_status = MainWindow._set_image_status
+
+    def __init__(self, ocr_text="", translated_text=""):
+        self.last_ocr_text = ""
+        self.clipboard_image = None
+        self.entry_image_path = self._Entry("")
+        self.text_image_ocr = self._Textbox(ocr_text or self.IMAGE_EMPTY_OCR_TEXT)
+        self.text_output = self._Textbox(translated_text)
+        self.label_image_status = self._Label()
+        self.clipboard = ""
+        self.updated = False
+
+    class _Textbox:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self, *_args):
+            return self.value
+
+        def delete(self, *_args):
+            self.value = ""
+
+        def insert(self, _index, text):
+            self.value += text
+
+    class _Entry:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class _Label:
+        def __init__(self):
+            self.text = ""
+
+        def configure(self, **kwargs):
+            if "text" in kwargs:
+                self.text = kwargs["text"]
+
+    def clipboard_clear(self):
+        self.clipboard = ""
+
+    def clipboard_append(self, text):
+        self.clipboard = text
+
+    def update(self):
+        self.updated = True
+
+
+def test_email_image_ux_constants_are_safe_and_helpful():
+    """Phase 5N-A UI copy should guide users without exposing secrets."""
+    from translation_app.ui.main_window import MainWindow
+
+    combined = "\n".join([
+        MainWindow.EMAIL_UX_GUIDE_TEXT,
+        MainWindow.EMAIL_SAFETY_TEXT,
+        MainWindow.EMAIL_READY_STATUS,
+        MainWindow.IMAGE_UX_GUIDE_TEXT,
+        MainWindow.IMAGE_READY_STATUS,
+        MainWindow.IMAGE_EMPTY_OCR_TEXT,
+    ])
+
+    assert "Outlook" in MainWindow.EMAIL_UX_GUIDE_TEXT
+    assert "không tự sửa email gốc" in MainWindow.EMAIL_SAFETY_TEXT
+    assert "clipboard" in MainWindow.IMAGE_UX_GUIDE_TEXT
+    assert "chỉnh" in MainWindow.IMAGE_EMPTY_OCR_TEXT
+    assert "API key" not in combined
+    assert "Authorization" not in combined
+    assert "Bearer" not in combined
+
+
+def test_image_ocr_textbox_prefers_user_edited_text():
+    """Editable OCR text should be used before fallback OCR cache."""
+    harness = _ImageUxHarness("OCR đã chỉnh")
+    harness.last_ocr_text = "OCR cũ"
+
+    assert harness._get_editable_image_ocr_text() == "OCR đã chỉnh"
+
+    harness._set_image_ocr_text("OCR mới")
+    assert harness.text_image_ocr.get("1.0", "end") == "OCR mới"
+
+
+def test_image_ocr_textbox_falls_back_to_last_ocr_when_placeholder():
+    """Placeholder text must not be treated as real OCR content."""
+    harness = _ImageUxHarness()
+    harness.last_ocr_text = "OCR fallback"
+
+    assert harness._get_editable_image_ocr_text() == "OCR fallback"
+
+
+def test_image_copy_helpers_copy_ocr_and_translation(monkeypatch):
+    """Copy buttons should copy OCR/translation and update friendly status."""
+    harness = _ImageUxHarness("OCR text", "Translated text")
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+
+    harness.copy_image_ocr_text()
+    assert harness.clipboard == "OCR text"
+    assert "Đã copy nội dung OCR" in harness.label_image_status.text
+
+    harness.copy_translated_image_text()
+    assert harness.clipboard == "Translated text"
+    assert "Đã copy bản dịch" in harness.label_image_status.text
+
+
+def test_image_copy_empty_text_warns(monkeypatch):
+    """Empty copy action should warn instead of copying blank text."""
+    harness = _ImageUxHarness("", "")
+    warnings = []
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda title, message: warnings.append((title, message)))
+
+    assert harness._copy_text_to_clipboard("", "Không có nội dung OCR để copy.") is False
+
+    assert warnings == [("Cảnh báo", "Không có nội dung OCR để copy.")]
+    assert harness.clipboard == ""
+
+
+def test_save_image_ocr_text_uses_dialog_and_status(monkeypatch, tmp_path):
+    """OCR save helper should write UTF-8 text through a save dialog."""
+    harness = _ImageUxHarness("OCR lưu")
+    output_path = tmp_path / "ocr.txt"
+    infos = []
+    monkeypatch.setattr("translation_app.ui.main_window.filedialog.asksaveasfilename", lambda **kwargs: str(output_path))
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda title, message: infos.append((title, message)))
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+    harness.save_image_ocr_text()
+
+    assert output_path.read_text(encoding="utf-8") == "OCR lưu"
+    assert "Đã lưu nội dung" in harness.label_image_status.text
+    assert infos
+
+
+def test_save_translated_image_text_uses_translated_filename(monkeypatch, tmp_path):
+    """Translated image save should create a sibling _translated text file for file input."""
+    harness = _ImageUxHarness(translated_text="Bản dịch")
+    image_path = tmp_path / "image.png"
+    image_path.write_text("not-used", encoding="utf-8")
+    harness.entry_image_path = harness._Entry(str(image_path))
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showwarning", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected warning")))
+    monkeypatch.setattr("translation_app.ui.main_window.messagebox.showerror", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected error")))
+
+    harness.save_translated_image_text()
+
+    outputs = list(tmp_path.glob("image_translated_*.txt"))
+    assert len(outputs) == 1
+    assert outputs[0].read_text(encoding="utf-8") == "Bản dịch"
+    assert "Đã lưu bản dịch" in harness.label_image_status.text
+
+
 def test_ui_imports_without_error():
     """Verify that UI modules import without throwing any SyntaxError."""
     try:

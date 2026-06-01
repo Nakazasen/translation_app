@@ -57,6 +57,8 @@ pip install -r requirements.txt
    - Chọn ngôn ngữ Nguồn (Source) và Đích (Target).
    - Nhấn nút thực hiện và theo dõi tiến trình qua Progress Bar.
    - Trong tab **Dịch văn bản**, có thể để mặc định để dịch như cũ hoặc chọn **Phong cách đầu ra**, **Tình huống** và **Mục tiêu** để AI dịch kèm viết lại cho email, chat, báo cáo, xin lỗi hoặc nhờ hỗ trợ trong công việc.
+   - Trong tab **Dịch email**, giao diện hiển thị hướng dẫn nhập thư mục Outlook, cảnh báo an toàn rằng email gốc không bị sửa và trạng thái tiến trình dễ hiểu cho người dùng non-tech.
+   - Trong tab **Dịch ảnh**, có thể chọn ảnh hoặc dán từ clipboard, xem hướng dẫn OCR, chỉnh lại nội dung OCR nhận diện được, copy/lưu riêng OCR hoặc copy/lưu bản dịch/phân tích.
 
 ---
 
@@ -105,6 +107,10 @@ Email support: [vinh.bd@kdtvn.local]
 ---
 
 ## 📅 Nhật ký cập nhật (Changelog)
+
+### v6.1.2 (Unreleased)
+
+- **Email & Image Translation UX Foundation (Phase 5N-A)**: Tab **Dịch email** có hướng dẫn thao tác Outlook, cảnh báo an toàn không sửa email gốc và trạng thái tiến trình rõ hơn. Tab **Dịch ảnh** có hướng dẫn chọn/dán ảnh, vùng OCR có thể chỉnh sửa, copy/lưu OCR riêng và copy/lưu bản dịch hoặc phân tích.
 
 ### v6.1.1 (2026-06-01)
 

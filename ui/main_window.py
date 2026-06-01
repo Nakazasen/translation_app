@@ -146,6 +146,23 @@ ctk.set_default_color_theme("blue")
 class MainWindow(ctk.CTk):
     """Main application window"""
 
+    EMAIL_UX_GUIDE_TEXT = (
+        "1. Mở Outlook và đăng nhập trước khi dịch.\n"
+        "2. Nhập đúng tên thư mục, ví dụ: Inbox hoặc Sent Items.\n"
+        "3. App chỉ xử lý các email mới nhất theo giới hạn cấu hình."
+    )
+    EMAIL_SAFETY_TEXT = (
+        "🛡️ An toàn: App không tự sửa email gốc trong Outlook và không gửi email thay bạn."
+    )
+    EMAIL_READY_STATUS = "Sẵn sàng — nhập thư mục Outlook rồi bấm bắt đầu."
+    IMAGE_UX_GUIDE_TEXT = (
+        "1. Chọn ảnh hoặc dán ảnh từ clipboard.\n"
+        "2. Bấm OCR & dịch để nhận diện chữ.\n"
+        "3. Có thể chỉnh lại OCR nếu nhận diện sai rồi copy/lưu/phân tích."
+    )
+    IMAGE_READY_STATUS = "Sẵn sàng — chọn hoặc dán ảnh."
+    IMAGE_EMPTY_OCR_TEXT = "OCR sẽ hiển thị ở đây và có thể chỉnh sửa trước khi dùng tiếp."
+
     def __init__(self):
         """Initialize main window"""
         super().__init__()
@@ -2774,17 +2791,41 @@ class MainWindow(ctk.CTk):
         )
         combobox_dest_lang_email.pack(fill=tk.X)
 
-        # Info & limits
+        # Info, safety & status
         frame_info = ctk.CTkFrame(card_email, fg_color="transparent")
         frame_info.pack(fill=tk.X, padx=15, pady=5)
+
+        label_guide = ctk.CTkLabel(
+            frame_info,
+            text=self.EMAIL_UX_GUIDE_TEXT,
+            text_color=self.colors.get('gray_medium', 'gray'),
+            font=('Segoe UI', 9), justify=tk.LEFT, wraplength=620
+        )
+        label_guide.pack(anchor=tk.W, pady=(0, 6))
+
+        self.label_email_safety = ctk.CTkLabel(
+            frame_info,
+            text=self.EMAIL_SAFETY_TEXT,
+            text_color="#047857",
+            font=('Segoe UI', 9, 'bold'), justify=tk.LEFT, wraplength=620
+        )
+        self.label_email_safety.pack(anchor=tk.W, pady=(0, 6))
 
         label_info = ctk.CTkLabel(
             frame_info,
             text=f"💡 Lưu ý: Hệ thống dịch tự động {config.max_emails_to_translate} email mới nhất thỏa mãn điều kiện lọc trong thư mục được cấu hình.",
             text_color=self.colors.get('gray_medium', 'gray'),
-            font=('Segoe UI', 9, 'italic'), justify=tk.LEFT, wraplength=580
+            font=('Segoe UI', 9, 'italic'), justify=tk.LEFT, wraplength=620
         )
         label_info.pack(anchor=tk.W)
+
+        self.label_email_status = ctk.CTkLabel(
+            frame_info,
+            text=self.EMAIL_READY_STATUS,
+            text_color=self.colors.get('gray_medium', 'gray'),
+            font=('Segoe UI', 9, 'italic'), justify=tk.LEFT, wraplength=620
+        )
+        self.label_email_status.pack(anchor=tk.W, pady=(6, 0))
 
         # Translate button
         frame_button = ctk.CTkFrame(card_email, fg_color="transparent")
@@ -2812,6 +2853,14 @@ class MainWindow(ctk.CTk):
         # CARD 1: TỆP NGUỒN & CẤU HÌNH NGÔN NGỮ
         card_config = create_styled_card(scroll_frame, title="📸 Tệp tin hình ảnh & Ngôn ngữ", accent="cyan")
         card_config.pack(fill=tk.X, padx=15, pady=6)
+
+        label_image_guide = ctk.CTkLabel(
+            card_config,
+            text=self.IMAGE_UX_GUIDE_TEXT,
+            text_color=self.colors.get('gray_medium', 'gray'),
+            font=('Segoe UI', 9), justify=tk.LEFT, wraplength=620
+        )
+        label_image_guide.pack(fill=tk.X, padx=15, pady=(5, 8), anchor=tk.W)
 
         # Browse Image Row
         frame_image_entry = ctk.CTkFrame(card_config, fg_color="transparent")
@@ -2928,9 +2977,45 @@ class MainWindow(ctk.CTk):
         )
         button_analyze_image.pack(side=tk.RIGHT)
 
+        # OCR Text Box area
+        frame_ocr_output = ctk.CTkFrame(card_result, fg_color="transparent")
+        frame_ocr_output.pack(fill=tk.X, padx=15, pady=(8, 5))
+
+        ctk.CTkLabel(
+            frame_ocr_output, text="Nội dung OCR có thể chỉnh sửa:",
+            font=('Segoe UI', 9, 'bold')
+        ).pack(anchor=tk.W, pady=(0, 3))
+
+        self.text_image_ocr = ctk.CTkTextbox(
+            frame_ocr_output, font=('Segoe UI', 10),
+            height=100, corner_radius=8
+        )
+        self.text_image_ocr.pack(fill=tk.X)
+        self.text_image_ocr.insert(tk.END, self.IMAGE_EMPTY_OCR_TEXT)
+
+        frame_ocr_actions = ctk.CTkFrame(card_result, fg_color="transparent")
+        frame_ocr_actions.pack(fill=tk.X, padx=15, pady=(5, 8))
+
+        button_copy_ocr = create_styled_button(
+            frame_ocr_actions, text="📋 Copy OCR",
+            command=self.copy_image_ocr_text
+        )
+        button_copy_ocr.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        button_save_ocr = create_styled_button(
+            frame_ocr_actions, text="💾 Lưu OCR",
+            command=self.save_image_ocr_text
+        )
+        button_save_ocr.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
+
         # Output Text Box area
         frame_text_output = ctk.CTkFrame(card_result, fg_color="transparent")
         frame_text_output.pack(fill=tk.X, padx=15, pady=5)
+
+        ctk.CTkLabel(
+            frame_text_output, text="Bản dịch / phân tích:",
+            font=('Segoe UI', 9, 'bold')
+        ).pack(anchor=tk.W, pady=(0, 3))
 
         self.text_output = ctk.CTkTextbox(
             frame_text_output, font=('Segoe UI', 10),
@@ -2938,15 +3023,29 @@ class MainWindow(ctk.CTk):
         )
         self.text_output.pack(fill=tk.X)
 
-        # Save Button
+        self.label_image_status = ctk.CTkLabel(
+            card_result,
+            text=self.IMAGE_READY_STATUS,
+            text_color=self.colors.get('gray_medium', 'gray'),
+            font=('Segoe UI', 9, 'italic'), justify=tk.LEFT, wraplength=620
+        )
+        self.label_image_status.pack(fill=tk.X, padx=15, pady=(6, 0), anchor=tk.W)
+
+        # Save and copy buttons
         frame_save = ctk.CTkFrame(card_result, fg_color="transparent")
         frame_save.pack(fill=tk.X, padx=15, pady=(10, 15))
 
+        button_copy_image_text = create_styled_button(
+            frame_save, text="📋 Copy bản dịch",
+            command=self.copy_translated_image_text
+        )
+        button_copy_image_text.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
         button_save_image_text = create_styled_button(
-            frame_save, text="💾 Lưu kết quả dịch thuật",
+            frame_save, text="💾 Lưu bản dịch",
             command=self.save_translated_image_text
         )
-        button_save_image_text.pack(fill=tk.X)
+        button_save_image_text.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
 
         # Bind Ctrl+V for paste (bind to both tab and main window for better coverage)
         self.tab_image.bind('<Control-v>', lambda e: self.paste_image_from_clipboard())
@@ -3731,34 +3830,55 @@ class MainWindow(ctk.CTk):
         self.clipboard_append(output_text)
         self.update()
 
+    def _set_email_status(self, text: str) -> None:
+        """Update the email tab status label when it is available."""
+        label = getattr(self, "label_email_status", None)
+        if label is not None:
+            label.configure(text=text)
+
+    def _set_image_status(self, text: str) -> None:
+        """Update the image tab status label when it is available."""
+        label = getattr(self, "label_image_status", None)
+        if label is not None:
+            label.configure(text=text)
+
     def translate_email(self):
-        """Translate emails"""
+        """Translate emails on a background thread without editing original Outlook items."""
         folder_name = self.entry_folder_name.get().strip()
         src_lang = self.src_lang_email.get()
         dest_lang = self.dest_lang_email.get()
 
         if not folder_name:
-            messagebox.showwarning("Cảnh báo", "Vui lòng nhập tên thư mục.")
+            self._set_email_status("Thiếu tên thư mục Outlook — vui lòng nhập ví dụ: Inbox.")
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập tên thư mục Outlook, ví dụ: Inbox.")
             return
 
         try:
             LanguageValidator.validate_language_pair(src_lang, dest_lang)
+            self._set_email_status("Đang kết nối Outlook và chuẩn bị dịch email...")
 
             def translate_thread():
                 try:
                     count = self.email_handler.translate_latest_unread_emails(
                         folder_name, src_lang, dest_lang
                     )
+                    self.after(0, lambda: self._set_email_status(
+                        f"Hoàn tất — đã xử lý {count} email. Email gốc trong Outlook không bị sửa."
+                    ))
                     self.after(0, lambda: messagebox.showinfo(
-"Thành công",
+                        "Thành công",
                         f"{count} email mới nhất chứa bộ lọc đã được dịch và gửi thành công."
                     ))
                 except Exception as e:
                     error_msg = handle_translation_error(e, "Dịch email")
+                    self.after(0, lambda: self._set_email_status(
+                        "Lỗi khi dịch email — vui lòng kiểm tra Outlook, tên thư mục và cấu hình AI."
+                    ))
                     self.after(0, lambda: messagebox.showerror("Lỗi", error_msg))
 
             threading.Thread(target=translate_thread, daemon=True).start()
         except Exception as e:
+            self._set_email_status("Lỗi cấu hình ngôn ngữ — vui lòng kiểm tra lại lựa chọn.")
             messagebox.showerror("Lỗi", str(e))
 
     def browse_image(self):
@@ -3770,7 +3890,7 @@ class MainWindow(ctk.CTk):
             # Clear clipboard image when selecting file
             self.clipboard_image = None
             self.preview_photo = None
-            self.label_image_preview.configure(image='', text="Chua co anh de hien thi")
+            self.label_image_preview.configure(image='', text="Chưa có ảnh để hiển thị")
             self.label_clipboard_status.configure(text="Chưa có ảnh từ clipboard")
 
             self.entry_image_path.delete(0, tk.END)
@@ -3814,7 +3934,7 @@ class MainWindow(ctk.CTk):
             width, height = clipboard_img.size
             self.label_clipboard_status.configure(
                 text=f"Đã paste ảnh từ clipboard ({width}x{height}px)",
-                fg=self.colors['gray_dark']
+                text_color=self.colors['gray_dark']
             )
 
             # Create preview
@@ -3863,6 +3983,85 @@ class MainWindow(ctk.CTk):
                 image='',
                 text=f"Lỗi hiển thị preview: {str(e)}"
             )
+
+    def _get_editable_image_ocr_text(self) -> str:
+        """Return edited OCR text, falling back to the last OCR result."""
+        widget = getattr(self, "text_image_ocr", None)
+        if widget is not None:
+            try:
+                text = widget.get("1.0", tk.END).strip()
+                if text and text != self.IMAGE_EMPTY_OCR_TEXT:
+                    return text
+            except Exception:
+                pass
+        return self.last_ocr_text.strip()
+
+    def _set_image_ocr_text(self, text: str) -> None:
+        """Display OCR text in the editable OCR textbox."""
+        widget = getattr(self, "text_image_ocr", None)
+        if widget is None:
+            return
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, text or self.IMAGE_EMPTY_OCR_TEXT)
+
+    def _get_translated_image_output_text(self) -> str:
+        """Return current translated/analyzed image output text."""
+        return self.text_output.get("1.0", tk.END).strip()
+
+    def _copy_text_to_clipboard(self, text: str, empty_message: str) -> bool:
+        """Copy text to clipboard and show a friendly warning when empty."""
+        if not text:
+            messagebox.showwarning("Cảnh báo", empty_message)
+            return False
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.update()
+        return True
+
+    def copy_image_ocr_text(self):
+        """Copy editable OCR text to clipboard."""
+        if self._copy_text_to_clipboard(
+            self._get_editable_image_ocr_text(),
+            "Không có nội dung OCR để copy.",
+        ):
+            self._set_image_status("Đã copy nội dung OCR vào clipboard.")
+
+    def copy_translated_image_text(self):
+        """Copy translated image text to clipboard."""
+        if self._copy_text_to_clipboard(
+            self._get_translated_image_output_text(),
+            "Không có bản dịch/phân tích để copy.",
+        ):
+            self._set_image_status("Đã copy bản dịch/phân tích vào clipboard.")
+
+    def _save_text_with_dialog(self, text: str, default_name: str, empty_message: str) -> None:
+        """Save text content with a standard save dialog."""
+        if not text:
+            messagebox.showwarning("Cảnh báo", empty_message)
+            return
+        output_file = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            initialfile=default_name,
+            filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+        )
+        if not output_file:
+            return
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(text)
+            self._set_image_status(f"Đã lưu nội dung tại: {output_file}")
+            messagebox.showinfo("Thành công", f"Đã lưu nội dung tại:\n{output_file}")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể lưu file: {str(e)}")
+
+    def save_image_ocr_text(self):
+        """Save editable OCR text to a text file."""
+        default_name = f"image_ocr_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        self._save_text_with_dialog(
+            self._get_editable_image_ocr_text(),
+            default_name,
+            "Không có nội dung OCR để lưu.",
+        )
 
     def translate_image(self):
         """Translate image with OCR"""
@@ -3925,6 +4124,7 @@ class MainWindow(ctk.CTk):
                     working_img = working_img.convert('RGB')
 
                 # OCR
+                self.after(0, lambda: self._set_image_status("Đang OCR ảnh..."))
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
                 self.after(0, lambda: self.text_output.insert(tk.END, "Đang OCR ảnh...\n"))
                 self.after(0, lambda: self.update())
@@ -3935,33 +4135,34 @@ class MainWindow(ctk.CTk):
                 except Exception:
                     text = self.ocr_handler.extract_text_from_image(working_img, lang='eng')
 
-                self.last_ocr_text = text # Save for AI analysis
+                self.last_ocr_text = text  # Save for AI analysis
+                self.after(0, lambda captured=text: self._set_image_ocr_text(captured))
 
                 if not text.strip():
+                    self.after(0, lambda: self._set_image_status("Không tìm thấy text trong ảnh."))
                     self.after(0, lambda: self.text_output.delete("1.0", tk.END))
                     self.after(0, lambda: self.text_output.insert(tk.END, "Không tìm thấy text trong ảnh."))
                     self.after(0, lambda: messagebox.showwarning("Cảnh báo", "Không tìm thấy text trong ảnh."))
                     return
 
-                # Display original text
+                # Display translation area and translate OCR text
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
-                self.after(0, lambda: self.text_output.insert(tk.END, f"Text gốc ({src_lang}):\n"))
-                self.after(0, lambda: self.text_output.insert(tk.END, "-" * 50 + "\n"))
-                self.after(0, lambda: self.text_output.insert(tk.END, text + "\n\n"))
-
-                # Translate
-                self.after(0, lambda: self.text_output.insert(tk.END, "Đang dịch...\n"))
+                self.after(0, lambda: self.text_output.insert(tk.END, "Đang dịch nội dung OCR...\n"))
+                self.after(0, lambda: self._set_image_status("Đang dịch nội dung OCR..."))
                 self.after(0, lambda: self.update())
 
                 translated_text = self.translation_service.translate_long_text(text, src_lang, dest_lang)
 
                 # Display translated text
+                self.after(0, lambda: self.text_output.delete("1.0", tk.END))
                 self.after(0, lambda: self.text_output.insert(tk.END, f"Text dịch ({dest_lang}):\n"))
                 self.after(0, lambda: self.text_output.insert(tk.END, "-" * 50 + "\n"))
                 self.after(0, lambda: self.text_output.insert(tk.END, translated_text))
+                self.after(0, lambda: self._set_image_status("Hoàn tất OCR & dịch. Có thể chỉnh OCR, copy hoặc lưu kết quả."))
                 self.after(0, lambda: messagebox.showinfo("Thành công", "Đã OCR và dịch ảnh thành công!"))
             except Exception as e:
                 error_msg = handle_translation_error(e, "OCR và dịch ảnh")
+                self.after(0, lambda: self._set_image_status("Lỗi khi OCR/dịch ảnh — vui lòng kiểm tra ảnh và cấu hình."))
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))
                 self.after(0, lambda: self.text_output.insert(tk.END, error_msg))
                 self.after(0, lambda: messagebox.showerror("Lỗi", error_msg))
@@ -4002,8 +4203,10 @@ class MainWindow(ctk.CTk):
         try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(text)
+            self._set_image_status(f"Đã lưu bản dịch/phân tích tại: {output_file}")
             messagebox.showinfo("Thành công", f"Đã lưu kết quả tại:\n{output_file}")
         except Exception as e:
+            self._set_image_status("Lỗi khi lưu bản dịch/phân tích ảnh.")
             messagebox.showerror("Lỗi", f"Không thể lưu file: {str(e)}")
 
     def _open_ai_settings(self):
@@ -4013,7 +4216,7 @@ class MainWindow(ctk.CTk):
 
     def analyze_image_text(self):
         """Analyze image OCR text meaning using AI"""
-        input_text = self.last_ocr_text.strip()
+        input_text = self._get_editable_image_ocr_text()
         context = self.entry_image_context.get().strip()
 
         if not input_text:
@@ -4056,6 +4259,7 @@ class MainWindow(ctk.CTk):
         self.text_output.delete("1.0", tk.END)
         self.text_output.insert(tk.END, "=== BẢN PHÂN TÍCH NGHĨA CHUYÊN SÂU (AI) ===\n\n")
         self.text_output.insert(tk.END, text)
+        self._set_image_status("Hoàn tất phân tích AI cho nội dung OCR đã chỉnh.")
 
     def _show_pdf_ai_guide_and_wait(self):
         """
