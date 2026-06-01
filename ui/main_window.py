@@ -9,7 +9,7 @@ import re
 import json
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 from PIL import Image, ImageGrab, ImageTk
 import threading
 
@@ -2530,6 +2530,102 @@ class MainWindow(ctk.CTk):
         )
         self.entry_paragraph_context.pack(fill=tk.X)
 
+        # Work communication assistant options (default keeps legacy translation behavior)
+        card_style = ctk.CTkFrame(card_input, fg_color="transparent")
+        card_style.pack(fill=tk.X, padx=15, pady=(0, 8))
+
+        ctk.CTkLabel(
+            card_style,
+            text="🎭 Phong cách giao tiếp",
+            font=('Segoe UI', 9, 'bold')
+        ).pack(anchor=tk.W, pady=(0, 3))
+
+        frame_style_row = ctk.CTkFrame(card_style, fg_color="transparent")
+        frame_style_row.pack(fill=tk.X)
+
+        self.paragraph_style_options = [
+            "Mặc định",
+            "Thân mật / xuồng xã",
+            "Tự nhiên / lịch sự nhẹ",
+            "Chuyên nghiệp",
+            "Trang trọng với cấp trên",
+            "Rất trang trọng / executive",
+            "Email công việc",
+        ]
+        self.paragraph_situation_options = [
+            "Không chỉ định",
+            "Chat với bạn bè/đồng nghiệp thân",
+            "Chat với đồng nghiệp",
+            "Chat với sếp trực tiếp",
+            "Chat với sếp lớn/giám đốc",
+            "Gửi nhiều phòng ban",
+            "Gửi khách hàng/đối tác",
+            "Báo cáo tiến độ",
+            "Nhờ hỗ trợ/phối hợp",
+            "Xin lỗi/giải trình",
+            "Từ chối khéo",
+        ]
+        self.paragraph_goal_options = [
+            "Dịch đúng nghĩa",
+            "Dịch + viết tự nhiên",
+            "Viết lại lịch sự hơn",
+            "Viết ngắn gọn hơn",
+            "Viết trang trọng hơn",
+            "Làm mềm câu",
+            "Tạo 3 phiên bản: ngắn gọn / lịch sự / trang trọng",
+        ]
+
+        self.paragraph_output_style = tk.StringVar(value=self.paragraph_style_options[0])
+        self.paragraph_communication_situation = tk.StringVar(value=self.paragraph_situation_options[0])
+        self.paragraph_processing_goal = tk.StringVar(value=self.paragraph_goal_options[0])
+
+        for label_text, variable, values in (
+            ("Phong cách đầu ra", self.paragraph_output_style, self.paragraph_style_options),
+            ("Tình huống", self.paragraph_communication_situation, self.paragraph_situation_options),
+            ("Mục tiêu", self.paragraph_processing_goal, self.paragraph_goal_options),
+        ):
+            option_frame = ctk.CTkFrame(frame_style_row, fg_color="transparent")
+            option_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+            ctk.CTkLabel(option_frame, text=label_text, font=('Segoe UI', 8, 'bold')).pack(anchor=tk.W)
+            combo = ctk.CTkComboBox(
+                option_frame,
+                values=values,
+                variable=variable,
+                state="readonly",
+                font=('Segoe UI', 9),
+                height=28,
+            )
+            combo.pack(fill=tk.X, pady=(2, 0))
+
+        frame_presets = ctk.CTkFrame(card_style, fg_color="transparent")
+        frame_presets.pack(fill=tk.X, pady=(6, 0))
+        presets = (
+            ("💬 Chat bạn bè", "Thân mật / xuồng xã", "Chat với bạn bè/đồng nghiệp thân", "Dịch + viết tự nhiên"),
+            ("👔 Chat với sếp", "Trang trọng với cấp trên", "Chat với sếp trực tiếp", "Viết lại lịch sự hơn"),
+            ("🏢 Gửi phòng ban", "Chuyên nghiệp", "Gửi nhiều phòng ban", "Viết trang trọng hơn"),
+            ("📧 Viết email", "Email công việc", "Gửi nhiều phòng ban", "Dịch + viết tự nhiên"),
+            ("🙏 Xin lỗi", "Trang trọng với cấp trên", "Xin lỗi/giải trình", "Viết lại lịch sự hơn"),
+            ("📊 Báo cáo", "Chuyên nghiệp", "Báo cáo tiến độ", "Viết ngắn gọn hơn"),
+            ("🤝 Nhờ hỗ trợ", "Tự nhiên / lịch sự nhẹ", "Nhờ hỗ trợ/phối hợp", "Viết lại lịch sự hơn"),
+            ("🧊 Từ chối khéo", "Chuyên nghiệp", "Từ chối khéo", "Làm mềm câu"),
+        )
+        for text, style, situation, goal in presets:
+            button = create_styled_button(
+                frame_presets,
+                text=text,
+                command=lambda s=style, sit=situation, g=goal: self._apply_paragraph_work_preset(s, sit, g),
+            )
+            button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        ctk.CTkLabel(
+            card_style,
+            text="Chọn phong cách để dùng ngay khi chat/email công việc. Để Mặc định nếu chỉ muốn dịch như trước.",
+            font=('Segoe UI', 8, 'italic'),
+            text_color=self.colors['gray_medium'],
+            wraplength=680,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(5, 0))
+
         # Input text area
         frame_text_input = ctk.CTkFrame(card_input, fg_color="transparent")
         frame_text_input.pack(fill=tk.X, padx=15, pady=(5, 10))
@@ -3485,6 +3581,64 @@ class MainWindow(ctk.CTk):
         else:
             self._on_paragraph_translation_failed(payload)
 
+    def _apply_paragraph_work_preset(self, style: str, situation: str, goal: str) -> None:
+        """Apply a predefined work communication style preset."""
+        self.paragraph_output_style.set(style)
+        self.paragraph_communication_situation.set(situation)
+        self.paragraph_processing_goal.set(goal)
+
+    def _get_paragraph_work_options(self) -> Dict[str, str]:
+        """Return selected work communication options for paragraph translation."""
+        return {
+            "style": self.paragraph_output_style.get().strip(),
+            "situation": self.paragraph_communication_situation.get().strip(),
+            "goal": self.paragraph_processing_goal.get().strip(),
+        }
+
+    def _has_paragraph_work_options(self, options: Dict[str, str]) -> bool:
+        """Check whether paragraph work communication options should affect translation."""
+        return any(
+            (
+                options["style"] != self.paragraph_style_options[0],
+                options["situation"] != self.paragraph_situation_options[0],
+                options["goal"] != self.paragraph_goal_options[0],
+            )
+        )
+
+    def _build_paragraph_work_prompt(self, input_text: str) -> str:
+        """Build an optional work communication rewrite prompt for text translation."""
+        options = self._get_paragraph_work_options()
+        if not self._has_paragraph_work_options(options):
+            return input_text
+
+        user_context = self.entry_paragraph_context.get().strip()
+        context_line = f"\nBối cảnh người dùng cung cấp: {user_context}" if user_context else ""
+        return (
+            "Bạn là trợ lý biên tập văn bản công việc.\n\n"
+            "Hãy xử lý nội dung theo yêu cầu sau:\n\n"
+            f"Phong cách đầu ra: {options['style']}\n"
+            f"Tình huống giao tiếp: {options['situation']}\n"
+            f"Mục tiêu xử lý: {options['goal']}"
+            f"{context_line}\n\n"
+            "Quy tắc:\n"
+            "- Giữ nguyên ý chính, dữ kiện, tên riêng, số liệu và mức độ cam kết trong văn bản gốc.\n"
+            "- Không tự thêm thông tin, thời gian, tên người, lý do, lời hứa, deadline hoặc cam kết không có trong nội dung gốc.\n"
+            "- Điều chỉnh mức độ trang trọng đúng với phong cách đã chọn.\n"
+            "- Văn bản đầu ra phải tự nhiên, dùng được ngay trong công việc.\n"
+            "- Nếu là chat, viết ngắn gọn, dễ gửi.\n"
+            "- Nếu là email, có thể trình bày theo format email phù hợp, nhưng không bịa tên người nhận.\n"
+            "- Nếu nói với sếp hoặc sếp lớn, dùng ngôn ngữ khiêm tốn, rõ trách nhiệm, tránh ra lệnh.\n"
+            "- Nếu là nhờ hỗ trợ, dùng giọng lịch sự, rõ việc cần hỗ trợ.\n"
+            "- Nếu là xin lỗi/giải trình, nhận trách nhiệm vừa đủ, không đổ lỗi nếu người dùng không nêu.\n"
+            "- Nếu là từ chối, từ chối mềm, lịch sự, không gây đối đầu.\n"
+            "- Nếu mục tiêu là tạo 3 phiên bản, hãy xuất đúng 3 mục:\n"
+            "  1. Ngắn gọn\n"
+            "  2. Lịch sự\n"
+            "  3. Trang trọng\n"
+            "- Không giải thích dài dòng.\n"
+            "- Chỉ trả về kết quả cuối cùng.\n\n"
+            f"Nội dung cần xử lý:\n{input_text}"
+        )
 
     def translate_paragraph(self):
         """Translate paragraph"""
@@ -3506,9 +3660,11 @@ class MainWindow(ctk.CTk):
             self.entry_paragraph_output.insert(tk.END, "Dang dich...")
             self.after(50, self._poll_paragraph_translation_result)
 
+            translation_input = self._build_paragraph_work_prompt(input_text)
+
             def translate_thread():
                 try:
-                    translated_text = self.translation_service.translate_text(input_text, src_lang, dest_lang)
+                    translated_text = self.translation_service.translate_text(translation_input, src_lang, dest_lang)
                     self._paragraph_translation_result = ("success", translated_text)
                 except Exception as exc:
                     self._paragraph_translation_result = ("error", exc)

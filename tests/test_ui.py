@@ -15,6 +15,186 @@ from translation_app.core.provider_router import ProviderRouter
 from translation_app.core.providers import OpenAICompatibleProvider
 
 
+class _ParagraphWorkPromptHarness:
+    """Minimal harness for paragraph work communication prompt helpers."""
+
+    from translation_app.ui.main_window import MainWindow
+
+    paragraph_style_options = [
+        "Mặc định",
+        "Thân mật / xuồng xã",
+        "Tự nhiên / lịch sự nhẹ",
+        "Chuyên nghiệp",
+        "Trang trọng với cấp trên",
+        "Rất trang trọng / executive",
+        "Email công việc",
+    ]
+    paragraph_situation_options = [
+        "Không chỉ định",
+        "Chat với bạn bè/đồng nghiệp thân",
+        "Chat với đồng nghiệp",
+        "Chat với sếp trực tiếp",
+        "Chat với sếp lớn/giám đốc",
+        "Gửi nhiều phòng ban",
+        "Gửi khách hàng/đối tác",
+        "Báo cáo tiến độ",
+        "Nhờ hỗ trợ/phối hợp",
+        "Xin lỗi/giải trình",
+        "Từ chối khéo",
+    ]
+    paragraph_goal_options = [
+        "Dịch đúng nghĩa",
+        "Dịch + viết tự nhiên",
+        "Viết lại lịch sự hơn",
+        "Viết ngắn gọn hơn",
+        "Viết trang trọng hơn",
+        "Làm mềm câu",
+        "Tạo 3 phiên bản: ngắn gọn / lịch sự / trang trọng",
+    ]
+    _apply_paragraph_work_preset = MainWindow._apply_paragraph_work_preset
+    _get_paragraph_work_options = MainWindow._get_paragraph_work_options
+    _has_paragraph_work_options = MainWindow._has_paragraph_work_options
+    _build_paragraph_work_prompt = MainWindow._build_paragraph_work_prompt
+
+    def __init__(self, style=None, situation=None, goal=None, context=""):
+        import tkinter as tk
+
+        self._tk_root = tk.Tcl()
+        self.paragraph_output_style = tk.StringVar(
+            master=self._tk_root,
+            value=style or self.paragraph_style_options[0],
+        )
+        self.paragraph_communication_situation = tk.StringVar(
+            master=self._tk_root,
+            value=situation or self.paragraph_situation_options[0],
+        )
+        self.paragraph_processing_goal = tk.StringVar(
+            master=self._tk_root,
+            value=goal or self.paragraph_goal_options[0],
+        )
+        self.entry_paragraph_context = self._ContextEntry(context)
+
+    class _ContextEntry:
+        def __init__(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+
+def test_text_tab_work_style_controls_exist():
+    """Phase 5M work style control option lists should be available."""
+    harness = _ParagraphWorkPromptHarness()
+
+    assert "Mặc định" in harness.paragraph_style_options
+    assert "Email công việc" in harness.paragraph_style_options
+    assert "Không chỉ định" in harness.paragraph_situation_options
+    assert "Chat với sếp trực tiếp" in harness.paragraph_situation_options
+    assert "Dịch đúng nghĩa" in harness.paragraph_goal_options
+    assert "Tạo 3 phiên bản: ngắn gọn / lịch sự / trang trọng" in harness.paragraph_goal_options
+
+
+def test_text_tab_default_prompt_preserves_legacy_behavior():
+    """Default style options must not alter translation input."""
+    harness = _ParagraphWorkPromptHarness()
+
+    assert harness._build_paragraph_work_prompt("Please review this.") == "Please review this."
+
+
+def test_paragraph_work_prompt_keeps_legacy_default_input():
+    """Backward-compatible alias for default prompt behavior."""
+    test_text_tab_default_prompt_preserves_legacy_behavior()
+
+
+def test_text_tab_formal_boss_style_prompt():
+    """Formal boss chat choices should add humility and no-command guidance."""
+    harness = _ParagraphWorkPromptHarness(
+        style="Trang trọng với cấp trên",
+        situation="Chat với sếp trực tiếp",
+        goal="Viết lại lịch sự hơn",
+        context="báo tiến độ cho quản lý",
+    )
+
+    prompt = harness._build_paragraph_work_prompt("I need more time.")
+
+    assert "Trang trọng với cấp trên" in prompt
+    assert "Chat với sếp trực tiếp" in prompt
+    assert "Viết lại lịch sự hơn" in prompt
+    assert "khiêm tốn" in prompt
+    assert "tránh ra lệnh" in prompt
+
+
+def test_text_tab_business_email_style_prompt():
+    """Business email prompt must allow email format but forbid invented recipients."""
+    harness = _ParagraphWorkPromptHarness(style="Email công việc")
+
+    prompt = harness._build_paragraph_work_prompt("Please send the file.")
+
+    assert "Email công việc" in prompt
+    assert "format email" in prompt
+    assert "không bịa tên người nhận" in prompt
+
+
+def test_text_tab_three_versions_prompt():
+    """Three-version goal should request exactly the required labels."""
+    harness = _ParagraphWorkPromptHarness(
+        goal="Tạo 3 phiên bản: ngắn gọn / lịch sự / trang trọng",
+    )
+
+    prompt = harness._build_paragraph_work_prompt("Can you help me?")
+
+    assert "Tạo 3 phiên bản" in prompt
+    assert "1. Ngắn gọn" in prompt
+    assert "2. Lịch sự" in prompt
+    assert "3. Trang trọng" in prompt
+
+
+def test_text_tab_quick_preset_buttons_update_controls():
+    """Quick preset command should update the three work communication controls."""
+    harness = _ParagraphWorkPromptHarness()
+
+    harness._apply_paragraph_work_preset(
+        "Chuyên nghiệp",
+        "Từ chối khéo",
+        "Làm mềm câu",
+    )
+
+    assert harness.paragraph_output_style.get() == "Chuyên nghiệp"
+    assert harness.paragraph_communication_situation.get() == "Từ chối khéo"
+    assert harness.paragraph_processing_goal.get() == "Làm mềm câu"
+
+
+def test_paragraph_work_prompt_adds_safe_work_rewrite_instructions():
+    """Non-default style options should add work rewrite instructions safely."""
+    harness = _ParagraphWorkPromptHarness(
+        style="Email công việc",
+        situation="Gửi nhiều phòng ban",
+        goal="Dịch + viết tự nhiên",
+        context="gửi cho quản lý",
+    )
+
+    prompt = harness._build_paragraph_work_prompt("Need the report today.")
+
+    assert "trợ lý biên tập văn bản công việc" in prompt
+    assert "Không tự thêm thông tin" in prompt
+    assert "Email công việc" in prompt
+    assert "Gửi nhiều phòng ban" in prompt
+    assert "Dịch + viết tự nhiên" in prompt
+    assert "gửi cho quản lý" in prompt
+    assert "Need the report today." in prompt
+
+
+def test_text_tab_work_prompt_security_regression():
+    """Prompt template must not contain credential headers or token labels."""
+    harness = _ParagraphWorkPromptHarness(style="Email công việc")
+
+    prompt = harness._build_paragraph_work_prompt("Short user text")
+
+    assert "API key" not in prompt
+    assert "Authorization" not in prompt
+    assert "Bearer" not in prompt
+
+
 def test_ui_imports_without_error():
     """Verify that UI modules import without throwing any SyntaxError."""
     try:

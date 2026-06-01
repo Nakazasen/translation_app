@@ -27,7 +27,7 @@
 | Tính năng | Mô tả | Định dạng hỗ trợ |
 | :--- | :--- | :--- |
 | **Dịch File** | Dịch toàn bộ nội dung file, giữ nguyên cấu trúc. | `.xlsx`, `.docx`, `.pptx`, `.pdf`, `.txt` |
-| **Dịch Đoạn Văn** | Dịch nhanh các đoạn văn bản với phân tích AI. | Plain Text |
+| **Dịch Đoạn Văn** | Dịch nhanh các đoạn văn bản, phân tích AI và tùy chọn viết lại theo phong cách giao tiếp công việc. | Plain Text |
 | **Dịch Email** | Quét và dịch các email mới nhất từ Outlook. | Microsoft Outlook |
 | **Dịch Ảnh (OCR)** | Nhận diện và dịch văn bản từ hình ảnh. | `.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp` |
 | **Phân tích AI** | Giải thích ý nghĩa, ngữ pháp câu qua Gemini AI. | Text/Images |
@@ -56,6 +56,7 @@ pip install -r requirements.txt
    - Chọn tab tương ứng với nhu cầu (File, Văn bản, Email, Ảnh).
    - Chọn ngôn ngữ Nguồn (Source) và Đích (Target).
    - Nhấn nút thực hiện và theo dõi tiến trình qua Progress Bar.
+   - Trong tab **Dịch văn bản**, có thể để mặc định để dịch như cũ hoặc chọn **Phong cách đầu ra**, **Tình huống** và **Mục tiêu** để AI dịch kèm viết lại cho email, chat, báo cáo, xin lỗi hoặc nhờ hỗ trợ trong công việc.
 
 ---
 
@@ -104,6 +105,10 @@ Email support: [vinh.bd@kdtvn.local]
 ---
 
 ## 📅 Nhật ký cập nhật (Changelog)
+
+### v6.1.1 (2026-06-01)
+
+- **Work Communication Style Assistant (Phase 5M)**: Tab **Dịch văn bản** có thêm lựa chọn **Phong cách đầu ra**, **Tình huống** và **Mục tiêu** cùng preset nhanh cho email lịch sự, chat ngắn, xin lỗi và nhờ hỗ trợ. Mặc định vẫn là "chỉ dịch như trước" để giữ hành vi cũ.
 
 ### v6.1.0 (2026-05-30)
 
