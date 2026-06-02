@@ -3855,20 +3855,71 @@ class MainWindow(ctk.CTk):
 
         try:
             LanguageValidator.validate_language_pair(src_lang, dest_lang)
+
+            # Confirm batch email translation exactly once at start on main thread
+            confirm_msg = (
+                f"Bạn có chắc chắn muốn quét và dịch các email chưa đọc trong thư mục '{folder_name}' của Outlook?\n\n"
+                "Lưu ý: Quá trình này sẽ dịch tiêu đề và nội dung các email chưa đọc mới nhất, "
+                "sau đó gửi bản dịch tới email của bạn. Các email gốc sẽ không bị thay đổi."
+            )
+            if not messagebox.askyesno("Xác nhận dịch Email", confirm_msg):
+                self._set_email_status("Đã hủy dịch email.")
+                return
+
             self._set_email_status("Đang kết nối Outlook và chuẩn bị dịch email...")
 
             def translate_thread():
                 try:
-                    count = self.email_handler.translate_latest_unread_emails(
-                        folder_name, src_lang, dest_lang
+                    def update_progress(status_text):
+                        self.after(0, lambda: self._set_email_status(status_text))
+
+                    success_count, errors = self.email_handler.translate_latest_unread_emails(
+                        folder_name, src_lang, dest_lang, progress_callback=update_progress
                     )
-                    self.after(0, lambda: self._set_email_status(
-                        f"Hoàn tất — đã xử lý {count} email. Email gốc trong Outlook không bị sửa."
-                    ))
-                    self.after(0, lambda: messagebox.showinfo(
-                        "Thành công",
-                        f"{count} email mới nhất chứa bộ lọc đã được dịch và gửi thành công."
-                    ))
+
+                    # Update status
+                    if success_count > 0:
+                        status_lbl = f"Hoàn tất — đã dịch thành công {success_count} email."
+                        if errors:
+                            status_lbl += f" Có {len(errors)} email bị lỗi."
+                    else:
+                        status_lbl = "Không dịch được email nào."
+
+                    self.after(0, lambda s=status_lbl: self._set_email_status(s))
+
+                    # Present a single summary popup at the end
+                    def show_summary():
+                        if success_count > 0 and not errors:
+                            messagebox.showinfo(
+                                "Thành công",
+                                f"Đã dịch và gửi thành công {success_count} email."
+                            )
+                        elif success_count > 0 and errors:
+                            err_summary = "\n".join(errors[:5])
+                            if len(errors) > 5:
+                                err_summary += "\n..."
+                            messagebox.showwarning(
+                                "Hoàn thành một phần",
+                                f"Đã dịch thành công {success_count} email.\n\n"
+                                f"Có {len(errors)} email bị lỗi:\n{err_summary}"
+                            )
+                        elif success_count == 0 and errors:
+                            err_summary = "\n".join(errors[:5])
+                            if len(errors) > 5:
+                                err_summary += "\n..."
+                            messagebox.showerror(
+                                "Lỗi dịch email",
+                                f"Không dịch được email nào.\n\n"
+                                f"Chi tiết lỗi:\n{err_summary}"
+                            )
+                        else:
+                            messagebox.showinfo(
+                                "Thông báo",
+                                "Không tìm thấy email chưa đọc nào trong thư mục này."
+                            )
+
+                    self.after(0, show_summary)
+
                 except Exception as e:
                     error_msg = handle_translation_error(e, "Dịch email")
                     self.after(0, lambda: self._set_email_status(
@@ -4141,6 +4192,42 @@ class MainWindow(ctk.CTk):
                     self.after(0, lambda: self.text_output.insert(tk.END, "Không tìm thấy text trong ảnh."))
                     self.after(0, lambda: messagebox.showwarning("Cảnh báo", "Không tìm thấy text trong ảnh."))
                     return
+
+                # Perform advanced OCR quality check
+                quality_res = self.ocr_handler.check_ocr_quality(text, src_lang, dest_lang)
+                if quality_res['is_low_quality']:
+                    # Set status
+                    if quality_res['missing_jpn_pack']:
+                        status_msg = "Thiếu gói OCR tiếng Nhật jpn.traineddata."
+                    else:
+                        status_msg = "OCR chất lượng thấp — hãy kiểm tra/sửa phần OCR trước khi dịch."
+                    self.after(0, lambda s=status_msg: self._set_image_status(s))
+
+                    import queue
+                    q = queue.Queue()
+
+                    def ask_user():
+                        msg_warn = (
+                            "⚠️ CẢNH BÁO CHẤT LƯỢNG OCR THẤP\n\n"
+                            f"Lý do: {quality_res['reason']}\n\n"
+                            "Để có kết quả tốt nhất, bạn nên:\n"
+                            "- Kiểm tra lại gói ngôn ngữ OCR hoặc độ rõ nét của ảnh.\n"
+                            "- Tự chỉnh sửa văn bản OCR trực tiếp trong ô nhập liệu.\n\n"
+                            "Bạn có muốn tiếp tục gửi văn bản này đi dịch AI không?\n"
+                            "- Chọn 'Yes' để tiếp tục dịch AI.\n"
+                            "- Chọn 'No' để hủy dịch và tự chỉnh sửa phần OCR ở trên."
+                        )
+                        ans = messagebox.askyesno("Cảnh báo chất lượng OCR", msg_warn)
+                        q.put(ans)
+
+                    self.after(0, ask_user)
+                    proceed = q.get()
+
+                    if not proceed:
+                        self.after(0, lambda: self._set_image_status("Dịch bị hủy — Hãy kiểm tra/sửa phần OCR và bấm 'Phân tích AI' để tiếp tục."))
+                        self.after(0, lambda: self.text_output.delete("1.0", tk.END))
+                        self.after(0, lambda: self.text_output.insert(tk.END, "Dịch bị hủy. Bạn có thể tự chỉnh sửa phần OCR ở trên rồi bấm nút 'Phân tích AI' để tiếp tục dịch bằng AI."))
+                        return
 
                 # Display translation area and translate OCR text
                 self.after(0, lambda: self.text_output.delete("1.0", tk.END))

@@ -93,3 +93,99 @@ def test_email_handler_custom_folder_lookup_is_normalized():
 
     assert handler._resolve_folder(namespace, "khách   hàng") is target_folder
     namespace.GetDefaultFolder.assert_not_called()
+
+
+def test_email_status_updates_batch_progress(monkeypatch):
+    import pythoncom
+    import win32com.client
+
+    monkeypatch.setattr(pythoncom, "CoInitialize", lambda: None)
+    monkeypatch.setattr(pythoncom, "CoUninitialize", lambda: None)
+
+    # Mock Outlook objects
+    outlook_mock = MagicMock()
+    namespace_mock = MagicMock()
+    folder_mock = MagicMock()
+    item_mock = MagicMock()
+
+    item_mock.Subject = "Test Unread Email"
+    item_mock.Body = "Hello world"
+
+    # Mock items list behavior
+    items_mock = MagicMock()
+    items_mock.__iter__.return_value = [item_mock]
+    folder_mock.Items.Restrict.return_value = items_mock
+
+    namespace_mock.GetDefaultFolder.return_value = folder_mock
+    namespace_mock.CurrentUser.Address = "test@domain.com"
+    outlook_mock.GetNamespace.return_value = namespace_mock
+
+    # Mock CreateItem for sending
+    new_msg_mock = MagicMock()
+    outlook_mock.CreateItem.return_value = new_msg_mock
+
+    monkeypatch.setattr(win32com.client, "Dispatch", lambda name: outlook_mock)
+
+    service = FakeTranslationService()
+    handler = EmailHandler(service)
+
+    progress_states = []
+    def callback(text):
+        progress_states.append(text)
+
+    success_count, errors = handler.translate_latest_unread_emails(
+        "Inbox", "en", "vi", progress_callback=callback
+    )
+
+    assert success_count == 1
+    assert len(errors) == 0
+    assert any("Đang kết nối Outlook" in s for s in progress_states)
+    assert any("Đang đọc email 1/1" in s for s in progress_states)
+    assert any("Đang dịch email 1/1" in s for s in progress_states)
+    assert new_msg_mock.Send.call_count == 1
+
+
+def test_email_batch_errors_are_summarized(monkeypatch):
+    import pythoncom
+    import win32com.client
+
+    monkeypatch.setattr(pythoncom, "CoInitialize", lambda: None)
+    monkeypatch.setattr(pythoncom, "CoUninitialize", lambda: None)
+
+    # Mock Outlook objects
+    outlook_mock = MagicMock()
+    namespace_mock = MagicMock()
+    folder_mock = MagicMock()
+
+    item_fail = MagicMock()
+    item_fail.Subject = "Fail Subject"
+    item_fail.Body = "Fail Body"
+
+    # Force translate to raise exception for this specific item
+    class ErroringTranslationService:
+        def translate_text(self, text, src_lang, dest_lang):
+            if "Fail" in text:
+                raise RuntimeError("AI translation service error")
+            return f"[{text}]"
+
+    items_mock = MagicMock()
+    items_mock.__iter__.return_value = [item_fail]
+    folder_mock.Items.Restrict.return_value = items_mock
+
+    namespace_mock.GetDefaultFolder.return_value = folder_mock
+    namespace_mock.CurrentUser.Address = "test@domain.com"
+    outlook_mock.GetNamespace.return_value = namespace_mock
+
+    monkeypatch.setattr(win32com.client, "Dispatch", lambda name: outlook_mock)
+
+    service = ErroringTranslationService()
+    handler = EmailHandler(service)
+
+    success_count, errors = handler.translate_latest_unread_emails(
+        "Inbox", "en", "vi"
+    )
+
+    assert success_count == 0
+    assert len(errors) == 1
+    assert "Lỗi dịch email 1" in errors[0]
+    assert "AI translation service error" in errors[0]

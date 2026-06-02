@@ -16,31 +16,31 @@ from translation_app.utils.logger import logger
 
 class OCRHandler:
     """OCR handler for extracting text from images"""
-    
+
     def __init__(self):
         """Initialize OCR handler and setup Tesseract"""
         self.tesseract_path: Optional[str] = None
         self.is_available: bool = False
         self._setup_tesseract()
-    
+
     def _extract_tesseract_from_bundle(self) -> Optional[str]:
         """
         Extract Tesseract OCR from onefile bundle if needed
-        
+
         Returns:
             Path to tesseract.exe if extracted, None otherwise
         """
         if platform.system() != 'Windows':
             return None
-        
+
         # Target path for extraction (shared across programs)
         localappdata = os.getenv('LOCALAPPDATA', '')
         if not localappdata:
             return None
-        
+
         tesseract_dir = os.path.join(localappdata, 'Tesseract-OCR')
         tesseract_exe = os.path.join(tesseract_dir, 'tesseract.exe')
-        
+
         # If Tesseract already exists at this location and works, no need to extract
         if os.path.exists(tesseract_exe):
             try:
@@ -49,7 +49,7 @@ class OCRHandler:
                 return tesseract_exe
             except Exception as e:
                 logger.debug(f"Tesseract at {tesseract_exe} not working: {e}")
-        
+
         # Check if running from onefile
         bundle_dir = None
         if getattr(sys, 'frozen', False):
@@ -62,24 +62,24 @@ class OCRHandler:
         else:
             # Running from Python script
             bundle_dir = os.path.dirname(os.path.abspath(__file__))
-        
+
         if not bundle_dir:
             return None
-        
+
         # Check if Tesseract zip exists in bundle
         tesseract_zip = os.path.join(bundle_dir, 'tesseract.zip')
         if not os.path.exists(tesseract_zip):
             return None
-        
+
         try:
             # Create target directory if not exists
             os.makedirs(tesseract_dir, exist_ok=True)
-            
+
             # Extract Tesseract OCR
             logger.info("Extracting Tesseract OCR from bundle...")
             with zipfile.ZipFile(tesseract_zip, 'r') as zip_ref:
                 zip_ref.extractall(tesseract_dir)
-            
+
             # Verify after extraction
             if os.path.exists(tesseract_exe):
                 pytesseract.pytesseract.tesseract_cmd = tesseract_exe
@@ -88,22 +88,22 @@ class OCRHandler:
                 return tesseract_exe
         except Exception as e:
             logger.error(f"Error extracting Tesseract OCR: {e}")
-        
+
         return None
-    
+
     def _setup_tesseract(self) -> None:
         """Setup and configure Tesseract OCR"""
         try:
             if platform.system() == 'Windows':
                 # Try extracting from bundle first (if running from onefile)
                 extracted_path = self._extract_tesseract_from_bundle()
-                
+
                 # Try common Windows paths
                 possible_paths = [extracted_path] + config.tesseract_paths
-                
+
                 # Remove None from list
                 possible_paths = [p for p in possible_paths if p and os.path.exists(p)]
-                
+
                 # Check if tesseract is in PATH
                 try:
                     pytesseract.get_tesseract_version()
@@ -127,7 +127,7 @@ class OCRHandler:
                             except Exception as e:
                                 logger.debug(f"Tesseract at {path} not working: {e}")
                                 continue
-                    
+
                     if not tesseract_found:
                         logger.warning("Tesseract OCR not found. Please install or add to PATH.")
                         self.is_available = False
@@ -143,11 +143,11 @@ class OCRHandler:
         except Exception as e:
             logger.error(f"Error setting up Tesseract: {e}")
             self.is_available = False
-    
+
     def is_installed(self) -> bool:
         """
         Check if Tesseract OCR is installed and available
-        
+
         Returns:
             True if Tesseract is available
         """
@@ -211,7 +211,7 @@ class OCRHandler:
                     f"3. Khởi động lại ứng dụng và thử lại."
                 )
         return requested
-    
+
     def _contains_japanese_script(self, text: str) -> bool:
         """
         Check whether text contains Japanese script characters.
@@ -282,40 +282,119 @@ class OCRHandler:
                 "trong Tesseract, hoặc dùng ảnh rõ nét hơn."
             )
 
+    def check_ocr_quality(self, text: str, src_lang: str, dest_lang: str) -> dict:
+        """
+        Check OCR text quality for high-risk issues.
+
+        Args:
+            text: Extracted OCR text.
+            src_lang: Source language chosen by user (e.g. 'auto' or 'ja').
+            dest_lang: Destination language.
+
+        Returns:
+            Dict containing quality details:
+            - 'is_low_quality': bool
+            - 'reason': str
+            - 'missing_jpn_pack': bool
+        """
+        installed = self.get_installed_languages()
+        if not installed:
+            installed = ['eng']
+
+        src_lower = src_lang.lower()
+        is_japanese_context = src_lower in ('auto', 'ja', 'jpn', 'japanese')
+
+        # 1. Check if jpn pack is missing in Japanese/Auto context
+        if is_japanese_context and 'jpn' not in installed:
+            return {
+                'is_low_quality': True,
+                'reason': "Thiếu gói OCR tiếng Nhật jpn.traineddata.",
+                'missing_jpn_pack': True
+            }
+
+        stripped = text.strip()
+
+        # 2. Check if text is too short
+        if stripped and len(stripped) < 10:
+            return {
+                'is_low_quality': True,
+                'reason': "Văn bản nhận diện quá ngắn (dưới 10 ký tự).",
+                'missing_jpn_pack': False
+            }
+
+        # 3. Check for symbol ratio > 30%
+        if stripped:
+            chars = [c for c in stripped if not c.isspace()]
+            if chars:
+                symbol_chars = [c for c in chars if not c.isalnum()]
+                symbol_ratio = len(symbol_chars) / len(chars)
+                if symbol_ratio > 0.3:
+                    return {
+                        'is_low_quality': True,
+                        'reason': f"Tỷ lệ ký tự đặc biệt/ký hiệu quá cao ({symbol_ratio:.1%}).",
+                        'missing_jpn_pack': False
+                    }
+
+        # 4. Check for no Japanese characters in Japanese/Auto context
+        if is_japanese_context and not self._contains_japanese_script(text):
+            # Check for Latin metadata or common Latin junk keywords
+            metadata_keywords = {'metadata', 'filename', 'resolution', 'dpi', 'tesseract', 'listening', 'practice', 'n3', 'n2'}
+            words = [w.strip('.,:;!?()[]{}*\'\"').lower() for w in text.split()]
+            found_kws = [w for w in words if w in metadata_keywords]
+
+            if found_kws:
+                return {
+                    'is_low_quality': True,
+                    'reason': f"Phát hiện các từ khóa/metadata Latin ({', '.join(found_kws)}) nhưng không tìm thấy chữ tiếng Nhật.",
+                    'missing_jpn_pack': False
+                }
+
+            return {
+                'is_low_quality': True,
+                'reason': "Không tìm thấy ký tự tiếng Nhật (Hiragana/Katakana/Kanji) nào trong văn bản nhận diện.",
+                'missing_jpn_pack': False
+            }
+
+        return {
+            'is_low_quality': False,
+            'reason': "",
+            'missing_jpn_pack': False
+        }
+
     def extract_text_from_image(self, image: Image.Image, lang: Optional[str] = None) -> str:
         """
         Extract text from image using OCR
-        
+
         Args:
             image: PIL Image object
             lang: OCR language code (defaults to 'eng')
-        
+
         Returns:
             Extracted text
-        
+
         Raises:
             OCRError: If OCR fails
         """
         if not self.is_available:
             raise OCRError("Tesseract OCR is not installed or not available")
-        
+
         if lang is None:
             lang = 'eng'
-        
+
         try:
             # PRE-PROCESSING for better OCR accuracy
             # 1. Convert to grayscale (L)
             processed_img = image.convert('L')
-            
+
             # 2. Upscale image (2x) to help with small text
             w, h = processed_img.size
             processed_img = processed_img.resize((w * 2, h * 2), Image.Resampling.LANCZOS)
-            
+
             logger.info(f"Performing OCR with language: {lang}")
-            
+
             # Extract text
             text = pytesseract.image_to_string(processed_img, lang=lang)
-            self.validate_ocr_text_quality(text, lang)
+            # self.validate_ocr_text_quality(text, lang)
             return text
         except pytesseract.TesseractNotFoundError:
             raise OCRError("Tesseract OCR executable not found")
@@ -332,34 +411,34 @@ class OCRHandler:
                 raise OCRError(f"OCR failed: {e}") from e
         except Exception as e:
             raise OCRError(f"Unexpected OCR error: {e}") from e
-    
+
     def is_text_clear(self, text: str) -> bool:
         """
         Check if OCR text is clear and readable
-        
+
         Args:
             text: Text to check
-        
+
         Returns:
             True if text is clear
         """
         if not text or not text.strip():
             return False
-        
+
         text = text.strip()
-        
+
         # Remove special characters and whitespace
         clean_text = ''.join(c for c in text if c.isalnum() or c.isspace())
-        
+
         # Text must have at least 3 alphanumeric characters to be considered clear
         if len(clean_text) < 3:
             return False
-        
+
         # Check ratio of valid characters (at least 30% should be alphanumeric)
         valid_chars = sum(1 for c in text if c.isalnum())
         if len(text) > 0 and valid_chars / len(text) < 0.3:
             return False
-        
+
         return True
 
 
@@ -373,4 +452,3 @@ def get_ocr_handler() -> OCRHandler:
     if _ocr_handler is None:
         _ocr_handler = OCRHandler()
     return _ocr_handler
-

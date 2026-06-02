@@ -64,3 +64,38 @@ def test_ocr_handler_does_not_apply_japanese_guard_to_english():
     handler = OCRHandler()
 
     handler.validate_ocr_text_quality("= @)YouTube m' Tim kiem = Q", "eng")
+
+
+def test_ocr_quality_warns_on_latin_only_for_japanese_context(monkeypatch):
+    handler = OCRHandler()
+    monkeypatch.setattr(handler, "get_installed_languages", lambda: ["eng", "jpn"])
+
+    # Text contains latin garbage and metadata word
+    res = handler.check_ocr_quality("tesseract resolution dpi bad text", "ja", "vi")
+    assert res["is_low_quality"] is True
+    assert "tesseract" in res["reason"]
+    assert res["missing_jpn_pack"] is False
+
+    # Text contains no Japanese at all
+    res2 = handler.check_ocr_quality("this is normal english sentence without any japanese script", "auto", "vi")
+    assert res2["is_low_quality"] is True
+    assert "Không tìm thấy ký tự tiếng Nhật" in res2["reason"]
+
+
+def test_ocr_quality_warns_when_text_too_short(monkeypatch):
+    handler = OCRHandler()
+    monkeypatch.setattr(handler, "get_installed_languages", lambda: ["eng", "jpn"])
+
+    res = handler.check_ocr_quality("abc", "en", "vi")
+    assert res["is_low_quality"] is True
+    assert "Văn bản nhận diện quá ngắn" in res["reason"]
+
+
+def test_ocr_quality_missing_jpn_pack_in_japanese_context(monkeypatch):
+    handler = OCRHandler()
+    monkeypatch.setattr(handler, "get_installed_languages", lambda: ["eng"])
+
+    res = handler.check_ocr_quality("abc", "ja", "vi")
+    assert res["is_low_quality"] is True
+    assert res["missing_jpn_pack"] is True
+    assert "Thiếu gói OCR tiếng Nhật" in res["reason"]
