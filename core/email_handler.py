@@ -66,6 +66,8 @@ class EmailHandler:
         if max_emails is None:
             max_emails = config.max_emails_to_translate
         
+        import pythoncom
+        pythoncom.CoInitialize()
         try:
             logger.info(f"Connecting to Outlook...")
             outlook = win32com.client.Dispatch("Outlook.Application")
@@ -123,4 +125,6 @@ class EmailHandler:
             error_msg = f"Error translating emails: {e}"
             logger.error(error_msg)
             raise EmailError(error_msg, original_error=e) from e
+        finally:
+            pythoncom.CoUninitialize()
 

@@ -152,22 +152,65 @@ class OCRHandler:
             True if Tesseract is available
         """
         return self.is_available
-    
+    def get_installed_languages(self) -> list[str]:
+        """
+        Get list of installed OCR languages
+
+        Returns:
+            List of installed language codes
+        """
+        if not self.is_available:
+            return []
+        try:
+            return pytesseract.get_languages()
+        except Exception as e:
+            logger.warning(f"Failed to get installed OCR languages: {e}")
+            return ['eng']
+
     def get_ocr_language(self, src_lang: str) -> str:
         """
         Get OCR language code from source language code
-        
+
         Args:
             src_lang: Source language code (can be 'auto' for auto-detect)
-            
+
         Returns:
             OCR language code (defaults to 'eng' if auto-detect)
+
+        Raises:
+            OCRError: If the requested language pack is not installed in Tesseract
         """
+        installed = self.get_installed_languages()
+        if not installed:
+            installed = ['eng']
+
         if src_lang.lower() == 'auto':
             # For auto-detect, use a combination of common project languages (JP, EN, VI, CN)
-            # This allows Tesseract to detect multiple languages in the same image
-            return 'jpn+eng+vie+chi_sim'
-        return config.get_ocr_language(src_lang)
+            # but ONLY filter to ones that are actually installed on the system!
+            candidates = ['jpn', 'eng', 'vie', 'chi_sim']
+            available_candidates = [c for c in candidates if c in installed]
+            if not available_candidates:
+                return 'eng'
+            return '+'.join(available_candidates)
+
+        requested = config.get_ocr_language(src_lang)
+        # Verify requested languages are installed. If a non-English requested part is missing,
+        # raise a clean OCRError so the UI can notify the user.
+        req_parts = requested.split('+')
+        missing_parts = [p for p in req_parts if p not in installed]
+        if missing_parts:
+            non_eng_missing = [p for p in missing_parts if p != 'eng']
+            if non_eng_missing:
+                raise OCRError(
+                    f"Gói ngôn ngữ OCR '{non_eng_missing[0]}' chưa được cài đặt trong Tesseract!\n\n"
+                    f"Để quét được ngôn ngữ này, vui lòng:\n"
+                    f"1. Tải file '{non_eng_missing[0]}.traineddata' từ GitHub:\n"
+                    f"   https://github.com/tesseract-ocr/tessdata\n"
+                    f"2. Sao chép/di chuyển file đó vào thư mục tessdata:\n"
+                    f"   C:\\Program Files\\Tesseract-OCR\\tessdata\n"
+                    f"3. Khởi động lại ứng dụng và thử lại."
+                )
+        return requested
     
     def extract_text_from_image(self, image: Image.Image, lang: Optional[str] = None) -> str:
         """
