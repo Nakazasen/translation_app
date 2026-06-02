@@ -157,10 +157,11 @@ class MainWindow(ctk.CTk):
     EMAIL_READY_STATUS = "Sẵn sàng — nhập thư mục Outlook rồi bấm bắt đầu."
     IMAGE_UX_GUIDE_TEXT = (
         "1. Chọn ảnh hoặc dán ảnh từ clipboard.\n"
-        "2. Bấm OCR & dịch để nhận diện chữ.\n"
-        "3. Có thể chỉnh lại OCR nếu nhận diện sai rồi copy/lưu/phân tích."
+        "2. Chọn chế độ phù hợp: Tự động / Tài liệu / Ảnh phụ đề-video.\n"
+        "3. Bấm OCR & dịch để nhận diện chữ, rồi có thể chỉnh OCR nếu cần.\n"
+        "4. Nếu ảnh là screenshot video, hãy ưu tiên chế độ phụ đề hoặc crop sát vùng chữ."
     )
-    IMAGE_READY_STATUS = "Sẵn sàng — chọn hoặc dán ảnh."
+    IMAGE_READY_STATUS = "Sẵn sàng — chọn hoặc dán ảnh, rồi chọn chế độ OCR phù hợp."
     IMAGE_EMPTY_OCR_TEXT = "OCR sẽ hiển thị ở đây và có thể chỉnh sửa trước khi dùng tiếp."
 
     def __init__(self):
@@ -229,6 +230,7 @@ class MainWindow(ctk.CTk):
         self.preview_photo: Optional[ImageTk.PhotoImage] = None
         self._preview_photo_refs: list = []  # Lưu references để tránh garbage collection
         self.last_ocr_text: str = "" # To store OCR result for analysis
+        self.image_ocr_mode = tk.StringVar(value="Tự động")
         self.last_pdf_report_input_file: Optional[str] = None
         self.last_pdf_report_output_file: Optional[str] = None
         self._file_translation_in_progress = False
@@ -2930,6 +2932,31 @@ class MainWindow(ctk.CTk):
         )
         combobox_dest_lang_image.pack(fill=tk.X)
 
+        frame_image_mode = ctk.CTkFrame(card_config, fg_color="transparent")
+        frame_image_mode.pack(fill=tk.X, padx=15, pady=(0, 15))
+
+        ctk.CTkLabel(
+            frame_image_mode, text="Chế độ ảnh:",
+            font=('Segoe UI', 10, 'bold')
+        ).pack(anchor=tk.W, pady=(0, 2))
+
+        self.combobox_image_mode = ctk.CTkComboBox(
+            frame_image_mode,
+            values=["Tự động", "Tài liệu", "Ảnh phụ đề-video"],
+            variable=self.image_ocr_mode,
+            state="readonly",
+            font=('Segoe UI', 9),
+            height=30,
+        )
+        self.combobox_image_mode.pack(fill=tk.X)
+
+        ctk.CTkLabel(
+            frame_image_mode,
+            text="Gợi ý: dùng 'Ảnh phụ đề-video' khi chữ nhỏ nằm ở nửa dưới ảnh chụp màn hình/video.",
+            text_color=self.colors.get('gray_medium', 'gray'),
+            font=('Segoe UI', 9, 'italic'), justify=tk.LEFT, wraplength=620
+        ).pack(fill=tk.X, pady=(4, 0), anchor=tk.W)
+
         # CARD 2: PREVIEW HÌNH ẢNH
         card_preview = create_styled_card(scroll_frame, title="👁️ Xem trước hình ảnh nguồn", accent="indigo")
         card_preview.pack(fill=tk.X, padx=15, pady=6)
@@ -4118,6 +4145,13 @@ class MainWindow(ctk.CTk):
         """Translate image with OCR"""
         src_lang = self.src_lang_image.get()
         dest_lang = self.dest_lang_image.get()
+        image_mode_label = self.image_ocr_mode.get()
+        ocr_mode_map = {
+            "Tự động": "auto",
+            "Tài liệu": "document",
+            "Ảnh phụ đề-video": "subtitle",
+        }
+        ocr_mode = ocr_mode_map.get(image_mode_label, "auto")
 
         # Check if using clipboard image or file
         img = None
@@ -4181,17 +4215,33 @@ class MainWindow(ctk.CTk):
                 self.after(0, lambda: self.update())
 
                 ocr_lang = self.ocr_handler.get_ocr_language(src_lang)
-                text = self.ocr_handler.extract_text_from_image(working_img, lang=ocr_lang)
+                ocr_result = self.ocr_handler.extract_text_with_metadata(
+                    working_img,
+                    lang=ocr_lang,
+                    mode=ocr_mode,
+                )
+                text = ocr_result.text
 
                 self.last_ocr_text = text  # Save for AI analysis
                 self.after(0, lambda captured=text: self._set_image_ocr_text(captured))
 
                 if not text.strip():
-                    self.after(0, lambda: self._set_image_status("Không tìm thấy text trong ảnh."))
+                    no_text_message = (
+                        "Không đọc được chữ. Hãy crop vùng phụ đề hoặc chọn ảnh rõ hơn."
+                    )
+                    self.after(0, lambda: self._set_image_status(no_text_message))
                     self.after(0, lambda: self.text_output.delete("1.0", tk.END))
-                    self.after(0, lambda: self.text_output.insert(tk.END, "Không tìm thấy text trong ảnh."))
-                    self.after(0, lambda: messagebox.showwarning("Cảnh báo", "Không tìm thấy text trong ảnh."))
+                    self.after(0, lambda: self.text_output.insert(tk.END, no_text_message))
+                    self.after(0, lambda: messagebox.showwarning("Cảnh báo", no_text_message))
                     return
+
+                if ocr_result.used_subtitle_crop:
+                    self.after(
+                        0,
+                        lambda: self._set_image_status(
+                            "Đã dùng fallback crop vùng phụ đề để nhận diện chữ nhỏ."
+                        ),
+                    )
 
                 # Perform advanced OCR quality check
                 quality_res = self.ocr_handler.check_ocr_quality(text, src_lang, dest_lang)
@@ -4212,6 +4262,7 @@ class MainWindow(ctk.CTk):
                             f"Lý do: {quality_res['reason']}\n\n"
                             "Để có kết quả tốt nhất, bạn nên:\n"
                             "- Kiểm tra lại gói ngôn ngữ OCR hoặc độ rõ nét của ảnh.\n"
+                            "- Dùng chế độ 'Ảnh phụ đề-video' hoặc crop sát vùng phụ đề.\n"
                             "- Tự chỉnh sửa văn bản OCR trực tiếp trong ô nhập liệu.\n\n"
                             "Bạn có muốn tiếp tục gửi văn bản này đi dịch AI không?\n"
                             "- Chọn 'Yes' để tiếp tục dịch AI.\n"

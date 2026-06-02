@@ -221,6 +221,7 @@ class _ImageUxHarness:
         self.label_image_status = self._Label()
         self.clipboard = ""
         self.updated = False
+        self.image_ocr_mode = self._Var("Tự động")
 
     class _Textbox:
         def __init__(self, value=""):
@@ -250,6 +251,16 @@ class _ImageUxHarness:
             if "text" in kwargs:
                 self.text = kwargs["text"]
 
+    class _Var:
+        def __init__(self, value=""):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
     def clipboard_clear(self):
         self.clipboard = ""
 
@@ -276,10 +287,20 @@ def test_email_image_ux_constants_are_safe_and_helpful():
     assert "Outlook" in MainWindow.EMAIL_UX_GUIDE_TEXT
     assert "không tự sửa email gốc" in MainWindow.EMAIL_SAFETY_TEXT
     assert "clipboard" in MainWindow.IMAGE_UX_GUIDE_TEXT
+    assert "Ảnh phụ đề-video" in MainWindow.IMAGE_UX_GUIDE_TEXT
+    assert "crop sát vùng chữ" in MainWindow.IMAGE_UX_GUIDE_TEXT
     assert "chỉnh" in MainWindow.IMAGE_EMPTY_OCR_TEXT
     assert "API key" not in combined
     assert "Authorization" not in combined
     assert "Bearer" not in combined
+
+
+def test_image_ui_has_subtitle_mode_or_help_text():
+    """Image UI should advertise the subtitle-specific OCR mode/help copy."""
+    from translation_app.ui.main_window import MainWindow
+
+    assert "Ảnh phụ đề-video" in MainWindow.IMAGE_UX_GUIDE_TEXT
+    assert "crop" in MainWindow.IMAGE_UX_GUIDE_TEXT.lower()
 
 
 def test_image_ocr_textbox_prefers_user_edited_text():

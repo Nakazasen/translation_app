@@ -5,8 +5,9 @@ import os
 import sys
 import platform
 import zipfile
+from dataclasses import dataclass
 from typing import Optional
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 
 from translation_app.config import config
@@ -14,8 +15,20 @@ from translation_app.utils.error_handler import OCRError
 from translation_app.utils.logger import logger
 
 
+@dataclass
+class OCRExtractResult:
+    """Structured OCR result with lightweight metadata for UI decisions."""
+
+    text: str
+    strategy_used: str
+    attempted_strategies: list[str]
+    used_subtitle_crop: bool
+
+
 class OCRHandler:
     """OCR handler for extracting text from images"""
+
+    SUBTITLE_CROP_RATIOS = (0.4, 0.35, 0.45)
 
     def __init__(self):
         """Initialize OCR handler and setup Tesseract"""
@@ -152,6 +165,7 @@ class OCRHandler:
             True if Tesseract is available
         """
         return self.is_available
+
     def get_installed_languages(self) -> list[str]:
         """
         Get list of installed OCR languages
@@ -337,7 +351,6 @@ class OCRHandler:
 
         # 4. Check for no Japanese characters in Japanese/Auto context
         if is_japanese_context and not self._contains_japanese_script(text):
-            # Check for Latin metadata or common Latin junk keywords
             metadata_keywords = {'metadata', 'filename', 'resolution', 'dpi', 'tesseract', 'listening', 'practice', 'n3', 'n2'}
             words = [w.strip('.,:;!?()[]{}*\'\"').lower() for w in text.split()]
             found_kws = [w for w in words if w in metadata_keywords]
@@ -361,20 +374,87 @@ class OCRHandler:
             'missing_jpn_pack': False
         }
 
-    def extract_text_from_image(self, image: Image.Image, lang: Optional[str] = None) -> str:
-        """
-        Extract text from image using OCR
+    def _preprocess_image(
+        self,
+        image: Image.Image,
+        upscale_factor: int = 2,
+        apply_contrast: bool = True,
+        apply_sharpen: bool = True,
+    ) -> Image.Image:
+        """Prepare an image for OCR without mutating the original input."""
+        processed_img = image.convert('L')
 
-        Args:
-            image: PIL Image object
-            lang: OCR language code (defaults to 'eng')
+        if upscale_factor > 1:
+            width, height = processed_img.size
+            processed_img = processed_img.resize(
+                (max(1, width * upscale_factor), max(1, height * upscale_factor)),
+                Image.Resampling.LANCZOS,
+            )
 
-        Returns:
-            Extracted text
+        if apply_contrast:
+            processed_img = ImageEnhance.Contrast(processed_img).enhance(1.6)
 
-        Raises:
-            OCRError: If OCR fails
-        """
+        if apply_sharpen:
+            processed_img = processed_img.filter(ImageFilter.SHARPEN)
+
+        return processed_img
+
+    def _get_bottom_crop(self, image: Image.Image, crop_ratio: float) -> Image.Image:
+        """Return the bottom crop used for subtitle-heavy screenshots."""
+        width, height = image.size
+        crop_ratio = min(max(crop_ratio, 0.1), 0.9)
+        top = max(0, int(height * (1 - crop_ratio)))
+        return image.crop((0, top, width, height))
+
+    def _ocr_with_processed_image(self, image: Image.Image, lang: str, strategy_name: str) -> str:
+        """Run Tesseract OCR for a single prepared image variant."""
+        logger.info(f"Performing OCR with strategy={strategy_name}, language={lang}")
+        return pytesseract.image_to_string(image, lang=lang)
+
+    def _build_ocr_attempts(self, image: Image.Image, mode: str) -> list[tuple[str, Image.Image]]:
+        """Build OCR attempts ordered from general to subtitle-specific fallbacks."""
+        safe_mode = (mode or 'auto').lower()
+        attempts: list[tuple[str, Image.Image]] = []
+
+        if safe_mode == 'subtitle':
+            attempts.append(('subtitle_full_3x', self._preprocess_image(image, upscale_factor=3)))
+            attempts.append(
+                (
+                    'subtitle_bottom_40_3x',
+                    self._preprocess_image(self._get_bottom_crop(image, 0.4), upscale_factor=3),
+                )
+            )
+            attempts.append(
+                (
+                    'subtitle_bottom_35_3x',
+                    self._preprocess_image(self._get_bottom_crop(image, 0.35), upscale_factor=3),
+                )
+            )
+            return attempts
+
+        attempts.append(('full_image_2x', self._preprocess_image(image, upscale_factor=2)))
+        if safe_mode == 'document':
+            attempts.append(('full_image_3x', self._preprocess_image(image, upscale_factor=3)))
+            return attempts
+
+        attempts.append(('full_image_3x', self._preprocess_image(image, upscale_factor=3)))
+        for crop_ratio in self.SUBTITLE_CROP_RATIOS:
+            label = int(crop_ratio * 100)
+            attempts.append(
+                (
+                    f'bottom_{label}_3x',
+                    self._preprocess_image(self._get_bottom_crop(image, crop_ratio), upscale_factor=3),
+                )
+            )
+        return attempts
+
+    def extract_text_with_metadata(
+        self,
+        image: Image.Image,
+        lang: Optional[str] = None,
+        mode: str = 'auto',
+    ) -> OCRExtractResult:
+        """Extract OCR text using multiple preprocessing strategies and return metadata."""
         if not self.is_available:
             raise OCRError("Tesseract OCR is not installed or not available")
 
@@ -382,35 +462,70 @@ class OCRHandler:
             lang = 'eng'
 
         try:
-            # PRE-PROCESSING for better OCR accuracy
-            # 1. Convert to grayscale (L)
-            processed_img = image.convert('L')
+            attempts = self._build_ocr_attempts(image, mode)
+            attempted_names: list[str] = []
+            fallback_result: Optional[OCRExtractResult] = None
 
-            # 2. Upscale image (2x) to help with small text
-            w, h = processed_img.size
-            processed_img = processed_img.resize((w * 2, h * 2), Image.Resampling.LANCZOS)
+            for strategy_name, candidate_image in attempts:
+                attempted_names.append(strategy_name)
+                text = self._ocr_with_processed_image(candidate_image, lang, strategy_name)
+                stripped = text.strip()
+                if not stripped:
+                    continue
 
-            logger.info(f"Performing OCR with language: {lang}")
+                used_subtitle_crop = strategy_name.startswith('bottom_') or strategy_name.startswith('subtitle_bottom_')
+                result = OCRExtractResult(
+                    text=text,
+                    strategy_used=strategy_name,
+                    attempted_strategies=list(attempted_names),
+                    used_subtitle_crop=used_subtitle_crop,
+                )
 
-            # Extract text
-            text = pytesseract.image_to_string(processed_img, lang=lang)
-            # self.validate_ocr_text_quality(text, lang)
-            return text
+                if used_subtitle_crop:
+                    return result
+
+                fallback_result = result
+
+            if fallback_result is not None:
+                return fallback_result
+
+            return OCRExtractResult(
+                text='',
+                strategy_used='none',
+                attempted_strategies=attempted_names,
+                used_subtitle_crop=False,
+            )
         except pytesseract.TesseractNotFoundError:
             raise OCRError("Tesseract OCR executable not found")
         except pytesseract.TesseractError as e:
-            # Try with English if language-specific fails
             if lang != 'eng':
                 try:
                     logger.warning(f"OCR failed with language {lang}, trying English: {e}")
-                    text = pytesseract.image_to_string(image, lang='eng')
-                    return text
+                    fallback = self.extract_text_with_metadata(image, lang='eng', mode=mode)
+                    return fallback
                 except Exception as e2:
                     raise OCRError(f"OCR failed with both {lang} and English: {e2}") from e2
-            else:
-                raise OCRError(f"OCR failed: {e}") from e
+            raise OCRError(f"OCR failed: {e}") from e
         except Exception as e:
             raise OCRError(f"Unexpected OCR error: {e}") from e
+
+    def extract_text_from_image(self, image: Image.Image, lang: Optional[str] = None, mode: str = 'auto') -> str:
+        """
+        Extract text from image using OCR.
+
+        Args:
+            image: PIL Image object
+            lang: OCR language code (defaults to 'eng')
+            mode: OCR mode hint ('auto', 'document', 'subtitle')
+
+        Returns:
+            Extracted text
+
+        Raises:
+            OCRError: If OCR fails
+        """
+        result = self.extract_text_with_metadata(image, lang=lang, mode=mode)
+        return result.text
 
     def is_text_clear(self, text: str) -> bool:
         """
