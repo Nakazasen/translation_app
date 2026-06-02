@@ -22,25 +22,60 @@ class EmailHandler:
         """
         self.translation_service = translation_service
     
+    def _normalize_folder_name(self, folder_name: str) -> str:
+        """
+        Normalize an Outlook folder name for tolerant matching.
+
+        Args:
+            folder_name: Folder display name or alias.
+
+        Returns:
+            Normalized folder name.
+        """
+        return " ".join(folder_name.strip().casefold().split())
+
     def _get_folder_by_name(self, parent_folder, folder_name: str):
         """
-        Recursively find folder by name
-        
+        Recursively find folder by name.
+
         Args:
-            parent_folder: Parent folder to search in
-            folder_name: Name of folder to find
-        
+            parent_folder: Parent folder to search in.
+            folder_name: Name of folder to find.
+
         Returns:
-            Folder object if found, None otherwise
+            Folder object if found, None otherwise.
         """
+        target_name = self._normalize_folder_name(folder_name)
         for folder in parent_folder.Folders:
-            if folder.Name == folder_name:
+            if self._normalize_folder_name(folder.Name) == target_name:
                 return folder
             subfolder = self._get_folder_by_name(folder, folder_name)
             if subfolder:
                 return subfolder
         return None
-    
+
+    def _resolve_folder(self, namespace, folder_name: str):
+        """
+        Resolve an Outlook folder from a user-facing name or common alias.
+
+        Args:
+            namespace: Outlook MAPI namespace.
+            folder_name: Folder display name or alias.
+
+        Returns:
+            Outlook folder object if found, None otherwise.
+        """
+        normalized_name = self._normalize_folder_name(folder_name)
+        inbox_aliases = {"inbox", "hop thu", "hộp thư"}
+        if normalized_name in inbox_aliases:
+            try:
+                return namespace.GetDefaultFolder(6)  # olFolderInbox
+            except Exception as e:
+                logger.warning(f"Không thể mở Inbox mặc định của Outlook: {e}")
+
+        root_folder = namespace.Folders.Item(1)
+        return self._get_folder_by_name(root_folder, folder_name)
+
     def translate_latest_unread_emails(
         self,
         folder_name: str,
@@ -78,9 +113,7 @@ class EmailHandler:
                 raise EmailError("Folder name cannot be empty")
             
             folder_name = folder_name.strip()
-            
-            root_folder = namespace.Folders.Item(1)
-            folder = self._get_folder_by_name(root_folder, folder_name)
+            folder = self._resolve_folder(namespace, folder_name)
             
             if not folder:
                 raise EmailError(f"Folder not found: {folder_name}")

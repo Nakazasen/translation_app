@@ -64,3 +64,32 @@ def test_email_handler_com_error_wrapped(monkeypatch):
 
     assert "Error translating emails" in str(excinfo.value)
     assert "CoInitialize has not been called" in str(excinfo.value)
+
+
+def test_email_handler_inbox_alias_uses_default_folder():
+    service = FakeTranslationService()
+    handler = EmailHandler(service)
+    default_inbox = MagicMock()
+    namespace = MagicMock()
+    namespace.GetDefaultFolder.return_value = default_inbox
+
+    assert handler._resolve_folder(namespace, "Inbox") is default_inbox
+    assert handler._resolve_folder(namespace, "Hộp thư") is default_inbox
+    assert namespace.GetDefaultFolder.call_count == 2
+    namespace.GetDefaultFolder.assert_called_with(6)
+
+
+def test_email_handler_custom_folder_lookup_is_normalized():
+    service = FakeTranslationService()
+    handler = EmailHandler(service)
+    target_folder = MagicMock()
+    target_folder.Name = "  Khách Hàng  "
+    target_folder.Folders = []
+
+    root_folder = MagicMock()
+    root_folder.Folders = [target_folder]
+    namespace = MagicMock()
+    namespace.Folders.Item.return_value = root_folder
+
+    assert handler._resolve_folder(namespace, "khách   hàng") is target_folder
+    namespace.GetDefaultFolder.assert_not_called()

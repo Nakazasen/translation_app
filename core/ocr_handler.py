@@ -212,6 +212,76 @@ class OCRHandler:
                 )
         return requested
     
+    def _contains_japanese_script(self, text: str) -> bool:
+        """
+        Check whether text contains Japanese script characters.
+
+        Args:
+            text: OCR output text.
+
+        Returns:
+            True if Hiragana, Katakana, or CJK characters are present.
+        """
+        return any(
+            '\u3040' <= char <= '\u30ff' or '\u4e00' <= char <= '\u9fff'
+            for char in text
+        )
+
+    def _looks_like_latin_garbage(self, text: str) -> bool:
+        """
+        Detect OCR output that is likely Latin garbage.
+
+        Args:
+            text: OCR output text.
+
+        Returns:
+            True when text has enough ASCII fragments but too little readable content.
+        """
+        stripped_text = text.strip()
+        if not stripped_text:
+            return False
+
+        chars = [char for char in stripped_text if not char.isspace()]
+        if len(chars) < 8:
+            return False
+
+        ascii_chars = [char for char in chars if ord(char) < 128]
+        alpha_chars = [char for char in chars if char.isalpha()]
+        symbol_chars = [char for char in chars if not char.isalnum()]
+        short_words = [word for word in stripped_text.split() if 1 <= len(word) <= 2]
+
+        ascii_ratio = len(ascii_chars) / len(chars)
+        symbol_ratio = len(symbol_chars) / len(chars)
+        short_word_ratio = len(short_words) / max(len(stripped_text.split()), 1)
+
+        return (
+            ascii_ratio > 0.85
+            and len(alpha_chars) >= 6
+            and (symbol_ratio > 0.25 or short_word_ratio > 0.45)
+        )
+
+    def validate_ocr_text_quality(self, text: str, lang: str) -> None:
+        """
+        Validate OCR text quality for high-risk auto language combinations.
+
+        Args:
+            text: OCR output text.
+            lang: Tesseract language expression used for OCR.
+
+        Raises:
+            OCRError: If the OCR output is likely garbage.
+        """
+        if 'jpn' not in lang:
+            return
+        if self._contains_japanese_script(text):
+            return
+        if self._looks_like_latin_garbage(text):
+            raise OCRError(
+                "OCR có thể đã nhận dạng sai ngôn ngữ và tạo ra ký tự Latin vô nghĩa.\n\n"
+                "Vui lòng chọn rõ ngôn ngữ nguồn là Tiếng Nhật, kiểm tra gói jpn.traineddata "
+                "trong Tesseract, hoặc dùng ảnh rõ nét hơn."
+            )
+
     def extract_text_from_image(self, image: Image.Image, lang: Optional[str] = None) -> str:
         """
         Extract text from image using OCR
@@ -245,6 +315,7 @@ class OCRHandler:
             
             # Extract text
             text = pytesseract.image_to_string(processed_img, lang=lang)
+            self.validate_ocr_text_quality(text, lang)
             return text
         except pytesseract.TesseractNotFoundError:
             raise OCRError("Tesseract OCR executable not found")

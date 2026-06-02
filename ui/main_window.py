@@ -4130,10 +4130,7 @@ class MainWindow(ctk.CTk):
                 self.after(0, lambda: self.update())
 
                 ocr_lang = self.ocr_handler.get_ocr_language(src_lang)
-                try:
-                    text = self.ocr_handler.extract_text_from_image(working_img, lang=ocr_lang)
-                except Exception:
-                    text = self.ocr_handler.extract_text_from_image(working_img, lang='eng')
+                text = self.ocr_handler.extract_text_from_image(working_img, lang=ocr_lang)
 
                 self.last_ocr_text = text  # Save for AI analysis
                 self.after(0, lambda captured=text: self._set_image_ocr_text(captured))

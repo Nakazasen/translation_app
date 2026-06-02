@@ -42,3 +42,25 @@ def test_ocr_handler_missing_jpn_error_contains_instructions(monkeypatch):
     error_msg = str(excinfo.value)
     assert "jpn.traineddata" in error_msg
     assert "C:\\Program Files\\Tesseract-OCR\\tessdata" in error_msg
+
+
+def test_ocr_handler_rejects_latin_garbage_for_japanese_auto():
+    handler = OCRHandler()
+    garbage_text = "= @)YouTube m' Tim kiem = Q\nBACH bys — CISD EIA CUT EE é"
+
+    with pytest.raises(OCRError) as excinfo:
+        handler.validate_ocr_text_quality(garbage_text, "jpn+eng")
+
+    assert "ký tự Latin vô nghĩa" in str(excinfo.value)
+
+
+def test_ocr_handler_accepts_japanese_text_for_japanese_auto():
+    handler = OCRHandler()
+
+    handler.validate_ocr_text_quality("こんにちは 世界", "jpn+eng")
+
+
+def test_ocr_handler_does_not_apply_japanese_guard_to_english():
+    handler = OCRHandler()
+
+    handler.validate_ocr_text_quality("= @)YouTube m' Tim kiem = Q", "eng")
