@@ -274,7 +274,7 @@ class MainWindow(ctk.CTk):
 
     def setup_theme(self):
         """Setup theme and colors"""
-        self.colors, self.style = setup_theme()
+        self.colors, self.style = setup_theme(self.config_manager.color_theme)
         self.configure(fg_color=self.colors['gray_light'])
 
     def create_widgets(self):
