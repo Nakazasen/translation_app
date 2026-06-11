@@ -6,10 +6,24 @@ echo    TRANSLATION APPLICATION LAUNCHER
 echo ========================================
 echo.
 
-REM Check if we're in the right directory
-if not exist "translation_app" (
-    echo ERROR: translation_app directory not found!
-    echo Please run this script from the parent directory of translation_app
+REM Check where we are running from
+set "IN_ROOT=0"
+if exist "main.py" if exist "core" if exist "ui" set "IN_ROOT=1"
+
+set "IN_PARENT=0"
+if exist "translation_app" set "IN_PARENT=1"
+
+if "%IN_ROOT%"=="1" (
+    set "REQ_PATH=requirements.txt"
+    set "RUN_CMD=python main.py"
+    set "TEST_CMD=python test_import.py"
+) else if "%IN_PARENT%"=="1" (
+    set "REQ_PATH=translation_app\requirements.txt"
+    set "RUN_CMD=python -m translation_app"
+    set "TEST_CMD=python translation_app\test_import.py"
+) else (
+    echo ERROR: Translation application files not found!
+    echo Please run this script from the project root directory or its parent directory.
     pause
     exit /b 1
 )
@@ -24,15 +38,15 @@ if errorlevel 1 (
 )
 
 echo Installing dependencies...
-pip install -r translation_app\requirements.txt
+pip install -r %REQ_PATH%
 if errorlevel 1 (
     echo WARNING: Could not install dependencies automatically
-    echo You may need to run: pip install -r translation_app\requirements.txt
+    echo You may need to run: pip install -r %REQ_PATH%
     echo.
 )
 
 echo Testing imports...
-python translation_app\test_import.py
+%TEST_CMD%
 if errorlevel 1 (
     echo ERROR: Import test failed!
     echo Please check the error messages above.
@@ -48,7 +62,7 @@ echo.
 echo Close this window or press Ctrl+C to stop the application
 echo.
 
-python -m translation_app
+%RUN_CMD%
 
 echo.
 echo Application closed.

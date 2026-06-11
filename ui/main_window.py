@@ -184,6 +184,14 @@ class MainWindow(ctk.CTk):
         from translation_app.core.translation_memory import get_tm_manager
 
         self.config_manager = get_ai_service().config_manager
+        
+        # Load theme settings from config manager
+        try:
+            ctk.set_appearance_mode(self.config_manager.appearance_mode)
+            ctk.set_default_color_theme(self.config_manager.color_theme)
+        except Exception as e:
+            logger.error(f"Failed to set initial theme: {e}")
+
         self.job_manager = get_translation_job_manager()
         self.tm_manager = get_tm_manager()
 
@@ -1042,6 +1050,52 @@ class MainWindow(ctk.CTk):
             save_btn_row, text="💾 Lưu cài đặt nâng cao",
             command=self._save_advanced_settings
         ).pack(side=tk.LEFT)
+
+        # --- PHẦN NEW: INTERFACE & THEME CONFIGURATION ---
+        frame_theme = create_styled_card(scroll_frame, title="🎨 Giao diện & Chủ đề (Appearance & Themes)")
+        frame_theme.pack(fill=tk.X, padx=20, pady=8)
+
+        theme_row = ctk.CTkFrame(frame_theme, fg_color="transparent")
+        theme_row.pack(fill=tk.X, padx=15, pady=10)
+
+        ctk.CTkLabel(theme_row, text="Chế độ hiển thị:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(5, 5))
+        
+        self.appearance_mode_var = tk.StringVar(value="Hệ thống")
+        current_mode = self.config_manager.appearance_mode
+        mode_display_map = {
+            "System": "Hệ thống",
+            "Light": "Sáng",
+            "Dark": "Tối"
+        }
+        self.appearance_mode_var.set(mode_display_map.get(current_mode, "Hệ thống"))
+
+        appearance_combo = create_language_combobox(
+            theme_row, self.appearance_mode_var,
+            ["Hệ thống", "Sáng", "Tối"]
+        )
+        appearance_combo.pack(side=tk.LEFT, padx=5)
+
+        ctk.CTkLabel(theme_row, text="Chủ đề màu sắc:", font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(20, 5))
+        
+        self.color_theme_var = tk.StringVar(value="Blue (Xanh dương)")
+        current_color_theme = self.config_manager.color_theme
+        color_display_map = {
+            "blue": "Blue (Xanh dương)",
+            "green": "Green (Xanh lá)",
+            "dark-blue": "Dark-Blue (Xanh đậm)"
+        }
+        self.color_theme_var.set(color_display_map.get(current_color_theme, "Blue (Xanh dương)"))
+
+        color_combo = create_language_combobox(
+            theme_row, self.color_theme_var,
+            ["Blue (Xanh dương)", "Green (Xanh lá)", "Dark-Blue (Xanh đậm)"]
+        )
+        color_combo.pack(side=tk.LEFT, padx=5)
+
+        create_styled_button(
+            theme_row, text="Áp dụng giao diện",
+            command=self._apply_theme_settings
+        ).pack(side=tk.LEFT, padx=(20, 5))
 
         # --- PHẦN E: THIẾT LẬP NHANH API KEY CHO NGƯỜI MỚI (WIZARD) ---
         frame_guide = create_styled_card(scroll_frame, title="📚 Hướng dẫn & Thiết lập nhanh API Key (Dành cho Người mới)")
@@ -4672,6 +4726,60 @@ Bước 3: Sử dụng AI Vision
             )
         except Exception as e:
             messagebox.showerror("Loi", f"Loi khi luu settings: {str(e)}")
+
+    def _apply_theme_settings(self):
+        """Apply and save appearance mode and color theme settings."""
+        try:
+            # Map choice to config value
+            mode_map = {
+                "Hệ thống": "System",
+                "Sáng": "Light",
+                "Tối": "Dark"
+            }
+            color_map = {
+                "Blue (Xanh dương)": "blue",
+                "Green (Xanh lá)": "green",
+                "Dark-Blue (Xanh đậm)": "dark-blue"
+            }
+
+            selected_mode = mode_map.get(self.appearance_mode_var.get(), "System")
+            selected_color = color_map.get(self.color_theme_var.get(), "blue")
+
+            # Apply CustomTkinter theme dynamically
+            ctk.set_appearance_mode(selected_mode)
+            ctk.set_default_color_theme(selected_color)
+
+            # Update configuration manager values
+            self.config_manager.appearance_mode = selected_mode
+            self.config_manager.color_theme = selected_color
+
+            # Save to config file
+            if self.config_manager.save_config():
+                # Re-apply styling for non-CustomTkinter elements
+                self.setup_theme()
+                
+                # Update widgets backgrounds if needed
+                self.configure(fg_color=self.colors['gray_light'])
+                self.tabview.configure(
+                    fg_color=self.colors['gray_light'],
+                    segmented_button_fg_color=self.colors['white'],
+                    segmented_button_selected_color=self.colors['tab_selected_bg'],
+                    segmented_button_selected_hover_color=self.colors['tab_selected_hover'],
+                    segmented_button_unselected_color=self.colors['white'],
+                    segmented_button_unselected_hover_color=self.colors['gray'],
+                    text_color=self.colors['gray_dark']
+                )
+                if self.live_status_bar:
+                    self.live_status_bar.configure(fg_color=('#F8FAFC', '#1E1E22'))
+                    self._update_live_status_bar_ui()
+
+                messagebox.showinfo("Thành công", "Đã áp dụng và lưu cài đặt giao diện thành công!\n(Một số màu sắc CustomTkinter có thể yêu cầu khởi động lại ứng dụng để áp dụng hoàn toàn)")
+            else:
+                messagebox.showerror("Lỗi", "Không thể lưu cài đặt giao diện vào file cấu hình.")
+
+        except Exception as e:
+            logger.error(f"Error applying theme settings: {e}")
+            messagebox.showerror("Lỗi", f"Đã xảy ra lỗi khi áp dụng giao diện: {str(e)}")
 
     def setup_jobs_tab(self):
         """Setup the Jobs tracking tab using CustomTkinter with Slate Card Layout."""

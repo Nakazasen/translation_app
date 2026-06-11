@@ -1061,6 +1061,8 @@ class AIConfigManager:
             "auto_refresh_provider_models": True,
             "provider_model_refresh_ttl_hours": 24,
             "provider_model_refresh_state": get_default_provider_model_refresh_state(),
+            "appearance_mode": "System",
+            "color_theme": "blue",
         }
 
     @property
@@ -1507,7 +1509,25 @@ class AIConfigManager:
             normalized if normalized in {"off", "prompt", "validate"} else "prompt"
         )
 
+    @property
+    def appearance_mode(self) -> str:
+        """Get the appearance mode (System, Dark, Light)."""
+        return self._config.get("appearance_mode", "System")
 
+    @appearance_mode.setter
+    def appearance_mode(self, value: str):
+        """Set the appearance mode."""
+        self._config["appearance_mode"] = value
+
+    @property
+    def color_theme(self) -> str:
+        """Get the default CustomTkinter color theme."""
+        return self._config.get("color_theme", "blue")
+
+    @color_theme.setter
+    def color_theme(self, value: str):
+        """Set the default CustomTkinter color theme."""
+        self._config["color_theme"] = value
     
     def rotate_api_key(self) -> bool:
         """
