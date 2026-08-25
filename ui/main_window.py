@@ -31,9 +31,10 @@ from translation_app.ui.theme import setup_theme
 from translation_app.ui.components import create_styled_button, create_language_combobox, create_styled_card
 from translation_app.utils.validators import FileValidator, LanguageValidator
 from translation_app.utils.error_handler import FileProcessingError, handle_translation_error
-from translation_app.utils.logger import logger
+from translation_app.utils.logger import logger, get_logger
 from translation_app.config import config
 from translation_app.core.incremental_translation_cache import get_cache_path
+from translation_app.core.video_handler import VideoHandler, SubtitleSnippet, format_timestamp_srt
 
 
 # Universal Tkinter after-callback tracker to prevent Tcl "invalid command name" spam during teardown
@@ -177,6 +178,13 @@ class MainWindow(ctk.CTk):
         self.text_handler = TextHandler(self.translation_service)
         self.email_handler = EmailHandler(self.translation_service)
         self.ocr_handler = get_ocr_handler()
+        self.video_handler = VideoHandler(self.translation_service)
+        self.video_snippets: list[SubtitleSnippet] = []
+        self.last_rendered_video_path: Optional[str] = None
+        self.last_rendered_audio_path: Optional[str] = None
+        self.last_rendered_srt_path: Optional[str] = None
+        self._video_processing_in_progress: bool = False
+        self._video_cancel_requested: bool = False
 
         # Core Managers & Config
         from translation_app.core.ai_service import get_ai_service
@@ -307,6 +315,7 @@ class MainWindow(ctk.CTk):
         self.tabview.add("Dịch văn bản")
         self.tabview.add("Dịch email")
         self.tabview.add("Dịch ảnh")
+        self.tabview.add("Dịch video")
         self.tabview.add("Công việc")
         self.tabview.add("Thuật ngữ")
         self.tabview.add("Bộ nhớ dịch")
@@ -317,6 +326,7 @@ class MainWindow(ctk.CTk):
         self.tab_paragraph = self.tabview.tab("Dịch văn bản")
         self.tab_email = self.tabview.tab("Dịch email")
         self.tab_image = self.tabview.tab("Dịch ảnh")
+        self.tab_video = self.tabview.tab("Dịch video")
         self.tab_jobs = self.tabview.tab("Công việc")
         self.tab_glossary = self.tabview.tab("Thuật ngữ")
         self.tab_tm = self.tabview.tab("Bộ nhớ dịch")
@@ -327,7 +337,7 @@ class MainWindow(ctk.CTk):
             def __init__(self, tabview):
                 self._tabview = tabview
                 # The exact list of tab names in order
-                self._tabs = ["Dịch file", "Dịch văn bản", "Dịch email", "Dịch ảnh", "Công việc", "Thuật ngữ", "Bộ nhớ dịch", "Cấu hình AI"]
+                self._tabs = ["Dịch file", "Dịch văn bản", "Dịch email", "Dịch ảnh", "Dịch video", "Công việc", "Thuật ngữ", "Bộ nhớ dịch", "Cấu hình AI"]
             def index(self, val):
                 if val == "end":
                     return len(self._tabs)
@@ -347,6 +357,7 @@ class MainWindow(ctk.CTk):
         self.setup_paragraph_tab()
         self.setup_email_tab()
         self.setup_image_tab()
+        self.setup_video_tab()
         self.setup_ai_tab()
         self.setup_jobs_tab()
         self.setup_glossary_tab()
@@ -6077,3 +6088,601 @@ Bước 3: Sử dụng AI Vision
         else:
             self.health_model_combo.configure(values=[])
             self.health_model_var.set(default_model)
+
+    def setup_video_tab(self):
+        """Setup video translation and AI dubbing tab with Slate Card Layout."""
+        scroll_frame = ctk.CTkScrollableFrame(self.tab_video, fg_color="transparent")
+        scroll_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Header Title
+        label_title = ctk.CTkLabel(
+            scroll_frame,
+            text="🎬 Trình Dịch Video & Lồng tiếng AI (Video Translator & AI Dubbing)",
+            font=('Segoe UI', 15, 'bold'),
+            text_color=('#1E3A5F', '#818CF8')
+        )
+        label_title.pack(pady=(15, 8))
+
+        # CARD 1: NGUỒN VIDEO & CÀI ĐẶT LỒNG TIẾNG
+        card_input = create_styled_card(scroll_frame, title="🎬 Nguồn Video & Tùy chọn Lồng tiếng", accent="cyan")
+        card_input.pack(fill=tk.X, padx=15, pady=6)
+
+        # Input source row
+        frame_src = ctk.CTkFrame(card_input, fg_color="transparent")
+        frame_src.pack(fill=tk.X, padx=15, pady=(8, 4))
+
+        ctk.CTkLabel(
+            frame_src,
+            text="Đường dẫn YouTube hoặc File Video cục bộ:",
+            font=('Segoe UI', 10, 'bold')
+        ).pack(anchor=tk.W, pady=(0, 3))
+
+        frame_src_entry = ctk.CTkFrame(frame_src, fg_color="transparent")
+        frame_src_entry.pack(fill=tk.X)
+
+        self.entry_video_source = ctk.CTkEntry(
+            frame_src_entry,
+            font=('Segoe UI', 10),
+            placeholder_text="Dán link YouTube (https://www.youtube.com/watch?v=...) hoặc bấm 'Chọn file'..."
+        )
+        self.entry_video_source.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+        button_browse_video = create_styled_button(
+            frame_src_entry,
+            text="📁 Chọn file",
+            command=self._browse_video_file
+        )
+        button_browse_video.pack(side=tk.RIGHT)
+
+        # Settings Row (Languages, Voice, Audio Ducking)
+        frame_settings = ctk.CTkFrame(card_input, fg_color="transparent")
+        frame_settings.pack(fill=tk.X, padx=15, pady=6)
+
+        # Source Lang
+        frame_src_lang = ctk.CTkFrame(frame_settings, fg_color="transparent")
+        frame_src_lang.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ctk.CTkLabel(frame_src_lang, text="Ngôn ngữ nguồn:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W, pady=(0, 2))
+        self.src_lang_video = tk.StringVar(value=config.default_src_lang)
+        combobox_src_lang_video = create_language_combobox(frame_src_lang, self.src_lang_video, list(self.display_languages.keys()))
+        combobox_src_lang_video.pack(fill=tk.X)
+
+        # Target Lang
+        frame_dest_lang = ctk.CTkFrame(frame_settings, fg_color="transparent")
+        frame_dest_lang.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ctk.CTkLabel(frame_dest_lang, text="Ngôn ngữ đích:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W, pady=(0, 2))
+        self.dest_lang_video = tk.StringVar(value="vi")
+        combobox_dest_lang_video = create_language_combobox(frame_dest_lang, self.dest_lang_video, list(self.display_languages.keys()))
+        combobox_dest_lang_video.pack(fill=tk.X)
+
+        # Voice Selector (Edge-TTS)
+        frame_voice = ctk.CTkFrame(frame_settings, fg_color="transparent")
+        frame_voice.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+        ctk.CTkLabel(frame_voice, text="Giọng đọc AI (Edge TTS):", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W, pady=(0, 2))
+        self.voice_display_options = [
+            "Hoài My (Nữ - Truyền cảm)",
+            "Nam Minh (Nam - Rõ ràng)"
+        ]
+        self.voice_code_map = {
+            "Hoài My (Nữ - Truyền cảm)": "vi-VN-HoaiMyNeural",
+            "Nam Minh (Nam - Rõ ràng)": "vi-VN-NamMinhNeural"
+        }
+        self.voice_name_video_var = tk.StringVar(value=self.voice_display_options[0])
+        combobox_voice = ctk.CTkComboBox(
+            frame_voice,
+            values=self.voice_display_options,
+            variable=self.voice_name_video_var,
+            font=('Segoe UI', 10),
+            state="readonly"
+        )
+        combobox_voice.pack(fill=tk.X)
+
+        # Audio Ducking Slider
+        frame_ducking = ctk.CTkFrame(card_input, fg_color="transparent")
+        frame_ducking.pack(fill=tk.X, padx=15, pady=(4, 8))
+
+        self.ducking_val_var = tk.DoubleVar(value=0.15)
+        self.lbl_ducking_desc = ctk.CTkLabel(
+            frame_ducking,
+            text="Âm lượng nền (Audio Ducking): 15% (Giữ tiếng gốc nhỏ làm nền)",
+            font=('Segoe UI', 9, 'bold')
+        )
+        self.lbl_ducking_desc.pack(anchor=tk.W, pady=(0, 2))
+
+        def _on_ducking_changed(val):
+            pct = int(float(val) * 100)
+            if pct <= 1:
+                self.lbl_ducking_desc.configure(text="Âm lượng nền: Tắt hẳn tiếng gốc (100% tiếng Việt)")
+            else:
+                self.lbl_ducking_desc.configure(text=f"Âm lượng nền (Audio Ducking): {pct}% (Giữ tiếng gốc nhỏ làm nền)")
+
+        slider_ducking = ctk.CTkSlider(
+            frame_ducking,
+            from_=0.0,
+            to=0.40,
+            number_of_steps=20,
+            variable=self.ducking_val_var,
+            command=_on_ducking_changed
+        )
+        slider_ducking.pack(fill=tk.X)
+
+        # Action Buttons Row
+        frame_action_buttons = ctk.CTkFrame(card_input, fg_color="transparent")
+        frame_action_buttons.pack(fill=tk.X, padx=15, pady=(8, 12))
+
+        self.btn_fetch_video_transcript = create_styled_button(
+            frame_action_buttons,
+            text="1️⃣ 📥 Lấy lời thoại / Phụ đề",
+            command=self._start_fetch_video_transcript
+        )
+        self.btn_fetch_video_transcript.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        self.btn_translate_video_subtitles = create_styled_button(
+            frame_action_buttons,
+            text="2️⃣ 🌐 Dịch lời thoại sang Tiếng Việt",
+            command=self._start_translate_video_subtitles
+        )
+        self.btn_translate_video_subtitles.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+
+        self.btn_dub_and_export_video = create_styled_button(
+            frame_action_buttons,
+            text="3️⃣ 🎙️ Lồng tiếng AI & Xuất Video",
+            command=self._start_dub_video
+        )
+        self.btn_dub_and_export_video.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+        # CARD 2: BẢNG TIMELINE LỜI THOẠI SONG NGỮ
+        card_timeline = create_styled_card(scroll_frame, title="📝 Bảng Timeline Lời thoại Song ngữ", accent="indigo")
+        card_timeline.pack(fill=tk.BOTH, expand=True, padx=15, pady=6)
+
+        # Timeline header info & action
+        frame_tl_top = ctk.CTkFrame(card_timeline, fg_color="transparent")
+        frame_tl_top.pack(fill=tk.X, padx=15, pady=(6, 4))
+
+        self.lbl_timeline_status = ctk.CTkLabel(
+            frame_tl_top,
+            text="Danh sách: Chưa có dữ liệu (Nhập link YouTube hoặc chọn video rồi bấm 'Lấy lời thoại').",
+            font=('Segoe UI', 9, 'italic'),
+            text_color=self.colors.get('gray_medium', 'gray')
+        )
+        self.lbl_timeline_status.pack(side=tk.LEFT, anchor=tk.W)
+
+        btn_edit_snippet = create_styled_button(
+            frame_tl_top,
+            text="✏️ Sửa câu dịch",
+            command=self._edit_selected_video_snippet
+        )
+        btn_edit_snippet.pack(side=tk.RIGHT)
+
+        # Treeview frame
+        frame_tree = ctk.CTkFrame(card_timeline, fg_color="transparent")
+        frame_tree.pack(fill=tk.BOTH, expand=True, padx=15, pady=6)
+
+        columns = ("idx", "time", "orig", "trans")
+        self.video_tree = ttk.Treeview(
+            frame_tree,
+            columns=columns,
+            show="headings",
+            height=8,
+            selectmode="browse"
+        )
+        self.video_tree.heading("idx", text="#", anchor=tk.CENTER)
+        self.video_tree.heading("time", text="Mốc thời gian", anchor=tk.CENTER)
+        self.video_tree.heading("orig", text="Lời thoại gốc", anchor=tk.W)
+        self.video_tree.heading("trans", text="Bản dịch Tiếng Việt (Nhấp đúp để sửa)", anchor=tk.W)
+
+        self.video_tree.column("idx", width=45, minwidth=35, anchor=tk.CENTER)
+        self.video_tree.column("time", width=110, minwidth=90, anchor=tk.CENTER)
+        self.video_tree.column("orig", width=250, minwidth=180, anchor=tk.W)
+        self.video_tree.column("trans", width=280, minwidth=200, anchor=tk.W)
+
+        tree_scroll_y = ttk.Scrollbar(frame_tree, orient=tk.VERTICAL, command=self.video_tree.yview)
+        self.video_tree.configure(yscrollcommand=tree_scroll_y.set)
+
+        self.video_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Double click on item to edit translation
+        self.video_tree.bind("<Double-1>", self._on_video_timeline_double_click)
+
+        # CARD 3: TIẾN TRÌNH & XUẤT KẾT QUẢ
+        card_export = create_styled_card(scroll_frame, title="📦 Tiến trình & Xuất Kết quả", accent="blue")
+        card_export.pack(fill=tk.X, padx=15, pady=(6, 15))
+
+        frame_prog = ctk.CTkFrame(card_export, fg_color="transparent")
+        frame_prog.pack(fill=tk.X, padx=15, pady=(6, 4))
+
+        self.label_video_status = ctk.CTkLabel(
+            frame_prog,
+            text="Trạng thái: Sẵn sàng.",
+            font=('Segoe UI', 10, 'bold'),
+            anchor=tk.W
+        )
+        self.label_video_status.pack(fill=tk.X, pady=(0, 4))
+
+        self.progress_video = ctk.CTkProgressBar(
+            frame_prog,
+            progress_color=('#4A90E2', '#6366F1'),
+            fg_color=('#CBD5E1', '#3E3E44'),
+            height=10
+        )
+        self.progress_video.pack(fill=tk.X, pady=4)
+        self.progress_video.set(0)
+
+        # Export buttons row
+        frame_export_buttons = ctk.CTkFrame(card_export, fg_color="transparent")
+        frame_export_buttons.pack(fill=tk.X, padx=15, pady=(8, 12))
+
+        self.btn_open_video = create_styled_button(
+            frame_export_buttons,
+            text="▶️ Mở Video kết quả",
+            command=self._open_rendered_video
+        )
+        self.btn_open_video.configure(state=tk.DISABLED)
+        self.btn_open_video.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+        self.btn_open_video_folder = create_styled_button(
+            frame_export_buttons,
+            text="📁 Mở thư mục",
+            command=self._open_video_folder
+        )
+        self.btn_open_video_folder.configure(state=tk.DISABLED)
+        self.btn_open_video_folder.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+
+        self.btn_export_video_srt = create_styled_button(
+            frame_export_buttons,
+            text="📄 Xuất file .SRT",
+            command=self._export_video_srt
+        )
+        self.btn_export_video_srt.configure(state=tk.DISABLED)
+        self.btn_export_video_srt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+
+        self.btn_export_video_mp3 = create_styled_button(
+            frame_export_buttons,
+            text="🎵 Xuất file .MP3",
+            command=self._export_video_mp3
+        )
+        self.btn_export_video_mp3.configure(state=tk.DISABLED)
+        self.btn_export_video_mp3.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+
+    def _browse_video_file(self):
+        """Browse for a local video file."""
+        file_path = filedialog.askopenfilename(
+            title="Chọn file video",
+            filetypes=[
+                ("Video Files", "*.mp4 *.mkv *.avi *.mov *.webm *.flv"),
+                ("All Files", "*.*")
+            ]
+        )
+        if file_path:
+            self.entry_video_source.delete(0, tk.END)
+            self.entry_video_source.insert(0, file_path)
+
+    def _start_fetch_video_transcript(self):
+        """Start background fetching of video transcript/subtitles."""
+        source = self.entry_video_source.get().strip()
+        if not source:
+            messagebox.showwarning("Thiếu thông tin", "Vui lòng nhập đường dẫn YouTube hoặc chọn file video.")
+            return
+
+        if self._video_processing_in_progress:
+            messagebox.showinfo("Đang xử lý", "Hệ thống đang thực hiện tác vụ video khác, vui lòng chờ.")
+            return
+
+        self._video_processing_in_progress = True
+        self.progress_video.set(0.1)
+        self.label_video_status.configure(text="Đang lấy phụ đề / lời thoại từ video...")
+        self.btn_fetch_video_transcript.configure(state=tk.DISABLED)
+
+        threading.Thread(target=self._worker_fetch_video_transcript, args=(source,), daemon=True).start()
+
+    def _worker_fetch_video_transcript(self, source: str):
+        """Background worker to fetch transcript."""
+        try:
+            snippets = self.video_handler.fetch_youtube_subtitles(source)
+            self.video_snippets = snippets
+
+            def _on_success():
+                self.progress_video.set(1.0)
+                self._populate_video_timeline_tree()
+                self.label_video_status.configure(text=f"Đã tải thành công {len(snippets)} câu thoại. Sẵn sàng dịch sang tiếng Việt.")
+                self.lbl_timeline_status.configure(text=f"Đã tải {len(snippets)} câu thoại. Nhấp đúp vào dòng để chỉnh sửa bản dịch.")
+                self.btn_fetch_video_transcript.configure(state=tk.NORMAL)
+                self.btn_export_video_srt.configure(state=tk.NORMAL)
+                self._video_processing_in_progress = False
+
+            self.after(0, _on_success)
+        except Exception as e:
+            logger.error(f"Error fetching video transcript: {e}", exc_info=True)
+            def _on_err():
+                self.progress_video.set(0.0)
+                self.label_video_status.configure(text=f"Lỗi: {e}")
+                self.btn_fetch_video_transcript.configure(state=tk.NORMAL)
+                self._video_processing_in_progress = False
+                messagebox.showerror("Lỗi lấy phụ đề", f"Không thể trích xuất phụ đề video:\n{e}")
+            self.after(0, _on_err)
+
+    def _populate_video_timeline_tree(self):
+        """Populate treeview with current video snippets."""
+        for item in self.video_tree.get_children():
+            self.video_tree.delete(item)
+
+        for s in self.video_snippets:
+            time_disp = f"{s.start:.1f}s - {s.end:.1f}s"
+            self.video_tree.insert(
+                "", tk.END,
+                iid=str(s.index),
+                values=(s.index, time_disp, s.original_text, s.translated_text or "(Chưa dịch)")
+            )
+
+    def _start_translate_video_subtitles(self):
+        """Start background translation of subtitle snippets."""
+        if not self.video_snippets:
+            messagebox.showwarning("Chưa có lời thoại", "Vui lòng bấm 'Lấy lời thoại / Phụ đề' trước khi dịch.")
+            return
+
+        if self._video_processing_in_progress:
+            messagebox.showinfo("Đang xử lý", "Hệ thống đang bận, vui lòng chờ tác vụ hiện tại hoàn tất.")
+            return
+
+        self._video_processing_in_progress = True
+        self.progress_video.set(0.0)
+        self.btn_translate_video_subtitles.configure(state=tk.DISABLED)
+
+        src_lang = self.src_lang_video.get()
+        tgt_lang = self.dest_lang_video.get()
+
+        threading.Thread(target=self._worker_translate_video_subtitles, args=(src_lang, tgt_lang), daemon=True).start()
+
+    def _worker_translate_video_subtitles(self, src_lang: str, tgt_lang: str):
+        """Background worker for translating subtitle snippets."""
+        try:
+            def _progress(pct, msg):
+                self.after(0, lambda: (self.progress_video.set(pct / 100.0), self.label_video_status.configure(text=msg)))
+
+            translated_snippets = self.video_handler.translate_subtitles(
+                self.video_snippets,
+                source_lang=src_lang,
+                target_lang=tgt_lang,
+                progress_callback=_progress
+            )
+            self.video_snippets = translated_snippets
+
+            def _on_success():
+                self.progress_video.set(1.0)
+                self._populate_video_timeline_tree()
+                self.label_video_status.configure(text=f"Hoàn tất dịch {len(self.video_snippets)} câu thoại sang Tiếng Việt.")
+                self.btn_translate_video_subtitles.configure(state=tk.NORMAL)
+                self.btn_export_video_srt.configure(state=tk.NORMAL)
+                self._video_processing_in_progress = False
+
+            self.after(0, _on_success)
+        except Exception as e:
+            logger.error(f"Error translating subtitles: {e}", exc_info=True)
+            def _on_err():
+                self.progress_video.set(0.0)
+                self.label_video_status.configure(text=f"Lỗi: {e}")
+                self.btn_translate_video_subtitles.configure(state=tk.NORMAL)
+                self._video_processing_in_progress = False
+                messagebox.showerror("Lỗi dịch", f"Đã xảy ra lỗi trong quá trình dịch phụ đề:\n{e}")
+            self.after(0, _on_err)
+
+    def _start_dub_video(self):
+        """Start full AI dubbing, speed alignment, and video muxing."""
+        source = self.entry_video_source.get().strip()
+        if not source:
+            messagebox.showwarning("Thiếu nguồn video", "Vui lòng nhập link YouTube hoặc file video.")
+            return
+
+        if not self.video_snippets:
+            messagebox.showwarning("Chưa có phụ đề", "Vui lòng lấy phụ đề và dịch trước khi lồng tiếng.")
+            return
+
+        if self._video_processing_in_progress:
+            messagebox.showinfo("Đang xử lý", "Hệ thống đang bận, vui lòng chờ tác vụ hiện tại hoàn tất.")
+            return
+
+        # Check if any snippet is translated
+        has_trans = any(bool(s.translated_text.strip()) for s in self.video_snippets)
+        if not has_trans:
+            ans = messagebox.askyesno("Chưa dịch phụ đề", "Lời thoại chưa được dịch sang Tiếng Việt. Bạn có muốn hệ thống tự động dịch trước khi lồng tiếng không?")
+            if not ans:
+                return
+
+        disp_voice = self.voice_name_video_var.get()
+        voice_code = self.voice_code_map.get(disp_voice, "vi-VN-HoaiMyNeural")
+        ducking_vol = float(self.ducking_val_var.get())
+
+        self._video_processing_in_progress = True
+        self.progress_video.set(0.0)
+        self.label_video_status.configure(text="Đang bắt đầu quy trình lồng tiếng AI...")
+        self.btn_dub_and_export_video.configure(state=tk.DISABLED)
+
+        threading.Thread(target=self._worker_dub_video, args=(source, voice_code, ducking_vol), daemon=True).start()
+
+    def _worker_dub_video(self, source: str, voice_name: str, ducking_vol: float):
+        """Background worker for downloading video, auto-translating if needed, synthesizing TTS, and muxing."""
+        try:
+            output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "video_output")
+            output_dir = os.path.abspath(output_dir)
+            os.makedirs(output_dir, exist_ok=True)
+
+            def _progress(pct, msg):
+                self.after(0, lambda: (self.progress_video.set(pct / 100.0), self.label_video_status.configure(text=msg)))
+
+            # Step 1: Ensure subtitles are translated
+            has_trans = any(bool(s.translated_text.strip()) for s in self.video_snippets)
+            if not has_trans:
+                _progress(5.0, "Đang tự động dịch lời thoại sang Tiếng Việt...")
+                self.video_snippets = self.video_handler.translate_subtitles(
+                    self.video_snippets,
+                    source_lang=self.src_lang_video.get(),
+                    target_lang=self.dest_lang_video.get(),
+                    progress_callback=_progress
+                )
+                self.after(0, self._populate_video_timeline_tree)
+
+            # Step 2: Download or locate video file
+            if os.path.exists(source):
+                local_video_path = os.path.abspath(source)
+            else:
+                _progress(20.0, "Đang tải video gốc từ YouTube...")
+                local_video_path = self.video_handler.download_youtube_video(
+                    source,
+                    output_dir=output_dir,
+                    progress_callback=_progress
+                )
+
+            # Step 3: Generate synchronized TTS audio
+            base_name = os.path.splitext(os.path.basename(local_video_path))[0]
+            dubbed_audio_path = os.path.join(output_dir, f"{base_name}_dubbed_vi.mp3")
+            output_video_path = os.path.join(output_dir, f"{base_name}_translated_vi.mp4")
+            output_srt_path = os.path.join(output_dir, f"{base_name}_vietnamese.srt")
+
+            _progress(50.0, "Đang tổng hợp giọng nói lồng tiếng AI và căn chỉnh timestamp...")
+            self.video_handler.generate_dubbed_audio(
+                self.video_snippets,
+                voice_name=voice_name,
+                output_audio_path=dubbed_audio_path,
+                progress_callback=_progress
+            )
+
+            # Step 4: Mux Video + Audio Ducking
+            _progress(90.0, "Đang trộn âm thanh và xuất file video hoàn chỉnh...")
+            self.video_handler.mux_video_with_dubbed_audio(
+                local_video_path,
+                dubbed_audio_path,
+                output_video_path,
+                ducking_volume=ducking_vol,
+                progress_callback=_progress
+            )
+
+            # Step 5: Export SRT
+            self.video_handler.export_srt(self.video_snippets, output_srt_path, use_translated=True)
+
+            self.last_rendered_video_path = output_video_path
+            self.last_rendered_audio_path = dubbed_audio_path
+            self.last_rendered_srt_path = output_srt_path
+
+            def _on_success():
+                self.progress_video.set(1.0)
+                self.label_video_status.configure(text=f"Hoàn tất lồng tiếng! Video đã lưu tại: {os.path.basename(output_video_path)}")
+                self.btn_dub_and_export_video.configure(state=tk.NORMAL)
+                self.btn_open_video.configure(state=tk.NORMAL)
+                self.btn_open_video_folder.configure(state=tk.NORMAL)
+                self.btn_export_video_srt.configure(state=tk.NORMAL)
+                self.btn_export_video_mp3.configure(state=tk.NORMAL)
+                self._video_processing_in_progress = False
+                messagebox.showinfo("Thành công", f"Đã xuất video lồng tiếng thành công:\n{output_video_path}")
+
+            self.after(0, _on_success)
+
+        except Exception as e:
+            logger.error(f"Error during video dubbing pipeline: {e}", exc_info=True)
+            def _on_err():
+                self.progress_video.set(0.0)
+                self.label_video_status.configure(text=f"Lỗi: {e}")
+                self.btn_dub_and_export_video.configure(state=tk.NORMAL)
+                self._video_processing_in_progress = False
+                messagebox.showerror("Lỗi lồng tiếng", f"Quá trình lồng tiếng video thất bại:\n{e}")
+            self.after(0, _on_err)
+
+    def _on_video_timeline_double_click(self, event):
+        """Handle double click on timeline item to open editor dialog."""
+        self._edit_selected_video_snippet()
+
+    def _edit_selected_video_snippet(self):
+        """Open popup dialog to edit the translation of the selected snippet."""
+        selected = self.video_tree.selection()
+        if not selected:
+            messagebox.showinfo("Chọn dòng", "Vui lòng chọn một câu thoại trong danh sách để chỉnh sửa.")
+            return
+
+        item_id = selected[0]
+        try:
+            idx = int(item_id)
+        except ValueError:
+            return
+
+        snippet = next((s for s in self.video_snippets if s.index == idx), None)
+        if not snippet:
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"Chỉnh sửa câu thoại #{idx}")
+        dialog.geometry("520x350")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text=f"Mốc thời gian: {snippet.start:.2f}s -> {snippet.end:.2f}s (Thời lượng: {snippet.duration:.2f}s)", font=('Segoe UI', 10, 'bold')).pack(padx=20, pady=(15, 5), anchor=tk.W)
+        ctk.CTkLabel(dialog, text="Lời thoại gốc:", font=('Segoe UI', 9, 'bold')).pack(padx=20, pady=(5, 2), anchor=tk.W)
+
+        orig_box = ctk.CTkTextbox(dialog, height=60, font=('Segoe UI', 10))
+        orig_box.pack(padx=20, fill=tk.X)
+        orig_box.insert(tk.END, snippet.original_text)
+        orig_box.configure(state=tk.DISABLED)
+
+        ctk.CTkLabel(dialog, text="Bản dịch Tiếng Việt:", font=('Segoe UI', 9, 'bold')).pack(padx=20, pady=(10, 2), anchor=tk.W)
+        trans_box = ctk.CTkTextbox(dialog, height=70, font=('Segoe UI', 10))
+        trans_box.pack(padx=20, fill=tk.X)
+        trans_box.insert(tk.END, snippet.translated_text)
+
+        frame_dlg_btn = ctk.CTkFrame(dialog, fg_color="transparent")
+        frame_dlg_btn.pack(padx=20, pady=15, fill=tk.X)
+
+        def _save_edit():
+            new_text = trans_box.get("1.0", tk.END).strip()
+            snippet.translated_text = new_text
+            self.video_tree.set(item_id, "trans", new_text)
+            dialog.destroy()
+
+        btn_save = create_styled_button(frame_dlg_btn, text="💾 Lưu thay đổi", command=_save_edit)
+        btn_save.pack(side=tk.RIGHT, padx=(5, 0))
+
+        btn_cancel = create_styled_button(frame_dlg_btn, text="Hủy", command=dialog.destroy)
+        btn_cancel.pack(side=tk.RIGHT)
+
+    def _open_rendered_video(self):
+        """Open the rendered video with default OS media player."""
+        if self.last_rendered_video_path and os.path.exists(self.last_rendered_video_path):
+            os.startfile(self.last_rendered_video_path)
+        else:
+            messagebox.showinfo("Thông báo", "Chưa có file video kết quả nào được xuất.")
+
+    def _open_video_folder(self):
+        """Open directory containing rendered video files."""
+        if self.last_rendered_video_path and os.path.exists(self.last_rendered_video_path):
+            folder = os.path.dirname(self.last_rendered_video_path)
+        else:
+            folder = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "video_output"))
+            os.makedirs(folder, exist_ok=True)
+        os.startfile(folder)
+
+    def _export_video_srt(self):
+        """Export current subtitles as an .srt file to user-chosen path."""
+        if not self.video_snippets:
+            messagebox.showwarning("Trống", "Chưa có phụ đề để xuất file.")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Lưu file phụ đề SRT",
+            defaultextension=".srt",
+            filetypes=[("SRT Subtitle Files", "*.srt"), ("All Files", "*.*")]
+        )
+        if save_path:
+            self.video_handler.export_srt(self.video_snippets, save_path, use_translated=True)
+            messagebox.showinfo("Thành công", f"Đã xuất file phụ đề tại:\n{save_path}")
+
+    def _export_video_mp3(self):
+        """Save the generated dubbed audio file to user-chosen path."""
+        if not self.last_rendered_audio_path or not os.path.exists(self.last_rendered_audio_path):
+            messagebox.showinfo("Thông báo", "Chưa có file âm thanh lồng tiếng. Hãy nhấn 'Lồng tiếng AI & Xuất Video' trước.")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Lưu file âm thanh lồng tiếng",
+            defaultextension=".mp3",
+            filetypes=[("MP3 Audio Files", "*.mp3"), ("All Files", "*.*")]
+        )
+        if save_path:
+            shutil.copyfile(self.last_rendered_audio_path, save_path)
+            messagebox.showinfo("Thành công", f"Đã lưu file âm thanh tại:\n{save_path}")

@@ -1,68 +1,92 @@
 @echo off
-REM Batch script to run the translation application on Windows
+setlocal EnableDelayedExpansion
+
+REM ========================================================
+REM Translation Application Launcher for Windows
+REM ========================================================
+
+cd /d "%~dp0"
+set "APP_DIR=%~dp0"
 
 echo ========================================
 echo    TRANSLATION APPLICATION LAUNCHER
 echo ========================================
 echo.
 
-REM Check where we are running from
-set "IN_ROOT=0"
-if exist "main.py" if exist "core" if exist "ui" set "IN_ROOT=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUTF8=1"
 
-set "IN_PARENT=0"
-if exist "translation_app" set "IN_PARENT=1"
+for %%I in ("%APP_DIR%..") do set "PARENT_DIR=%%~fI"
+set "PYTHONPATH=%PARENT_DIR%;%PYTHONPATH%"
 
-if "%IN_ROOT%"=="1" (
-    set "REQ_PATH=requirements.txt"
-    set "RUN_CMD=python main.py"
-    set "TEST_CMD=python test_import.py"
-) else if "%IN_PARENT%"=="1" (
-    set "REQ_PATH=translation_app\requirements.txt"
-    set "RUN_CMD=python -m translation_app"
-    set "TEST_CMD=python translation_app\test_import.py"
+echo [1/3] Detecting Python environment...
+set "PYTHON_EXE="
+
+if exist "%APP_DIR%.venv\Scripts\python.exe" (
+    set "PYTHON_EXE=%APP_DIR%.venv\Scripts\python.exe"
+    echo   -> Found Virtual Environment: .venv
+    goto :PYTHON_FOUND
+)
+
+if exist "%PARENT_DIR%\.venv\Scripts\python.exe" (
+    set "PYTHON_EXE=%PARENT_DIR%\.venv\Scripts\python.exe"
+    echo   -> Found Virtual Environment: ..\.venv
+    goto :PYTHON_FOUND
+)
+
+py -3 -c "import sys" >nul 2>&1
+if not errorlevel 1 (
+    set "PYTHON_EXE=py -3"
+    echo   -> Found Windows Python Launcher (py -3)
+    goto :PYTHON_FOUND
+)
+
+python -c "import sys" >nul 2>&1
+if not errorlevel 1 (
+    set "PYTHON_EXE=python"
+    echo   -> Found System Python
+    goto :PYTHON_FOUND
+)
+
+echo ERROR: Valid Python interpreter or virtual environment not found!
+echo Please install Python 3.8+ or configure .venv.
+pause
+exit /b 1
+
+:PYTHON_FOUND
+echo.
+echo [2/3] Verifying dependencies and modules...
+if exist "%APP_DIR%requirements.txt" (
+    echo   -> Checking requirements...
+    %PYTHON_EXE% -m pip install -r "%APP_DIR%requirements.txt" --quiet
+    if errorlevel 1 (
+        echo   [Warning] Could not update pip packages automatically. Continuing...
+    )
+)
+
+if exist "%APP_DIR%test_import.py" (
+    echo   -> Running import tests...
+    %PYTHON_EXE% "%APP_DIR%test_import.py"
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Import test failed! Please check messages above.
+        pause
+        exit /b 1
+    )
+)
+
+echo.
+echo ========================================
+echo [3/3] Launching Translation Application...
+echo ========================================
+echo Close this window or press Ctrl+C to stop the application.
+echo.
+
+if exist "%APP_DIR%main.py" (
+    %PYTHON_EXE% "%APP_DIR%main.py"
 ) else (
-    echo ERROR: Translation application files not found!
-    echo Please run this script from the project root directory or its parent directory.
-    pause
-    exit /b 1
+    %PYTHON_EXE% -m translation_app
 )
-
-echo Checking Python installation...
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python is not installed or not in PATH
-    echo Please install Python 3.8+ from https://python.org
-    pause
-    exit /b 1
-)
-
-echo Installing dependencies...
-pip install -r %REQ_PATH%
-if errorlevel 1 (
-    echo WARNING: Could not install dependencies automatically
-    echo You may need to run: pip install -r %REQ_PATH%
-    echo.
-)
-
-echo Testing imports...
-%TEST_CMD%
-if errorlevel 1 (
-    echo ERROR: Import test failed!
-    echo Please check the error messages above.
-    pause
-    exit /b 1
-)
-
-echo.
-echo ========================================
-echo Starting Translation Application...
-echo ========================================
-echo.
-echo Close this window or press Ctrl+C to stop the application
-echo.
-
-%RUN_CMD%
 
 echo.
 echo Application closed.

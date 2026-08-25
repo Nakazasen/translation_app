@@ -21,6 +21,12 @@ build/
 dist/
 *.spec
 
+
+# Build/Dist
+build/
+dist/
+*.spec
+
 # Virtual Environment
 venv/
 .venv/
@@ -28,3 +34,4 @@ env/
 
 # Codebase analysis tool artifacts
 .understand-anything/
+.vscode/
