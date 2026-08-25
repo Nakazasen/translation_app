@@ -19,14 +19,22 @@ def create_styled_button(
         parent: Parent widget
         text: Button text
         command: Command to execute on click
-        colors: Color dictionary (ignored in CTk as we use CTk standard themes)
+        colors: Color dictionary (optional, if provided will override)
         **kwargs: Additional button options
 
     Returns:
         Styled CTkButton widget
     """
-    fg_color = kwargs.pop('fg_color', ('#4A90E2', '#6366F1'))
-    hover_color = kwargs.pop('hover_color', ('#357ABD', '#4F46E5'))
+    try:
+        theme = ctk.ThemeManager.theme
+        default_fg = theme['CTkButton']['fg_color']
+        default_hover = theme['CTkButton']['hover_color']
+    except Exception:
+        default_fg = ('#4A90E2', '#6366F1')
+        default_hover = ('#357ABD', '#4F46E5')
+
+    fg_color = kwargs.pop('fg_color', default_fg)
+    hover_color = kwargs.pop('hover_color', default_hover)
 
     button = ctk.CTkButton(
         parent,

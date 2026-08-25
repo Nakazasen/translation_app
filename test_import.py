@@ -6,6 +6,18 @@ Test script to verify imports work correctly
 import sys
 import os
 
+# Configure stdout/stderr to use utf-8 to avoid encoding crashes on CP932/OEM terminals
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 # For testing, setup sys.path correctly
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -93,11 +105,20 @@ def test_imports():
             print(f"❌ Email handler import failed: {e}")
             return False
 
-        # Test UI imports (skip MainWindow as it may open GUI)
+        # Test video handler import
+        try:
+            from translation_app.core.video_handler import VideoHandler
+            print("✓ Video handler import successful")
+        except ImportError as e:
+            print(f"❌ Video handler import failed: {e}")
+            return False
+
+        # Test UI imports
         try:
             from translation_app.ui.theme import setup_theme
             from translation_app.ui.components import create_styled_button
-            print("✓ UI components import successful")
+            from translation_app.ui.main_window import MainWindow
+            print("✓ UI components and MainWindow import successful")
         except ImportError as e:
             print(f"❌ UI components import failed: {e}")
             return False

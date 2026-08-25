@@ -166,3 +166,10 @@ def setup_logging(log_level: Optional[str] = None) -> logging.Logger:
 # Create default logger instance
 logger = setup_logging()
 
+
+def get_logger(name: Optional[str] = None) -> logging.Logger:
+    """Return application logger or named child logger."""
+    if name is None or name == _LOGGER_NAME:
+        return logger
+    return logging.getLogger(name)
+

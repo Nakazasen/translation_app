@@ -17,6 +17,7 @@
 - 🧭 **Công việc đang dở dễ theo dõi**: Tab Công việc tự làm mới, tự chọn job mới nhất, hiển thị trạng thái có thể tiếp tục và tóm tắt cache/checkpoint an toàn, giúp người dùng tiếp tục job bị dừng mà không cần đọc file kỹ thuật.
 - 🧩 **Lịch sử job cho nhiều định dạng**: Khi dịch TXT, Word DOCX, PowerPoint PPTX và PDF, giao diện tạo job hiển thị trong tab Công việc; Excel vẫn dùng job tracking native của handler.
 - 👁️ **AI Vision**: Sử dụng Prompt đặc biệt để dịch các file PDF "khó nhằn" (PDF Scan, bảng biểu phức tạp).
+- 🎬 **Video Translation & AI Dubbing**: Dịch video (YouTube & file cục bộ) và lồng tiếng AI tiếng Việt (Microsoft Edge TTS) chuẩn từng mili-giây khớp với timestamp câu thoại gốc, hỗ trợ Audio Ducking giảm nhỏ tiếng gốc làm nền.
 - 📧 **Outlook Integration**: Dịch trực tiếp email từ Outlook chỉ với một click.
 - 🖼️ **Advanced OCR**: Nhận diện chữ viết từ ảnh (Ja, En, Vi, Zh) độ chính xác cao.
 
@@ -28,6 +29,7 @@
 | :--- | :--- | :--- |
 | **Dịch File** | Dịch toàn bộ nội dung file, giữ nguyên cấu trúc. | `.xlsx`, `.docx`, `.pptx`, `.pdf`, `.txt` |
 | **Dịch Đoạn Văn** | Dịch nhanh các đoạn văn bản, phân tích AI và tùy chọn viết lại theo phong cách giao tiếp công việc. | Plain Text |
+| **Dịch Video & Lồng tiếng** | Trích xuất phụ đề YouTube/video cục bộ, dịch đa ngữ và lồng tiếng AI tiếng Việt khớp mốc thời gian, trộn Audio Ducking. | YouTube URL, `.mp4`, `.mkv`, `.avi`, `.mov` |
 | **Dịch Email** | Quét và dịch các email mới nhất từ Outlook. | Microsoft Outlook |
 | **Dịch Ảnh (OCR)** | Nhận diện và dịch văn bản từ hình ảnh. | `.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp` |
 | **Phân tích AI** | Giải thích ý nghĩa, ngữ pháp câu qua Gemini AI. | Text/Images |
@@ -110,6 +112,14 @@ Email support: [vinh.bd@kdtvn.local]
 
 ### v6.1.2 (Unreleased)
 
+- **Tính năng Dịch Video & Lồng tiếng AI (Video Translation & AI Dubbing - Phase 5V)**:
+  - Bổ sung tab mới **"Dịch video"** hỗ trợ nhập link YouTube hoặc file video cục bộ (`.mp4`, `.mkv`...).
+  - Tự động lấy phụ đề / lời thoại kèm mốc thời gian (timestamp) chính xác qua `youtube-transcript-api` và `yt-dlp`.
+  - Tích hợp giọng đọc AI **Microsoft Edge TTS** chất lượng cao (`vi-VN-HoaiMyNeural`, `vi-VN-NamMinhNeural`) hoàn toàn miễn phí.
+  - Tự động căn chỉnh tốc độ đọc (time-stretching qua FFmpeg `atempo`) và chèn khoảng lặng để giọng lồng tiếng khớp 100% với timestamp của từng câu thoại gốc.
+  - Hỗ trợ cơ chế **Audio Ducking** (hạ âm lượng gốc xuống ~15% làm nền hoặc tắt hẳn) và ghép luồng video không cần re-encode hình ảnh.
+  - Cung cấp bảng timeline song ngữ cho phép xem và chỉnh sửa câu dịch trực tiếp trước khi render; hỗ trợ xuất video `.mp4`, file phụ đề `.srt` và file audio `.mp3`.
+- **Cải thiện Launcher & Khắc phục lỗi khởi động Windows (Run App Launcher Fix)**: Cập nhật [run_app.bat](file:///d:/Sandbox/translation_app/run_app.bat) và [run.py](file:///d:/Sandbox/translation_app/run.py) tự động nhận diện môi trường ảo `.venv`, `py -3` hoặc system Python; thiết lập mã hóa UTF-8 (`chcp 65001`, `PYTHONIOENCODING=utf-8`) để ngăn lỗi `UnicodeEncodeError` trên console Windows (CP932/OEM); sửa lỗi kiểm tra đường dẫn thư mục khi chạy trực tiếp.
 - **Email & Image Translation UX Foundation (Phase 5N-A)**: Tab **Dịch email** có hướng dẫn thao tác Outlook, cảnh báo an toàn không sửa email gốc và trạng thái tiến trình rõ hơn. Tab **Dịch ảnh** có hướng dẫn chọn/dán ảnh, vùng OCR có thể chỉnh sửa, copy/lưu OCR riêng và copy/lưu bản dịch hoặc phân tích.
 - **OCR Preprocessing & Subtitle Crop Mode (Phase 5N-E)**: Tab **Dịch ảnh** có chế độ **Ảnh phụ đề-video**, preprocessing OCR bằng grayscale/upscale/contrast/sharpen và fallback crop vùng dưới ảnh để hỗ trợ screenshot video có phụ đề nhỏ; nếu vẫn không đọc được chữ, app hướng dẫn crop vùng phụ đề hoặc chọn ảnh rõ hơn thay vì âm thầm dịch OCR rỗng.
 

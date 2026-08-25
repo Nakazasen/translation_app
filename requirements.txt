@@ -24,3 +24,7 @@ google-genai>=2.7.0
 # Modern UI upgrade
 customtkinter>=5.2.0
 
+# Video Translation & Dubbing
+yt-dlp>=2024.8.0
+youtube-transcript-api>=0.6.2
+edge-tts>=6.1.0

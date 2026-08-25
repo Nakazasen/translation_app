@@ -22,26 +22,42 @@ if hasattr(sys.stderr, 'reconfigure'):
 def run_app():
     """Run the translation application"""
     try:
-        # Check if we're in the right directory
-        if not os.path.exists('translation_app'):
-            print("❌ Error: translation_app directory not found!")
-            print("Please run this script from the parent directory of translation_app")
+        # Determine base directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.exists(os.path.join(script_dir, 'main.py')):
+            base_dir = script_dir
+            req_file = os.path.join(base_dir, 'requirements.txt')
+            main_script = os.path.join(base_dir, 'main.py')
+        elif os.path.exists(os.path.join(script_dir, 'translation_app', 'main.py')):
+            base_dir = os.path.join(script_dir, 'translation_app')
+            req_file = os.path.join(base_dir, 'requirements.txt')
+            main_script = os.path.join(base_dir, 'main.py')
+        else:
+            print("❌ Error: main.py not found in current directory or translation_app subdirectory!")
             return False
 
+        # Ensure parent directory is accessible in sys.path
+        parent_dir = os.path.dirname(base_dir)
+        env = os.environ.copy()
+        existing_pythonpath = env.get('PYTHONPATH', '')
+        env['PYTHONPATH'] = f"{parent_dir};{existing_pythonpath}" if existing_pythonpath else parent_dir
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
+
         # Install dependencies if requirements.txt exists
-        if os.path.exists('translation_app/requirements.txt'):
-            print("📦 Installing dependencies...")
+        if os.path.exists(req_file):
+            print("📦 Checking dependencies...")
             result = subprocess.run([
-                sys.executable, '-m', 'pip', 'install', '-r', 'translation_app/requirements.txt'
-            ], capture_output=True, text=True)
+                sys.executable, '-m', 'pip', 'install', '-r', req_file
+            ], capture_output=True, text=True, cwd=base_dir)
 
             if result.returncode != 0:
                 print("⚠️ Warning: Could not install dependencies automatically")
-                print("Please run: pip install -r translation_app/requirements.txt")
+                print(f"Please run: pip install -r {req_file}")
 
         # Run the application
         print("🚀 Starting Translation Application...")
-        subprocess.run([sys.executable, '-m', 'translation_app'])
+        subprocess.run([sys.executable, main_script], env=env, cwd=base_dir)
 
         return True
 

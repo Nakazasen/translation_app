@@ -7,46 +7,101 @@ import customtkinter as ctk
 from typing import Dict, Tuple
 
 
-def setup_theme() -> Tuple[Dict[str, str], ttk.Style]:
+def setup_theme(color_theme: str = "blue") -> Tuple[Dict[str, str], ttk.Style]:
     """
-    Setup professional modern theme for application dynamically based on appearance mode.
+    Setup professional modern theme for application dynamically based on appearance mode and color theme.
+
+    Args:
+        color_theme: 'blue', 'green', or 'dark-blue'
 
     Returns:
         Tuple of (colors dictionary, style object)
     """
     appearance_mode = ctk.get_appearance_mode()
+    color_theme = str(color_theme or "blue").lower()
 
-    # Sleek Slate & Vibrant Cyan/Indigo theme palette
     if appearance_mode == "Dark":
+        # Base dark colors
         colors = {
-            'navy': '#6366F1',          # Premium Indigo
-            'blue': '#4F46E5',          # Dark Indigo hover
-            'blue_light': '#818CF8',    # Light Indigo pressed
             'white': '#1E1E22',         # Slate Card Background
             'gray_light': '#0F0F11',    # Dark Main Background
             'gray': '#2E2E33',          # Slate border / divider
             'gray_dark': '#F3F4F6',     # High contrast off-white text
             'gray_medium': '#9CA3AF',   # Muted gray text
-            'accent': '#06B6D4',        # Vibrant Cyan highlight
-            'accent_hover': '#0891B2',
-            'tab_selected_bg': '#6366F1',
-            'tab_selected_hover': '#4F46E5'
         }
+        
+        # Color theme specific modifications
+        if color_theme == "green":
+            colors.update({
+                'navy': '#10B981',          # Emerald Green
+                'blue': '#059669',          # Dark Green hover
+                'blue_light': '#34D399',    # Light Green pressed
+                'accent': '#14B8A6',        # Teal highlight
+                'accent_hover': '#0D9488',
+                'tab_selected_bg': '#10B981',
+                'tab_selected_hover': '#059669'
+            })
+        elif color_theme == "dark-blue":
+            colors.update({
+                'navy': '#1D4ED8',          # Royal Blue
+                'blue': '#1E40AF',          # Navy hover
+                'blue_light': '#3B82F6',    # Light Blue pressed
+                'accent': '#60A5FA',        # Sky Blue highlight
+                'accent_hover': '#3B82F6',
+                'tab_selected_bg': '#1D4ED8',
+                'tab_selected_hover': '#1E40AF'
+            })
+        else: # blue (default)
+            colors.update({
+                'navy': '#6366F1',          # Premium Indigo
+                'blue': '#4F46E5',          # Dark Indigo hover
+                'blue_light': '#818CF8',    # Light Indigo pressed
+                'accent': '#06B6D4',        # Vibrant Cyan highlight
+                'accent_hover': '#0891B2',
+                'tab_selected_bg': '#6366F1',
+                'tab_selected_hover': '#4F46E5'
+            })
     else:
+        # Base light colors
         colors = {
-            'navy': '#1E3A5F',          # Deep Navy
-            'blue': '#4A90E2',          # Medium Blue
-            'blue_light': '#6BA3E8',    # Light Blue
             'white': '#FFFFFF',         # White Card Background
             'gray_light': '#F8F9FA',    # Light Main Background
             'gray': '#E9ECEF',          # Slate Light gray
             'gray_dark': '#1F2937',     # High contrast text
             'gray_medium': '#4B5563',   # Muted text
-            'accent': '#06B6D4',        # Vibrant Cyan
-            'accent_hover': '#0891B2',
-            'tab_selected_bg': '#E0E7FF',
-            'tab_selected_hover': '#C7D2FE'
         }
+        
+        # Color theme specific modifications
+        if color_theme == "green":
+            colors.update({
+                'navy': '#059669',          # Emerald Green
+                'blue': '#047857',          # Green hover
+                'blue_light': '#A7F3D0',    # Light Green pressed
+                'accent': '#0D9488',        # Teal highlight
+                'accent_hover': '#0F766E',
+                'tab_selected_bg': '#D1FAE5',
+                'tab_selected_hover': '#A7F3D0'
+            })
+        elif color_theme == "dark-blue":
+            colors.update({
+                'navy': '#1E3A8A',          # Dark Blue
+                'blue': '#1D4ED8',          # Blue hover
+                'blue_light': '#BFDBFE',    # Light Blue pressed
+                'accent': '#3B82F6',        # Blue highlight
+                'accent_hover': '#1D4ED8',
+                'tab_selected_bg': '#DBEAFE',
+                'tab_selected_hover': '#BFDBFE'
+            })
+        else: # blue (default)
+            colors.update({
+                'navy': '#1E3A5F',          # Deep Navy
+                'blue': '#4A90E2',          # Medium Blue
+                'blue_light': '#6BA3E8',    # Light Blue
+                'accent': '#06B6D4',        # Vibrant Cyan
+                'accent_hover': '#0891B2',
+                'tab_selected_bg': '#E0E7FF',
+                'tab_selected_hover': '#C7D2FE'
+            })
 
     # Create style for ttk
     style = ttk.Style()
